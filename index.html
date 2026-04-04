@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#16351f" />
+  <title>Household Command Center</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="title-row">
+          <h1>Household Command Center</h1>
+          <span id="version-tag" class="version-tag">v0.1.0-dev</span>
+        </div>
+        <div id="status-line" class="status-line">Starting up…</div>
+      </div>
+      <div class="topbar-actions">
+        <button id="refresh-button" class="secondary-button">Refresh</button>
+        <button id="settings-button" class="secondary-button">Settings</button>
+        <button id="dev-console-button" class="secondary-button">Dev Console</button>
+      </div>
+    </header>
+
+    <main id="screen" class="screen"></main>
+  </div>
+
+  <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
+    <div class="dev-console-header">
+      <div>
+        <strong>Developer Console</strong>
+        <div id="dev-console-meta" class="muted">Waiting for app state…</div>
+      </div>
+      <div class="dev-console-actions">
+        <button id="copy-diagnostics-button" class="secondary-button">Copy diagnostics</button>
+        <button id="clear-console-button" class="secondary-button">Clear</button>
+        <button id="close-console-button" class="secondary-button">Close</button>
+      </div>
+    </div>
+    <div id="dev-console-log" class="dev-console-log"></div>
+  </aside>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <div class="dialog-header">
+        <h2>Settings</h2>
+        <button value="cancel" class="secondary-button">Close</button>
+      </div>
+
+      <section>
+        <label for="supabase-url">Supabase URL</label>
+        <input id="supabase-url" type="url" placeholder="https://your-project.supabase.co" />
+      </section>
+
+      <section>
+        <label for="supabase-key">Supabase anon key</label>
+        <textarea id="supabase-key" rows="3" placeholder="Paste your anon key"></textarea>
+      </section>
+
+      <section>
+        <label for="device-name">Device name</label>
+        <input id="device-name" type="text" placeholder="Kitchen iPad" />
+      </section>
+
+      <section>
+        <label for="mode-select">Mode</label>
+        <select id="mode-select">
+          <option value="tv">TV</option>
+          <option value="kitchen">Kitchen</option>
+          <option value="laundry">Laundry</option>
+          <option value="bedroom">Bedroom</option>
+          <option value="mobile">Mobile</option>
+        </select>
+      </section>
+
+      <section>
+        <label for="location-input">Location</label>
+        <input id="location-input" type="text" placeholder="kitchen" />
+      </section>
+
+      <section>
+        <label for="task-date-field">Task due date field</label>
+        <input id="task-date-field" type="text" placeholder="due_date" />
+      </section>
+
+      <section>
+        <label for="task-owner-field">Task owner field</label>
+        <input id="task-owner-field" type="text" placeholder="owner" />
+      </section>
+
+      <section>
+        <label for="task-title-field">Task title field</label>
+        <input id="task-title-field" type="text" placeholder="task" />
+      </section>
+
+      <section>
+        <label for="task-completed-field">Task completed field</label>
+        <input id="task-completed-field" type="text" placeholder="done" />
+      </section>
+
+      <section>
+        <label for="task-completed-value">Completed value</label>
+        <input id="task-completed-value" type="text" placeholder="true" />
+      </section>
+
+      <section class="checkbox-row">
+        <input id="use-string-completed" type="checkbox" />
+        <label for="use-string-completed">Compare completed field as a string value</label>
+      </section>
+
+      <menu class="dialog-actions">
+        <button id="save-settings" value="default">Save settings</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <template id="card-template">
+    <section class="card">
+      <div class="card-header">
+        <h2></h2>
+        <span class="card-subtitle"></span>
+      </div>
+      <div class="card-body"></div>
+    </section>
+  </template>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
