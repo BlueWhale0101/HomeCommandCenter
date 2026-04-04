@@ -78,7 +78,10 @@ button {
   color: var(--accent);
   font-size: 0.9rem;
   font-weight: 700;
+  user-select: none;
+  touch-action: manipulation;
 }
+
 
 .hidden {
   display: none !important;
@@ -367,4 +370,30 @@ button {
   .topbar {
     flex-direction: column;
   }
+}
+
+
+.list-item-left {
+  min-width: 0;
+}
+
+.list-compact .list-item {
+  padding: 0.7rem 0.8rem;
+}
+
+.hero-pill {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  margin-bottom: 0.7rem;
+  background: rgba(125, 215, 154, 0.16);
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
 }

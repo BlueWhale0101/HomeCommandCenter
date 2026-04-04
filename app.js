@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.1.0-dev';
+const APP_VERSION = 'v0.2.0-dev';
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
   taskDateField: 'due_date',
   taskOwnerField: 'owner',
   taskTitleField: 'task',
-  taskCompletedField: 'done',
+  taskCompletedField: 'completed',
   taskCompletedValue: 'true',
   useStringCompleted: false,
   weatherSnapshotType: 'weather_today',
@@ -21,6 +21,12 @@ const DEFAULT_CONFIG = {
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
 const CONFIG_STORAGE = 'household-command-center-config';
+const TASK_FIELD_CANDIDATES = {
+  taskTitleField: ['task', 'title', 'name', 'label'],
+  taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
+  taskDateField: ['due_date', 'due', 'due_at', 'scheduled_for', 'date'],
+  taskCompletedField: ['completed', 'done', 'is_completed', 'is_done', 'complete'],
+};
 const QUICK_LOGS = [
   { label: 'Kitchen cleaned', eventType: 'kitchen_cleaned', location: 'kitchen' },
   { label: 'Dishes done', eventType: 'dishes_done', location: 'kitchen' },
@@ -58,6 +64,7 @@ const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
 
 setupVersionUi();
+setupVersionBadgeLongPress();
 setupDevConsole();
 setupSettingsUi();
 setupButtons();
@@ -101,6 +108,7 @@ async function loadDeviceProfile() {
       appState.config.mode = data.mode || appState.config.mode;
       appState.config.location = data.location || appState.config.location;
       saveConfig(appState.config);
+      fillSettingsForm();
       setStatus(`Connected as ${appState.config.deviceName} (${appState.config.mode})`);
       return;
     }
@@ -140,27 +148,95 @@ async function refreshAll() {
     fetchRecentLogs(),
   ]);
   renderMode();
+  renderDevConsole();
   setStatus(`Showing ${appState.config.mode} mode · Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+}
+
+function fieldExistsOnTask(fieldName, sample) {
+  return !!fieldName && !!sample && Object.prototype.hasOwnProperty.call(sample, fieldName);
+}
+
+function detectTaskField(sample, configKey) {
+  const configured = appState.config[configKey];
+  if (fieldExistsOnTask(configured, sample)) return configured;
+  const candidates = TASK_FIELD_CANDIDATES[configKey] || [];
+  return candidates.find((candidate) => fieldExistsOnTask(candidate, sample)) || configured;
+}
+
+function maybeAutoMapTaskFields(tasks) {
+  const sample = tasks?.[0];
+  if (!sample) return;
+  const updates = {};
+  for (const key of Object.keys(TASK_FIELD_CANDIDATES)) {
+    const detected = detectTaskField(sample, key);
+    if (detected && appState.config[key] !== detected) {
+      updates[key] = detected;
+    }
+  }
+  if (Object.keys(updates).length) {
+    Object.assign(appState.config, updates);
+    saveConfig(appState.config);
+    fillSettingsForm();
+    pushDevLog('info', `Auto-mapped task fields: ${Object.entries(updates).map(([k, v]) => `${k}→${v}`).join(', ')}`);
+  }
+}
+
+function taskIsCompleted(task) {
+  const field = appState.config.taskCompletedField;
+  if (!field || !(field in task)) return false;
+  const value = task[field];
+  if (appState.config.useStringCompleted) return String(value) === String(appState.config.taskCompletedValue);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return ['true', 'completed', 'done', 'yes'].includes(value.toLowerCase());
+  if (typeof value === 'number') return value === 1;
+  return false;
+}
+
+function taskQueryCandidateFilters(baseQuery, completedField) {
+  return [
+    () => baseQuery.eq(completedField, false),
+    () => baseQuery.eq(completedField, 'false'),
+    () => baseQuery.eq(completedField, 0),
+    () => baseQuery.or(`${completedField}.is.null,${completedField}.eq.false`),
+  ];
 }
 
 async function fetchTasks() {
   const { taskTable } = appState.config;
-  let query = appState.supabase.from(taskTable).select('*').limit(80);
   const completedField = appState.config.taskCompletedField;
+  const buildBaseQuery = () => appState.supabase.from(taskTable).select('*').limit(120);
+
+  let data = null;
+  let error = null;
+
   if (completedField) {
     if (appState.config.useStringCompleted) {
-      query = query.neq(completedField, appState.config.taskCompletedValue);
+      ({ data, error } = await buildBaseQuery().neq(completedField, appState.config.taskCompletedValue));
     } else {
-      query = query.eq(completedField, false);
+      const attempts = taskQueryCandidateFilters(buildBaseQuery(), completedField);
+      for (const attempt of attempts) {
+        ({ data, error } = await attempt());
+        if (!error) break;
+      }
     }
   }
-  const { data, error } = await query;
+
+  if (!data && !error) {
+    ({ data, error } = await buildBaseQuery());
+  } else if (error) {
+    ({ data, error } = await buildBaseQuery());
+  }
+
   if (error) {
     console.warn('Task fetch issue', error);
     appState.tasks = [];
     return;
   }
-  appState.tasks = data || [];
+
+  const rows = data || [];
+  maybeAutoMapTaskFields(rows);
+  appState.tasks = rows.filter((task) => !taskIsCompleted(task));
+  pushDevLog('info', `Fetched ${appState.tasks.length} visible tasks from ${taskTable}`);
 }
 
 async function fetchSignals() {
@@ -278,26 +354,30 @@ function renderMode() {
 }
 
 function renderKitchenMode() {
+  const digest = buildTaskDigest();
   screenEl.className = 'screen two-columns';
   screenEl.replaceChildren(
-    buildCard('Today', describeDateContext(), renderList(normalizeTodayItems(), 'Nothing important for today yet.')),
+    buildCard('Today', buildKitchenHeadline(digest), renderTaskList(digest.todayTasks, 'Nothing important for today yet.', { showPills: true })),
+    buildCard('Task Spotlight', 'Best next task from the board', renderSpotlightCard(digest.spotlightTask)),
     buildCard('Needs Attention', `${activeSignals().length} visible`, renderList(activeSignals().slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
-    buildCard('Don’t Forget', 'Short and important', renderList(buildForgetItems(), 'Nothing critical is waiting.')),
+    buildCard('Upcoming Tasks', `${digest.upcomingTasks.length} coming soon`, renderTaskList(digest.upcomingTasks, 'Nothing is queued up soon.', { showPills: true })),
     buildQuickActionsCard(),
-    buildCard('If you’ve got a minute', 'Gentle next suggestion', renderFocusBlock(buildSoftFocus())),
+    buildCard('Overdue & Don’t Forget', 'Short and important', renderTaskList(digest.overdueTasks.slice(0, 6).concat(buildForgetItems().slice(0, 2)), 'Nothing critical is waiting.', { showPills: true })),
     buildCard('Weather & Next Event', '', renderContextStack()),
+    buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   );
 }
 
 function renderTvMode() {
   screenEl.className = 'screen single-column';
+  const digest = buildTaskDigest();
   const wrap = document.createElement('div');
   wrap.className = 'tv-layout';
   wrap.append(
     buildTvHero(),
-    buildCard('Today', '', renderList(normalizeTodayItems().slice(0, 4), 'Nothing major on the board.'), 'tv-card'),
+    buildCard('Today', '', renderTaskList(digest.todayTasks.slice(0, 4), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card'),
     buildCard('Attention', '', renderList(activeSignals().slice(0, 3).map(signalToItem), 'House is in a good place.'), 'tv-card'),
-    buildCard(isEvening() ? 'Tomorrow' : 'Focus', '', isEvening() ? renderList(buildTomorrowItems(), 'Tomorrow is still open.') : renderFocusBlock(buildSoftFocus()), 'tv-card'),
+    buildCard(isEvening() ? 'Tomorrow' : 'Focus', '', isEvening() ? renderTaskList(buildTomorrowItems(), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(buildSoftFocus()), 'tv-card'),
   );
   screenEl.append(wrap);
 }
@@ -313,23 +393,26 @@ function renderLaundryMode() {
 function renderBedroomMode() {
   screenEl.className = 'screen single-column bedroom-layout';
   const title = isEvening() ? 'Tomorrow' : 'Today';
-  const items = isEvening() ? buildTomorrowItems() : normalizeTodayItems().slice(0, 5);
+  const items = isEvening() ? buildTomorrowItems() : buildTaskDigest().todayTasks.slice(0, 5);
   screenEl.replaceChildren(
-    buildCard(title, describeDateContext(), renderList(items, `Nothing big for ${title.toLowerCase()} yet.`)),
-    buildCard('Don’t Forget', 'Gentle reminders', renderList(buildForgetItems(), 'No key reminders right now.')),
+    buildCard(title, describeDateContext(), renderTaskList(items, `Nothing big for ${title.toLowerCase()} yet.`, { showPills: true })),
+    buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(buildForgetItems(), 'No key reminders right now.', { showPills: true })),
     buildCard('Weather & Next Event', '', renderContextStack()),
   );
 }
 
 function renderMobileMode() {
+  const digest = buildTaskDigest();
   screenEl.className = 'screen two-columns';
   screenEl.replaceChildren(
-    buildCard('Today', '', renderList(normalizeTodayItems(), 'No tasks visible.')),
+    buildCard('Today', '', renderTaskList(digest.todayTasks, 'No tasks visible.', { showPills: true })),
     buildCard('Laundry', '', renderLaundryLoads()),
+    buildCard('Upcoming', '', renderTaskList(digest.upcomingTasks, 'Nothing upcoming.', { showPills: true })),
     buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
     buildCard('Signals', '', renderList(activeSignals().map(signalToItem), 'No active signals.')),
     buildQuickActionsCard(),
     buildCard('Context', '', renderContextStack()),
+    buildCard('Task Mapping', '', renderTaskMappingSummary()),
   );
 }
 
@@ -404,8 +487,12 @@ function renderLaundryLoads() {
 }
 
 function renderList(items, emptyText) {
+  return renderTaskList(items, emptyText, { showPills: true });
+}
+
+function renderTaskList(items, emptyText, options = {}) {
   const wrapper = document.createElement('div');
-  wrapper.className = 'list';
+  wrapper.className = `list ${options.compact ? 'list-compact' : ''}`.trim();
   if (!items.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -418,6 +505,7 @@ function renderList(items, emptyText) {
     row.className = 'list-item';
 
     const left = document.createElement('div');
+    left.className = 'list-item-left';
     const title = document.createElement('div');
     title.className = 'list-item-title';
     title.textContent = item.title;
@@ -427,7 +515,7 @@ function renderList(items, emptyText) {
     left.append(title, meta);
 
     row.append(left);
-    if (item.pill) {
+    if (options.showPills && item.pill) {
       const pill = document.createElement('span');
       pill.className = `pill ${item.pillClass || ''}`.trim();
       pill.textContent = item.pill;
@@ -436,6 +524,30 @@ function renderList(items, emptyText) {
     wrapper.append(row);
   }
   return wrapper;
+}
+
+function renderSpotlightCard(item) {
+  const wrap = document.createElement('div');
+  if (!item) {
+    wrap.className = 'empty-state';
+    wrap.textContent = 'No standout task yet. Once the board has today or overdue work, it will appear here.';
+    return wrap;
+  }
+
+  const badge = document.createElement('div');
+  badge.className = 'hero-pill';
+  badge.textContent = item.pill || 'Task';
+
+  const title = document.createElement('div');
+  title.className = 'focus-text';
+  title.textContent = item.title;
+
+  const meta = document.createElement('div');
+  meta.className = 'muted';
+  meta.textContent = item.meta || '';
+
+  wrap.append(badge, title, meta);
+  return wrap;
 }
 
 function renderFocusBlock(item) {
@@ -456,15 +568,37 @@ function renderFocusBlock(item) {
 }
 
 function renderContextStack() {
-  const wrap = document.createElement('div');
-  wrap.className = 'list';
+  const items = [];
   const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
   const todayCal = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const items = [];
-  if (weather?.summary) items.push({ title: weather.summary, meta: 'Weather' });
+  if (weather?.summary) items.push({ title: weather.summary, meta: 'Weather', pill: 'Live' });
   const next = Array.isArray(todayCal?.items) ? todayCal.items[0] : null;
-  if (next) items.push({ title: next.title, meta: next.time ? `Next event · ${next.time}` : 'Next event' });
-  return renderList(items, 'Weather and calendar snapshots are ready to plug in later.');
+  if (next) items.push({ title: next.title, meta: next.time ? `Next event · ${next.time}` : 'Next event', pill: 'Calendar' });
+  return renderTaskList(items, 'Weather and calendar snapshots are ready to plug in later.', { showPills: true });
+}
+
+function renderTaskMappingSummary() {
+  const fields = [
+    ['Task table', appState.config.taskTable],
+    ['Title field', appState.config.taskTitleField],
+    ['Owner field', appState.config.taskOwnerField],
+    ['Due date field', appState.config.taskDateField],
+    ['Completed field', appState.config.taskCompletedField],
+  ];
+
+  const wrap = document.createElement('div');
+  wrap.className = 'list';
+  for (const [label, value] of fields) {
+    const row = document.createElement('div');
+    row.className = 'meta-row';
+    const left = document.createElement('div');
+    left.textContent = label;
+    const right = document.createElement('code');
+    right.textContent = value || '—';
+    row.append(left, right);
+    wrap.append(row);
+  }
+  return wrap;
 }
 
 function buildCard(title, subtitle, body, extraClass = '') {
@@ -477,28 +611,80 @@ function buildCard(title, subtitle, body, extraClass = '') {
   return node;
 }
 
-function normalizeTodayItems() {
+function buildTaskDigest() {
+  const tasks = normalizeTaskRows();
+  const today = new Date();
+  const todayTasks = tasks.filter((task) => task.dueDate && isSameDay(task.dueDate, today));
+  const overdueTasks = tasks.filter((task) => task.dueDate && task.dueDate < startOfDay(today));
+  const upcomingTasks = tasks.filter((task) => task.dueDate && task.dueDate > endOfDay(today)).slice(0, 8);
+  const undatedTasks = tasks.filter((task) => !task.dueDate);
+  const spotlightTask = overdueTasks[0] || todayTasks[0] || activeSignals().map(signalToItem)[0] || undatedTasks[0] || null;
+
+  return {
+    all: tasks,
+    todayTasks: toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today'),
+    overdueTasks: toDisplayTaskItems(overdueTasks, 'Overdue'),
+    upcomingTasks: toDisplayTaskItems(upcomingTasks, 'Upcoming'),
+    spotlightTask: spotlightTask ? toDisplayTaskItems([spotlightTask], spotlightTask.kind || 'Task')[0] : null,
+    counts: {
+      all: tasks.length,
+      today: todayTasks.length,
+      overdue: overdueTasks.length,
+      upcoming: upcomingTasks.length,
+      undated: undatedTasks.length,
+    },
+  };
+}
+
+function normalizeTaskRows() {
   const dateField = appState.config.taskDateField;
   const titleField = appState.config.taskTitleField;
   const ownerField = appState.config.taskOwnerField;
-  const today = new Date();
+  const actor = guessActor();
+
   return appState.tasks
     .map((task) => {
-      const rawDate = task[dateField];
+      const dueDate = normalizeDate(task[dateField]);
+      const owner = task[ownerField] || '';
       return {
-        title: task[titleField] || 'Untitled task',
-        owner: task[ownerField] || '',
-        rawDate,
-        sortDate: normalizeDate(rawDate),
+        id: task.id,
+        title: String(task[titleField] || 'Untitled task'),
+        owner,
+        dueDate,
+        raw: task,
+        kind: 'Task',
+        sortScore: dueDate ? dueDate.getTime() : Number.MAX_SAFE_INTEGER,
+        isMine: owner ? String(owner).toLowerCase() === actor.toLowerCase() : false,
       };
     })
-    .filter((item) => !item.sortDate || isSameDay(item.sortDate, today) || item.sortDate < endOfDay(today))
-    .sort((a, b) => (a.sortDate?.getTime() || Number.MAX_SAFE_INTEGER) - (b.sortDate?.getTime() || Number.MAX_SAFE_INTEGER))
-    .slice(0, 8)
-    .map((item) => ({
-      title: item.title,
-      meta: [item.owner, item.sortDate ? formatDate(item.sortDate) : null].filter(Boolean).join(' · '),
-    }));
+    .sort((a, b) => {
+      if (a.sortScore !== b.sortScore) return a.sortScore - b.sortScore;
+      if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
+      return a.title.localeCompare(b.title);
+    });
+}
+
+function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
+  return tasks.map((task) => {
+    if (task.signal_type || task.severity) return signalToItem(task);
+    const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : 'No due date';
+    const owner = task.owner || '';
+    return {
+      title: task.title,
+      meta: [owner, dueMeta].filter(Boolean).join(' · '),
+      pill: task.dueDate && task.dueDate < startOfDay(new Date()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, new Date()) ? 'Today' : fallbackPill,
+      pillClass: task.dueDate && task.dueDate < startOfDay(new Date()) ? 'danger' : '',
+    };
+  });
+}
+
+function buildKitchenHeadline(digest) {
+  const parts = [];
+  if (digest.counts.today) parts.push(`${digest.counts.today} today`);
+  if (digest.counts.overdue) parts.push(`${digest.counts.overdue} overdue`);
+  if (digest.counts.upcoming) parts.push(`${digest.counts.upcoming} upcoming`);
+  if (!parts.length) parts.push(`${digest.counts.all} open tasks`);
+  return parts.join(' · ');
 }
 
 function activeSignals() {
@@ -517,31 +703,25 @@ function buildForgetItems() {
 }
 
 function buildSoftFocus() {
+  const digest = buildTaskDigest();
+  if (digest.spotlightTask) return digest.spotlightTask;
   const topSignal = activeSignals()[0];
   if (topSignal) return { title: topSignal.title, meta: topSignal.description || 'Gentle attention item' };
-  return normalizeTodayItems()[0] || null;
+  return null;
 }
 
 function buildTomorrowItems() {
   const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const tasks = appState.tasks
-    .map((task) => ({
-      title: task[appState.config.taskTitleField] || 'Untitled task',
-      owner: task[appState.config.taskOwnerField] || '',
-      date: normalizeDate(task[appState.config.taskDateField]),
-    }))
-    .filter((task) => task.date && isTomorrow(task.date))
-    .slice(0, 3)
-    .map((task) => ({
-      title: task.title,
-      meta: [task.owner, formatDate(task.date)].filter(Boolean).join(' · '),
-    }));
+  const tasks = normalizeTaskRows()
+    .filter((task) => task.dueDate && isTomorrow(task.dueDate))
+    .slice(0, 3);
 
+  const taskItems = toDisplayTaskItems(tasks, 'Tomorrow');
   const events = Array.isArray(snapshot?.items)
-    ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: item.time ? `Event · ${item.time}` : 'Event' }))
+    ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: item.time ? `Event · ${item.time}` : 'Event', pill: 'Calendar' }))
     : [];
 
-  return [...events, ...tasks].slice(0, 5);
+  return [...events, ...taskItems].slice(0, 5);
 }
 
 function signalToItem(signal) {
@@ -616,9 +796,40 @@ async function advanceLoad(load) {
   }
 }
 
-
 function setupVersionUi() {
   versionTag.textContent = APP_VERSION;
+  versionTag.title = 'Long press to open developer console';
+}
+
+function setupVersionBadgeLongPress() {
+  let pressTimer = null;
+  let longPressed = false;
+  const start = (event) => {
+    event.preventDefault();
+    longPressed = false;
+    clearTimeout(pressTimer);
+    pressTimer = window.setTimeout(() => {
+      longPressed = true;
+      toggleDevConsole(true);
+      pushDevLog('info', 'Opened dev console from version badge long press.');
+      if (navigator.vibrate) navigator.vibrate(20);
+    }, 550);
+  };
+  const cancel = () => {
+    clearTimeout(pressTimer);
+  };
+  versionTag.addEventListener('pointerdown', start);
+  versionTag.addEventListener('pointerup', cancel);
+  versionTag.addEventListener('pointerleave', cancel);
+  versionTag.addEventListener('pointercancel', cancel);
+  versionTag.addEventListener('contextmenu', (event) => event.preventDefault());
+  versionTag.addEventListener('click', (event) => {
+    if (longPressed) {
+      event.preventDefault();
+      event.stopPropagation();
+      longPressed = false;
+    }
+  });
 }
 
 let devConsoleEntries = [];
@@ -657,6 +868,10 @@ function setupDevConsole() {
   });
 
   console.info(`Household Command Center ${APP_VERSION} booting`);
+}
+
+function pushDevLog(level, message) {
+  console[level === 'warn' ? 'warn' : level === 'error' ? 'error' : 'info'](message);
 }
 
 function renderConsoleArg(value) {
@@ -702,6 +917,12 @@ function buildDiagnosticsText() {
     deviceKey: appState.deviceKey,
     location: appState.config.location,
     taskTable: appState.config.taskTable,
+    taskFieldMapping: {
+      title: appState.config.taskTitleField,
+      owner: appState.config.taskOwnerField,
+      dueDate: appState.config.taskDateField,
+      completed: appState.config.taskCompletedField,
+    },
     taskCount: appState.tasks.length,
     signalCount: appState.signals.length,
     loadCount: appState.loads.length,
@@ -738,6 +959,10 @@ function renderDevConsole() {
 }
 
 function setupSettingsUi() {
+  fillSettingsForm();
+}
+
+function fillSettingsForm() {
   document.getElementById('supabase-url').value = appState.config.supabaseUrl;
   document.getElementById('supabase-key').value = appState.config.supabaseKey;
   document.getElementById('device-name').value = appState.config.deviceName;
@@ -865,6 +1090,12 @@ function formatDate(date) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function formatTaskTiming(date) {
+  if (isSameDay(date, new Date())) return 'Today';
+  if (isTomorrow(date)) return 'Tomorrow';
+  return formatDate(date);
+}
+
 function relativeTime(value) {
   if (!value) return 'just now';
   const deltaMs = Date.now() - new Date(value).getTime();
@@ -875,6 +1106,12 @@ function relativeTime(value) {
   if (hours < 24) return `${hours} hr ago`;
   const days = Math.round(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function startOfDay(date) {
+  const copy = new Date(date);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
 }
 
 function endOfDay(date) {
