@@ -464,7 +464,7 @@ body, button, .version-tag, .version-tag * {
 }
 
 .tv-freshness {
-  font-size: 0.92rem;
+  font-size: 0.82rem;
 }
 
 
@@ -750,7 +750,7 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.55rem;
 }
 
@@ -908,7 +908,7 @@ body.version-pressing, body.version-pressing * {
 
 .laundry-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -916,22 +916,37 @@ body.version-pressing, body.version-pressing * {
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--border);
   border-radius: 18px;
-  padding: 0.85rem 0.9rem;
+  padding: 0.6rem 0.75rem;
   display: grid;
   gap: 0.15rem;
 }
 
 .laundry-stat strong {
-  font-size: 1.45rem;
+  font-size: 1.25rem;
 }
 
 .laundry-stat span {
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.82rem;
 }
 
+
+.laundry-stat.status-ready {
+  border-color: rgba(255, 193, 7, 0.8);
+  background: rgba(255, 193, 7, 0.16);
+}
+
+.laundry-stat.status-drying {
+  border-color: rgba(125, 215, 154, 0.75);
+  background: rgba(125, 215, 154, 0.12);
+}
+
+.laundry-stat.status-washing {
+  border-color: rgba(64, 162, 255, 0.8);
+  background: rgba(64, 162, 255, 0.12);
+}
 .laundry-tip {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }
 
 .load-row {
@@ -945,16 +960,19 @@ body.version-pressing, body.version-pressing * {
 }
 
 .load-row.status-ready {
-  border-color: rgba(255, 193, 7, 0.4);
-  background: rgba(255, 193, 7, 0.08);
+  border-color: rgba(255, 193, 7, 0.85);
+  background: rgba(255, 193, 7, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.25);
 }
 
 .load-row.status-drying {
-  border-color: rgba(125, 215, 154, 0.28);
+  border-color: rgba(125, 215, 154, 0.75);
+  background: rgba(125, 215, 154, 0.14);
 }
 
 .load-row.status-washing {
-  border-color: rgba(64, 162, 255, 0.28);
+  border-color: rgba(64, 162, 255, 0.8);
+  background: rgba(64, 162, 255, 0.14);
 }
 
 @media (max-width: 720px) {

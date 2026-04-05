@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.0-dev';
+const APP_VERSION = 'v0.9.1-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -536,7 +536,7 @@ const MODE_LAYOUTS = {
   },
   laundry: {
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
-    widgets: ['laundrySummary', 'laundryLoads', 'laundryRecent', 'laundrySignals'],
+    widgets: ['laundrySummary', 'laundryLoads', 'laundrySignals'],
   },
   bedroom: {
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
@@ -615,8 +615,7 @@ const WIDGETS = {
   tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
-  laundryRecent: () => buildCard('Recent Laundry Activity', '', renderLaundryRecent()),
-  laundrySignals: (context) => buildCard('Light House Signals', '', renderList(context.signals.slice(0, 2).map(signalToItem), 'Laundry is the main thing here.')),
+  laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
   bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(context.isEvening ? context.tomorrowItems : context.digest.todayTasks.slice(0, 5), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
@@ -713,9 +712,9 @@ function renderLaundrySummary() {
   const wrapper = document.createElement('div');
   wrapper.className = 'laundry-summary';
 
-  const counts = { washing: 0, drying: 0, ready: 0, done: 0 };
+  const counts = { washing: 0, drying: 0, ready: 0 };
   for (const load of appState.loads) {
-    if (load.archived_at) continue;
+    if (load.archived_at || load.status === 'done') continue;
     if (counts[load.status] !== undefined) counts[load.status] += 1;
   }
 
@@ -731,7 +730,6 @@ function renderLaundrySummary() {
     ['Washing', counts.washing, 'washing'],
     ['Drying', counts.drying, 'drying'],
     ['Ready', counts.ready, 'ready'],
-    ['Done', counts.done, 'done'],
   ];
   for (const [label, value, status] of items) {
     const chip = document.createElement('div');
@@ -744,15 +742,55 @@ function renderLaundrySummary() {
   const hint = document.createElement('div');
   hint.className = 'laundry-tip muted';
   hint.textContent = counts.ready
-    ? 'You have at least one load ready for folding.'
+    ? 'A load is ready and may need folding.'
     : 'Tap any load below to move it to the next step.';
   wrapper.append(hint);
   return wrapper;
 }
 
-function renderLaundryRecent() {
-  const laundryLogs = appState.logs.filter((log) => /laundry/i.test(log.event_type || '') || log.location === 'laundry');
-  return renderList(laundryLogs.slice(0, 4).map(logToItem), 'No recent laundry activity yet.');
+function buildLaundrySignalItems() {
+  const items = [];
+  const now = Date.now();
+  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
+  const staleLoads = activeLoads.filter((load) => {
+    const movedAt = new Date(load.last_transition_at || load.updated_at || load.created_at).getTime();
+    return Number.isFinite(movedAt) && now - movedAt > 90 * 60 * 1000;
+  }).sort((a, b) => new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at));
+
+  if (staleLoads.length) {
+    const stale = staleLoads[0];
+    items.push({
+      title: `${stale.label || `Load ${stale.id.slice(0, 4)}`} has been waiting`,
+      meta: `${capitalize(stale.status)} · Last moved ${relativeTime(stale.last_transition_at || stale.updated_at || stale.created_at)}`,
+      pill: 'Laundry',
+    });
+  }
+
+  const laundryMoments = [];
+  for (const load of appState.loads) {
+    const t = load.last_transition_at || load.updated_at || load.created_at;
+    if (t) laundryMoments.push(new Date(t).getTime());
+  }
+  for (const log of appState.logs) {
+    if (/laundry/i.test(log.event_type || '') || log.location === 'laundry') {
+      if (log.created_at) laundryMoments.push(new Date(log.created_at).getTime());
+    }
+  }
+  const lastLaundryAt = laundryMoments.length ? Math.max(...laundryMoments.filter(Number.isFinite)) : null;
+  if (!activeLoads.length && (!lastLaundryAt || now - lastLaundryAt > 24 * 60 * 60 * 1000)) {
+    items.push({
+      title: 'No laundry done in over a day',
+      meta: lastLaundryAt ? `Last laundry activity ${relativeTime(new Date(lastLaundryAt).toISOString())}` : 'No laundry activity logged yet.',
+      pill: 'Reminder',
+    });
+  }
+
+  return items;
+}
+
+function renderLaundrySignals() {
+  const items = buildLaundrySignalItems();
+  return renderList(items, 'No laundry signals right now.');
 }
 
 function renderLaundryLoads() {
