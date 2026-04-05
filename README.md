@@ -175,3 +175,8 @@ Current presentation-phase behavior:
 - **Evening starts at 5:00 PM local time**
 - Bedroom and TV can shift to a more tomorrow-focused presentation during the evening
 - Dev-console **test time** can be used to simulate this behavior safely
+
+
+## v0.9.6-dev
+- Wednesday bins reminder now starts at 12:00 PM on Wednesday.
+- Bedroom view includes a lightweight Laundry card under the main Today/Tomorrow card so loads can be advanced without switching views.

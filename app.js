@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.5-dev';
+const APP_VERSION = 'v0.9.6-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -578,7 +578,7 @@ const MODE_LAYOUTS = {
   },
   bedroom: {
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
-    widgets: ['context', 'bedroomPrimary', 'bedroomForget'],
+    widgets: ['context', 'bedroomPrimary', 'bedroomLaundry', 'bedroomForget'],
   },
   mobile: {
     screenClass: 'screen two-columns widget-layout widget-layout-mobile',
@@ -655,6 +655,7 @@ const WIDGETS = {
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
   bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
@@ -877,6 +878,54 @@ function renderLaundryLoads() {
         <div class="list-item-meta">${loadNextStep(load.status)} · Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
       </div>
       <span class="pill">${escapeHtml(capitalize(load.status))}</span>
+    `;
+    row.addEventListener('click', () => advanceLoad(load, row));
+    wrapper.append(row);
+  }
+
+  return wrapper;
+}
+
+
+function renderBedroomLaundry() {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'list';
+
+  const loads = [...appState.loads]
+    .filter((load) => !load.archived_at && load.status !== 'done')
+    .sort((a, b) => {
+      const byStatus = loadStatusRank(a.status) - loadStatusRank(b.status);
+      if (byStatus !== 0) return byStatus;
+      return new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at);
+    })
+    .slice(0, 3);
+
+  if (!loads.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No active loads to move right now.';
+    wrapper.append(empty);
+    return wrapper;
+  }
+
+  for (const load of loads) {
+    const row = document.createElement('button');
+    row.className = `load-row load-button bedroom-load-row status-${load.status}`;
+    const actionLabel = load.status === 'washing'
+      ? 'Move to dryer'
+      : load.status === 'drying'
+      ? 'Mark ready'
+      : 'Mark done';
+
+    row.innerHTML = `
+      <div class="load-row-main">
+        <div class="list-item-title">${escapeHtml(load.label || `Load ${load.id.slice(0, 4)}`)}</div>
+        <div class="list-item-meta">${loadNextStep(load.status)} · Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
+      </div>
+      <div class="bedroom-load-actions">
+        <span class="pill">${escapeHtml(capitalize(load.status))}</span>
+        <span class="bedroom-load-cta">${escapeHtml(actionLabel)}</span>
+      </div>
     `;
     row.addEventListener('click', () => advanceLoad(load, row));
     wrapper.append(row);
@@ -1240,16 +1289,16 @@ function buildSyntheticRuleSignals() {
   const day = now.getDay(); // 0=Sun, 3=Wed
   const hour = now.getHours();
 
-  const isWednesdayEvening = day === 3 && hour >= 17;
+  const isWednesdayReminderWindow = day === 3 && hour >= 12;
   const binsDoneToday = didLogEventToday('bins_out');
 
-  if (isWednesdayEvening && !binsDoneToday) {
+  if (isWednesdayReminderWindow && !binsDoneToday) {
     items.push({
       id: 'synthetic-bins-wednesday',
       signal_type: 'bins_wednesday',
       title: 'Put bins out tonight',
-      description: hour >= 19 ? 'Wednesday night reminder · bins still need to go to the street.' : 'Wednesday evening reminder · bins need to go to the street tonight.',
-      severity: hour >= 19 ? 'warning' : 'notice',
+      description: hour >= 19 ? 'Wednesday night reminder · bins still need to go to the street.' : hour >= 17 ? 'Wednesday evening reminder · bins need to go to the street tonight.' : 'Wednesday afternoon reminder · bins need to go to the street tonight.',
+      severity: hour >= 17 ? 'warning' : 'notice',
       location: 'outside',
       metadata: { synthetic: true, rule: 'weekly_bins_wednesday', visible_in: ['tv', 'bedroom', 'kitchen'] },
     });
