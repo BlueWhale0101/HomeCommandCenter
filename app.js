@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.8.3-dev';
+const APP_VERSION = 'v0.8.4-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -686,9 +686,9 @@ function buildQuickActionsCard() {
   wrap.className = 'quick-grid';
   for (const item of QUICK_LOGS) {
     const button = document.createElement('button');
-    button.className = 'quick-button';
+    button.className = 'quick-button quick-button-blue';
     button.textContent = item.label;
-    button.addEventListener('click', () => createQuickLog(item));
+    button.addEventListener('click', () => createQuickLog(item, button));
     wrap.append(button);
   }
   return buildCard('Quick Actions', 'One tap, then done', wrap, 'kitchen-quick-actions-card');
@@ -1118,7 +1118,40 @@ function logToItem(log) {
   };
 }
 
-async function createQuickLog(item) {
+
+function ensureToastHost() {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    host.className = 'toast-host';
+    document.body.append(host);
+  }
+  return host;
+}
+
+function showToast(message, type = 'info') {
+  const host = ensureToastHost();
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  host.append(toast);
+  requestAnimationFrame(() => toast.classList.add('toast-show'));
+  window.setTimeout(() => {
+    toast.classList.remove('toast-show');
+    toast.classList.add('toast-hide');
+    window.setTimeout(() => toast.remove(), 220);
+  }, 1700);
+}
+
+function pulseButton(button) {
+  if (!button) return;
+  button.classList.remove('quick-button-hit');
+  void button.offsetWidth;
+  button.classList.add('quick-button-hit');
+}
+
+async function createQuickLog(item, button) {
   try {
     const actor = guessActor();
     const payload = {
@@ -1130,9 +1163,12 @@ async function createQuickLog(item) {
     };
     const { error } = await appState.supabase.from('household_logs').insert(payload);
     if (error) throw error;
+    pulseButton(button);
+    showToast(`${item.label} logged`, 'success');
     setStatus(`Logged: ${item.label}`);
   } catch (error) {
     console.error(error);
+    showToast(`Could not log ${item.label.toLowerCase()}`, 'error');
     setStatus(`Could not log action: ${error.message}`);
   }
 }

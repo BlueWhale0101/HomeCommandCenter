@@ -750,14 +750,16 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.65rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
 }
 
 .widget-layout-kitchen .quick-button {
-  min-height: 72px;
-  border-radius: 18px;
+  min-height: 58px;
+  border-radius: 16px;
   text-align: center;
+  font-size: 0.94rem;
+  padding: 0.72rem 0.7rem;
 }
 
 .kitchen-quick-actions-card .card-body {
@@ -800,4 +802,86 @@ body.version-pressing, body.version-pressing * {
 .kitchen-today-wrap {
   display: grid;
   gap: 0.25rem;
+}
+
+
+.quick-button-blue {
+  background: linear-gradient(180deg, rgba(76, 127, 214, 0.34) 0%, rgba(41, 89, 171, 0.44) 100%);
+  border-color: rgba(113, 167, 255, 0.34);
+  color: #eaf3ff;
+}
+
+.quick-button-blue:hover {
+  background: linear-gradient(180deg, rgba(89, 141, 233, 0.42) 0%, rgba(45, 97, 187, 0.52) 100%);
+}
+
+.quick-button-hit {
+  animation: quickButtonPulse 220ms ease-out;
+}
+
+@keyframes quickButtonPulse {
+  0% { transform: scale(1); box-shadow: var(--shadow); }
+  50% { transform: scale(0.97); box-shadow: 0 0 0 4px rgba(113, 167, 255, 0.18); }
+  100% { transform: scale(1); box-shadow: var(--shadow); }
+}
+
+.quick-view-dialog {
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  max-width: min(860px, calc(100vw - 2rem));
+}
+
+.quick-view-dialog .settings-form {
+  border: none;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 5.2rem;
+  transform: translateX(-50%);
+  z-index: 1300;
+  display: grid;
+  gap: 0.55rem;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 220px;
+  max-width: min(92vw, 420px);
+  border-radius: 999px;
+  padding: 0.72rem 1rem;
+  background: rgba(10, 18, 13, 0.96);
+  border: 1px solid rgba(181, 220, 189, 0.18);
+  color: var(--text);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  transition: opacity 180ms ease, transform 180ms ease;
+  text-align: center;
+  font-weight: 700;
+}
+
+.toast-show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.toast-hide {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}
+
+.toast-success {
+  border-color: rgba(113, 167, 255, 0.32);
+  background: linear-gradient(180deg, rgba(26, 49, 84, 0.95) 0%, rgba(18, 32, 57, 0.96) 100%);
+  color: #edf5ff;
+}
+
+.toast-error {
+  border-color: rgba(255, 139, 139, 0.28);
+  background: rgba(58, 20, 20, 0.96);
 }
