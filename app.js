@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.7.1-dev';
+const APP_VERSION = 'v0.7.2-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -336,7 +336,7 @@ function taskIsCompleted(task) {
     candidateValues.push(task[configuredField]);
   }
 
-  ['completed', 'done', 'is_completed', 'is_done', 'complete'].forEach((field) => {
+  ['completed', 'done', 'is_completed', 'is_done', 'complete', 'panel', 'completed_at'].forEach((field) => {
     if (field in task) candidateValues.push(task[field]);
   });
 
@@ -347,6 +347,8 @@ function taskIsCompleted(task) {
     if (typeof value === 'number' && value === 1) return true;
   }
 
+  if (typeof task.panel === 'string' && ['done', 'completed'].includes(task.panel.toLowerCase())) return true;
+  if (task.completed_at) return true;
   if (typeof task.status === 'string' && ['done', 'completed'].includes(task.status.toLowerCase())) return true;
   return false;
 }
@@ -356,6 +358,7 @@ function taskIsArchived(task) {
   if (task.archived === true || task.archived === 1) return true;
   if (typeof task.archived === 'string' && ['true', '1', 'yes'].includes(task.archived.toLowerCase())) return true;
   if (task.archived_at) return true;
+  if (typeof task.panel === 'string' && task.panel.toLowerCase() === 'archived') return true;
   if (typeof task.status === 'string' && task.status.toLowerCase() === 'archived') return true;
   return false;
 }
@@ -625,22 +628,27 @@ function buildTvHero() {
 
   topRow.append(date, timeEl);
 
+  const contextRow = document.createElement('div');
+  contextRow.className = 'tv-context-row';
+
   const weatherEl = document.createElement('div');
   weatherEl.className = 'tv-weather';
   weatherEl.textContent = weather?.payload?.summary || 'Weather snapshot not loaded yet';
 
   const nextEl = document.createElement('div');
-  nextEl.className = 'focus-text';
+  nextEl.className = 'tv-next';
   nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}` : 'Nothing urgent on the calendar';
 
+  contextRow.append(weatherEl, nextEl);
+
   const freshnessEl = document.createElement('div');
-  freshnessEl.className = 'muted';
+  freshnessEl.className = 'muted tv-freshness';
   freshnessEl.textContent = [
     weather ? snapshotMetaLabel('Weather', weather) : null,
     todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
   ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
 
-  section.append(topRow, weatherEl, nextEl, freshnessEl);
+  section.append(topRow, contextRow, freshnessEl);
   return section;
 }
 
@@ -654,9 +662,17 @@ function buildTvTodayItems(context) {
       }))
     : [];
 
-  const taskItems = context.digest.todayTasks.slice(0, 3);
+  const taskItems = context.digest.todayTasks.slice(0, 2);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
-  return [...taskItems, ...eventItems, ...overdueItems].slice(0, 4);
+
+  const blended = [];
+  if (taskItems[0]) blended.push(taskItems[0]);
+  if (eventItems[0]) blended.push(eventItems[0]);
+  if (taskItems[1]) blended.push(taskItems[1]);
+  if (eventItems[1]) blended.push(eventItems[1]);
+  if (overdueItems[0]) blended.push(overdueItems[0]);
+
+  return blended.slice(0, 4);
 }
 
 function buildQuickActionsCard() {
