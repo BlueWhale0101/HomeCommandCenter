@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.5.0-dev';
+const APP_VERSION = 'v0.5.1-dev';
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
@@ -64,13 +64,22 @@ const closeConsoleButton = document.getElementById('close-console-button');
 const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
 
-setupVersionUi();
-setupVersionBadgeLongPress();
-setupDevConsole();
-setupSettingsUi();
-setupButtons();
-registerServiceWorker();
-bootstrap().catch(handleFatalStartupError);
+initApp();
+
+function initApp() {
+  try {
+    setStatus('Loading household command center…');
+    setupVersionUi();
+    setupVersionBadgeLongPress();
+    setupDevConsole();
+    setupSettingsUi();
+    setupButtons();
+    registerServiceWorker();
+    bootstrap().catch(handleFatalStartupError);
+  } catch (error) {
+    handleFatalStartupError(error);
+  }
+}
 
 async function bootstrap() {
   setStatus('Loading household command center…');
@@ -868,6 +877,10 @@ function setupVersionBadgeLongPress() {
     pressTimer = window.setTimeout(() => {
       longPressed = true;
       toggleDevConsole(true);
+      if (window.getSelection) {
+        const selection = window.getSelection();
+        if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+      }
       pushDevLog('info', 'Opened dev console from version badge long press.');
       if (navigator.vibrate) navigator.vibrate(20);
     }, 550);
@@ -877,9 +890,16 @@ function setupVersionBadgeLongPress() {
   };
   versionTag.addEventListener('pointerdown', start);
   versionTag.addEventListener('pointerup', cancel);
+  versionTag.addEventListener('pointermove', cancel);
   versionTag.addEventListener('pointerleave', cancel);
   versionTag.addEventListener('pointercancel', cancel);
   versionTag.addEventListener('contextmenu', (event) => event.preventDefault());
+  versionTag.addEventListener('mouseup', () => {
+    if (window.getSelection) {
+      const selection = window.getSelection();
+      if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+    }
+  });
   versionTag.addEventListener('click', (event) => {
     if (longPressed) {
       event.preventDefault();
@@ -1290,7 +1310,8 @@ function resetAutoRefreshTimer() {
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
-      await navigator.serviceWorker.register('./sw.js');
+      const registration = await navigator.serviceWorker.register('./sw.js');
+      if (registration && registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
     } catch (error) {
       console.warn('Service worker registration failed', error);
     }

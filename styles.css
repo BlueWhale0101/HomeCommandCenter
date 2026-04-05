@@ -69,16 +69,25 @@ button {
 }
 
 .version-tag {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 950;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
   border-radius: 999px;
-  padding: 0.22rem 0.65rem;
-  background: rgba(125, 215, 154, 0.14);
-  border: 1px solid var(--border);
+  padding: 0.35rem 0.85rem;
+  background: rgba(8, 15, 11, 0.92);
+  border: 1px solid rgba(181, 220, 189, 0.2);
   color: var(--accent);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 700;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.34);
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   touch-action: manipulation;
 }
 
@@ -400,3 +409,15 @@ code {
 
 
 .tv-hero .muted { margin-top: 0.35rem; }
+
+.version-tag:focus,
+.version-tag:active {
+  outline: none;
+}
+
+@media (max-width: 720px) {
+  .version-tag {
+    right: 0.75rem;
+    bottom: 0.75rem;
+  }
+}
