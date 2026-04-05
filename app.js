@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.0.0-dev';
+const APP_VERSION = 'v1.0.1-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -21,6 +21,11 @@ const DEFAULT_CONFIG = {
   calendarTomorrowSnapshotType: 'calendar_tomorrow',
   uiRefreshSeconds: 60,
   googleClientId: '',
+  weatherLocationQuery: '',
+  weatherLocationName: '',
+  weatherLatitude: '',
+  weatherLongitude: '',
+  weatherTimezone: '',
 };
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
@@ -86,6 +91,7 @@ const clearTestTimeButton = document.getElementById('clear-test-time-button');
 const testConnectionButton = document.getElementById('test-connection-button');
 const connectionStatusGrid = document.getElementById('connection-status-grid');
 const googleClientIdInput = document.getElementById('google-client-id');
+const weatherLocationInput = document.getElementById('weather-location-input');
 const connectGoogleAccountButton = document.getElementById('connect-google-account-button');
 const googleCalendarAccountsEl = document.getElementById('google-calendar-accounts');
 
@@ -246,6 +252,11 @@ function normalizeExternalConfig(input) {
     taskCompletedField: taskMapping.completed || input.taskCompletedField || DEFAULT_CONFIG.taskCompletedField,
     uiRefreshSeconds: Math.max(15, Number(ui.refreshSeconds || input.uiRefreshSeconds || DEFAULT_CONFIG.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds),
     googleClientId: String(input.googleClientId || input.googleOAuthClientId || DEFAULT_CONFIG.googleClientId || '').trim(),
+    weatherLocationQuery: String((input.weather && input.weather.locationQuery) || input.weatherLocationQuery || DEFAULT_CONFIG.weatherLocationQuery || '').trim(),
+    weatherLocationName: String((input.weather && input.weather.locationName) || input.weatherLocationName || DEFAULT_CONFIG.weatherLocationName || '').trim(),
+    weatherLatitude: String((input.weather && input.weather.latitude) || input.weatherLatitude || DEFAULT_CONFIG.weatherLatitude || '').trim(),
+    weatherLongitude: String((input.weather && input.weather.longitude) || input.weatherLongitude || DEFAULT_CONFIG.weatherLongitude || '').trim(),
+    weatherTimezone: String((input.weather && input.weather.timezone) || input.weatherTimezone || DEFAULT_CONFIG.weatherTimezone || '').trim(),
   };
 }
 
@@ -347,6 +358,7 @@ async function refreshAll() {
       fetchLoads(),
       fetchSnapshots(),
       fetchGoogleCalendarSnapshots(),
+      fetchWeatherSnapshot(),
       fetchRecentLogs(),
     ]);
     renderMode();
@@ -1055,7 +1067,7 @@ function renderContextStack() {
       pillClass: snapshotFreshnessClass(todayCal),
     });
   }
-  return renderTaskList(items, 'Weather and calendar snapshots are ready to plug in later.', { showPills: true });
+  return renderTaskList(items, 'Weather or calendar data is not connected yet.', { showPills: true });
 }
 
 function renderTaskMappingSummary() {
@@ -1199,6 +1211,90 @@ async function connectGoogleCalendarAccount() {
   }
 }
 
+
+function weatherCodeLabel(code) {
+  const groups = {
+    0: 'Clear',
+    1: 'Mostly clear',
+    2: 'Partly cloudy',
+    3: 'Overcast',
+    45: 'Fog', 48: 'Fog',
+    51: 'Drizzle', 53: 'Drizzle', 55: 'Drizzle', 56: 'Freezing drizzle', 57: 'Freezing drizzle',
+    61: 'Rain', 63: 'Rain', 65: 'Heavy rain', 66: 'Freezing rain', 67: 'Freezing rain',
+    71: 'Snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow',
+    80: 'Showers', 81: 'Showers', 82: 'Heavy showers',
+    85: 'Snow showers', 86: 'Snow showers',
+    95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Thunderstorm',
+  };
+  return groups[Number(code)] || 'Weather';
+}
+
+async function geocodeWeatherLocation(query) {
+  const url = new URL('https://geocoding-api.open-meteo.com/v1/search');
+  url.searchParams.set('name', query);
+  url.searchParams.set('count', '1');
+  url.searchParams.set('language', 'en');
+  const response = await fetch(url.toString(), { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Weather geocoding failed (${response.status})`);
+  const data = await response.json();
+  const item = Array.isArray(data.results) ? data.results[0] : null;
+  if (!item) throw new Error('Weather location not found');
+  return {
+    name: [item.name, item.admin1, item.country].filter(Boolean).join(', '),
+    latitude: String(item.latitude),
+    longitude: String(item.longitude),
+    timezone: item.timezone || 'auto',
+  };
+}
+
+async function fetchWeatherSnapshot() {
+  const query = (appState.config.weatherLocationQuery || '').trim();
+  if (!query) return;
+
+  let { weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName } = appState.config;
+  if (!latitude || !longitude) {
+    const geo = await geocodeWeatherLocation(query);
+    latitude = geo.latitude;
+    longitude = geo.longitude;
+    timezone = geo.timezone;
+    locationName = geo.name;
+    appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName };
+    saveConfig(appState.config);
+    try { fillSettingsForm(); } catch {}
+  }
+
+  const url = new URL('https://api.open-meteo.com/v1/forecast');
+  url.searchParams.set('latitude', latitude);
+  url.searchParams.set('longitude', longitude);
+  url.searchParams.set('current', 'temperature_2m,weather_code,apparent_temperature');
+  url.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min');
+  url.searchParams.set('forecast_days', '2');
+  url.searchParams.set('timezone', timezone || 'auto');
+  const response = await fetch(url.toString(), { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`);
+  const data = await response.json();
+  const currentTemp = Math.round(Number(data.current?.temperature_2m));
+  const high = Math.round(Number(data.daily?.temperature_2m_max?.[0]));
+  const low = Math.round(Number(data.daily?.temperature_2m_min?.[0]));
+  const code = Number(data.current?.weather_code ?? data.daily?.weather_code?.[0]);
+  const summaryBits = [locationName || query, Number.isFinite(currentTemp) ? `${currentTemp}° now` : '', weatherCodeLabel(code), Number.isFinite(high) && Number.isFinite(low) ? `H ${high}° · L ${low}°` : ''].filter(Boolean);
+  const createdAt = getNowDate().toISOString();
+  appState.snapshots[appState.config.weatherSnapshotType] = {
+    context_type: appState.config.weatherSnapshotType,
+    created_at: createdAt,
+    valid_until: new Date(getNowMs() + 30 * 60 * 1000).toISOString(),
+    payload: {
+      summary: summaryBits.join(' · '),
+      locationName: locationName || query,
+      currentTemp,
+      high,
+      low,
+      weatherCode: code,
+      weatherLabel: weatherCodeLabel(code),
+    },
+  };
+}
+
 function renderCalendarAccounts() {
   if (!googleCalendarAccountsEl) return;
   googleCalendarAccountsEl.replaceChildren();
@@ -1269,7 +1365,7 @@ function normalizeCalendarEvent(event, account, calendar) {
     id: event.id,
     title: event.summary || '(Untitled event)',
     time: formatCalendarEventTime(event),
-    sourceLabel: `${account.name || account.email} — ${calendar.summary || calendar.id}`,
+    sourceLabel: [account.name || '', calendar.summary || calendar.id].filter(Boolean).join(' — ') || (calendar.summary || calendar.id),
     start: event.start?.dateTime || event.start?.date || '',
   };
 }
@@ -2087,6 +2183,7 @@ function fillSettingsForm() {
   document.getElementById('use-string-completed').checked = appState.config.useStringCompleted;
   document.getElementById('ui-refresh-seconds').value = appState.config.uiRefreshSeconds;
   if (googleClientIdInput) googleClientIdInput.value = appState.config.googleClientId || '';
+  if (weatherLocationInput) weatherLocationInput.value = appState.config.weatherLocationQuery || '';
   renderCalendarAccounts();
   renderConnectionStatusPanel();
 }
@@ -2107,6 +2204,11 @@ function readSettingsUi() {
     useStringCompleted: document.getElementById('use-string-completed').checked,
     uiRefreshSeconds: Math.max(15, Number(document.getElementById('ui-refresh-seconds').value) || DEFAULT_CONFIG.uiRefreshSeconds),
     googleClientId: googleClientIdInput?.value?.trim() || DEFAULT_CONFIG.googleClientId,
+    weatherLocationQuery: weatherLocationInput?.value?.trim() || DEFAULT_CONFIG.weatherLocationQuery,
+    weatherLocationName: appState.config.weatherLocationName || '',
+    weatherLatitude: appState.config.weatherLatitude || '',
+    weatherLongitude: appState.config.weatherLongitude || '',
+    weatherTimezone: appState.config.weatherTimezone || '',
   };
 }
 
@@ -2129,7 +2231,14 @@ function setupButtons() {
   };
   saveSettingsButton.onclick = async (event) => {
     event.preventDefault();
+    const previousWeatherQuery = appState.config.weatherLocationQuery || '';
     appState.config = readSettingsUi();
+    if ((appState.config.weatherLocationQuery || '') !== previousWeatherQuery) {
+      appState.config.weatherLatitude = '';
+      appState.config.weatherLongitude = '';
+      appState.config.weatherTimezone = '';
+      appState.config.weatherLocationName = '';
+    }
     saveConfig(appState.config);
     fillSettingsForm();
     resetAutoRefreshTimer();
