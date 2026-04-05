@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.6-dev';
+const APP_VERSION = 'v0.9.7-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -603,6 +603,7 @@ function buildWidgetContext(digest) {
     forgetItems: buildForgetItems(),
     focusItem: buildSoftFocus(),
     isEvening: isEvening(),
+    presentationPhase: getPresentationPhase(),
   };
 }
 
@@ -648,13 +649,13 @@ const WIDGETS = {
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard('Today', '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
+  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
   tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
   tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
-  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
   bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
@@ -717,7 +718,17 @@ function buildTvTodayItems(context) {
 
   const taskItems = context.digest.todayTasks.slice(0, 3);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
-  return blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
+  const baseItems = blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
+
+  if (!context.isEvening) return baseItems;
+
+  const tomorrowPreview = context.tomorrowItems.slice(0, 2).map((item) => ({
+    ...item,
+    pill: item.pill || 'Tomorrow',
+    meta: item.meta ? `${item.meta}` : 'Tomorrow',
+  }));
+
+  return [...baseItems.slice(0, 4), ...tomorrowPreview].slice(0, 6);
 }
 
 function buildBedroomPrimaryItems(context) {
@@ -1967,8 +1978,13 @@ function setStatus(text) {
   try { window.__hccBootState.statusText = text; } catch {}
 }
 
-function describeDateContext() {
+function getPresentationPhase() {
+  return isEvening() ? 'evening' : 'day';
+}
+
+function describeDateContext(context = null) {
   const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
+  if (context?.isEvening) return 'Tomorrow is now the main focus.';
   return weather?.summary || getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
