@@ -1,45 +1,186 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#16351f" />
   <title>Household Command Center</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="title-row">
+          <h1>Household Command Center</h1>
+        </div>
+        <div id="status-line" class="status-line">Starting up…</div>
+      </div>
+      <div class="topbar-actions">
+        <button id="refresh-button" class="secondary-button">Refresh</button>
+        <button id="settings-button" class="secondary-button">Settings</button>
+      </div>
+    </header>
 
-<div id="app" class="kitchen">
+    <main id="screen" class="screen"></main>
+  </div>
 
-  <header class="k-header">
-    <div id="date"></div>
-    <div id="clock"></div>
-  </header>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.8.1-dev</button>
 
-  <section class="k-section">
-    <h2>Today</h2>
-    <div id="today-list"></div>
-  </section>
+  <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
+    <div class="dev-console-header">
+      <div>
+        <strong>Developer Console</strong>
+        <div id="dev-console-meta" class="muted">Waiting for app state…</div>
+      </div>
+      <div class="dev-console-actions">
+        <button id="copy-diagnostics-button" class="secondary-button">Copy diagnostics</button>
+        <button id="clear-console-button" class="secondary-button">Clear</button>
+        <button id="close-console-button" class="secondary-button">Close</button>
+      </div>
+    </div>
+    <div id="dev-console-log" class="dev-console-log"></div>
+  </aside>
 
-  <section class="k-section">
-    <h2>Needs Attention</h2>
-    <div id="attention-list"></div>
-  </section>
+  <dialog id="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <div class="dialog-header">
+        <h2>Settings</h2>
+        <button value="cancel" class="secondary-button">Close</button>
+      </div>
 
-  <section class="k-section">
-    <h2>Don't Forget</h2>
-    <div id="reminder-list"></div>
-  </section>
+      <section>
+        <label for="supabase-url">Supabase URL</label>
+        <input id="supabase-url" type="url" placeholder="https://your-project.supabase.co" />
+      </section>
 
-  <section class="k-actions">
-    <button onclick="logAction('kitchen_cleaned')">Kitchen Cleaned</button>
-    <button onclick="logAction('dishes_done')">Dishes Done</button>
-    <button onclick="logAction('bins_out')">Bins Out</button>
-  </section>
+      <section>
+        <label for="supabase-key">Supabase anon key</label>
+        <textarea id="supabase-key" rows="3" placeholder="Paste your anon key"></textarea>
+      </section>
 
-</div>
+      <section>
+        <label for="device-name">Device name</label>
+        <input id="device-name" type="text" placeholder="Kitchen iPad" />
+      </section>
 
-<div class="version-pill">v0.8.0-dev</div>
+      <section>
+        <label for="mode-select">Mode</label>
+        <select id="mode-select">
+          <option value="tv">TV</option>
+          <option value="kitchen">Kitchen</option>
+          <option value="laundry">Laundry</option>
+          <option value="bedroom">Bedroom</option>
+          <option value="mobile">Mobile</option>
+        </select>
+      </section>
 
-<script src="app.js" defer></script>
+      <section>
+        <label for="location-input">Location</label>
+        <input id="location-input" type="text" placeholder="kitchen" />
+      </section>
+
+      <section>
+        <label for="task-date-field">Task due date field</label>
+        <input id="task-date-field" type="text" placeholder="due_date" />
+      </section>
+
+      <section>
+        <label for="task-owner-field">Task owner field</label>
+        <input id="task-owner-field" type="text" placeholder="owner" />
+      </section>
+
+      <section>
+        <label for="task-title-field">Task title field</label>
+        <input id="task-title-field" type="text" placeholder="task" />
+      </section>
+
+      <section>
+        <label for="task-completed-field">Task completed field</label>
+        <input id="task-completed-field" type="text" placeholder="completed" />
+      </section>
+
+      <section>
+        <label for="task-completed-value">Completed value</label>
+        <input id="task-completed-value" type="text" placeholder="true" />
+      </section>
+
+      <section class="checkbox-row">
+        <input id="use-string-completed" type="checkbox" />
+        <label for="use-string-completed">Compare completed field as a string value</label>
+      </section>
+
+      <section>
+        <label for="ui-refresh-seconds">UI refresh seconds</label>
+        <input id="ui-refresh-seconds" type="number" min="15" step="5" placeholder="60" />
+      </section>
+
+      <section class="settings-status-panel">
+        <div class="settings-status-header">
+          <div>
+            <strong>Connection status</strong>
+            <div class="muted">Quick check of config and key tables</div>
+          </div>
+          <button id="test-connection-button" type="button" class="secondary-button">Run test</button>
+        </div>
+        <div id="connection-status-grid" class="connection-status-grid">
+          <div class="status-chip unknown"><span>Supabase</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Tasks</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Device profile</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Realtime</span><strong>Not tested</strong></div>
+        </div>
+      </section>
+
+      <menu class="dialog-actions">
+        <button id="save-settings" value="default">Save settings</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <template id="card-template">
+    <section class="card">
+      <div class="card-header">
+        <h2></h2>
+        <span class="card-subtitle"></span>
+      </div>
+      <div class="card-body"></div>
+    </section>
+  </template>
+
+  <script>
+    window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'inline-preboot', errors: [] };
+    window.addEventListener('error', function (event) {
+      try {
+        var statusEl = document.getElementById('status-line');
+        window.__hccBootState.errors.push(String(event.message || 'Unknown boot error'));
+        if (statusEl && !window.__hccBootState.finished) {
+          statusEl.textContent = 'Startup error before app init';
+        }
+      } catch (e) {}
+    });
+    window.setTimeout(function () {
+      try {
+        var statusEl = document.getElementById('status-line');
+        var state = window.__hccBootState || {};
+        if (!state.started && typeof window.__HCC_FORCE_BOOT === 'function') {
+          if (statusEl) statusEl.textContent = 'Pre-boot recovery…';
+          window.__HCC_FORCE_BOOT();
+        }
+      } catch (e) {}
+    }, 1500);
+    window.setTimeout(function () {
+      try {
+        var statusEl = document.getElementById('status-line');
+        var state = window.__hccBootState || {};
+        if (!state.finished && statusEl && statusEl.textContent === 'Initializing app shell…') {
+          statusEl.textContent = 'Boot paused in app shell';
+        }
+      } catch (e) {}
+    }, 4000);
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js" defer></script>
 </body>
 </html>
