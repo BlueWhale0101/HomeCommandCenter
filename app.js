@@ -1,4 +1,6 @@
-const APP_VERSION = 'v0.5.3-dev';
+const APP_VERSION = 'v0.5.5-dev';
+window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
+window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
 
 const DEFAULT_CONFIG = {
@@ -65,6 +67,8 @@ const closeConsoleButton = document.getElementById('close-console-button');
 const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
 
+let bootstrapPromise = null;
+
 initApp();
 
 function initApp() {
@@ -76,7 +80,7 @@ function initApp() {
     safeInitStep('Settings UI', setupSettingsUi);
     safeInitStep('Buttons', setupButtons);
     safeInitStep('Service worker', () => { registerServiceWorker(); });
-    window.setTimeout(() => bootstrap().catch(handleFatalStartupError), 0);
+startBootstrap();
   } catch (error) {
     handleFatalStartupError(error);
   }
@@ -91,8 +95,17 @@ function safeInitStep(label, fn) {
   }
 }
 
+function startBootstrap() {
+  if (bootstrapPromise) return bootstrapPromise;
+  bootstrapPromise = Promise.resolve().then(() => bootstrap()).catch(handleFatalStartupError);
+  return bootstrapPromise;
+}
+
 async function bootstrap() {
+  window.__hccBootState.started = true;
+  window.__hccBootState.phase = 'bootstrap-started';
   pushDevLog('info', 'Bootstrap started.');
+  window.__hccBootState.phase = 'connecting-supabase';
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
   resetAutoRefreshTimer();
@@ -101,11 +114,15 @@ async function bootstrap() {
     renderEmptyShell('Open Settings and add your Supabase URL and anon key to start.');
     return;
   }
+  window.__hccBootState.phase = 'loading-device-profile';
   setStatus('Loading device profile…');
   await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+  window.__hccBootState.phase = 'loading-household-data';
   setStatus('Loading household data…');
   await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
   bindRealtime();
+  window.__hccBootState.phase = 'ready';
+  window.__hccBootState.finished = true;
 }
 
 
@@ -1189,6 +1206,10 @@ function handleRuntimeActionError(prefix, error) {
 }
 
 function handleFatalStartupError(error) {
+  try {
+    window.__hccBootState.errors.push(String(error?.message || error));
+    window.__hccBootState.phase = 'fatal-startup-error';
+  } catch {}
   console.error('Fatal startup error', error);
   setStatus(`Startup error: ${error?.message || error}`);
   renderEmptyShell('Startup failed. Long-press the version badge for diagnostics, then open Settings and verify your Supabase URL/key and field mapping.');
@@ -1229,6 +1250,7 @@ function getOrCreateDeviceKey() {
 
 function setStatus(text) {
   statusLine.textContent = text;
+  try { window.__hccBootState.statusText = text; } catch {}
 }
 
 function describeDateContext() {
