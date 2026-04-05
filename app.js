@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.3-dev';
+const APP_VERSION = 'v0.9.4-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -578,7 +578,7 @@ const MODE_LAYOUTS = {
   },
   bedroom: {
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
-    widgets: ['bedroomPrimary', 'bedroomForget', 'context'],
+    widgets: ['context', 'bedroomPrimary', 'bedroomForget'],
   },
   mobile: {
     screenClass: 'screen two-columns widget-layout widget-layout-mobile',
@@ -654,7 +654,7 @@ const WIDGETS = {
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
-  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(context.isEvening ? context.tomorrowItems : context.digest.todayTasks.slice(0, 5), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
@@ -715,6 +715,23 @@ function buildTvTodayItems(context) {
     : [];
 
   const taskItems = context.digest.todayTasks.slice(0, 3);
+  const overdueItems = context.digest.overdueTasks.slice(0, 1);
+  return blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
+}
+
+function buildBedroomPrimaryItems(context) {
+  if (context.isEvening) {
+    return context.tomorrowItems.slice(0, 6);
+  }
+  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
+  const eventItems = Array.isArray(todaySnapshot?.items)
+    ? todaySnapshot.items.slice(0, 3).map((item) => ({
+        title: item.title,
+        meta: item.time ? `Event · ${item.time}` : 'Event',
+        pill: 'Calendar',
+      }))
+    : [];
+  const taskItems = context.digest.todayTasks.slice(0, 4);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
   return blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
 }

@@ -532,6 +532,15 @@ body, button, .version-tag, .version-tag * {
 .bedroom-layout {
   max-width: 900px;
   margin: 0 auto;
+  gap: 1rem;
+}
+
+.widget-layout-bedroom .card:first-child {
+  border-color: rgba(125, 215, 154, 0.28);
+}
+
+.widget-layout-bedroom .card:first-child .card-header h2 {
+  font-size: 1.1rem;
 }
 
 @media (max-width: 900px) {
@@ -907,9 +916,9 @@ body.version-pressing, body.version-pressing * {
 }
 
 .laundry-summary-grid {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 0.35rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.32rem;
   align-items: stretch;
 }
 
@@ -918,28 +927,29 @@ body.version-pressing, body.version-pressing * {
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 0.3rem 0.45rem;
+  padding: 0.28rem 0.42rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.28rem;
+  gap: 0.26rem;
   min-height: 0;
   min-width: 0;
-  flex: 1 1 0;
   white-space: nowrap;
 }
 
 
 .laundry-stat strong {
-  font-size: 0.9rem;
+  font-size: 1.12rem;
   line-height: 1;
   flex: 0 0 auto;
+  font-weight: 800;
 }
 
 .laundry-stat span {
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.78rem;
   line-height: 1;
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
@@ -994,5 +1004,21 @@ body.version-pressing, body.version-pressing * {
 @media (max-width: 720px) {
   .laundry-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .laundry-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.22rem;
+  }
+  .laundry-stat {
+    padding: 0.24rem 0.32rem;
+  }
+  .laundry-stat span {
+    font-size: 0.72rem;
+  }
+  .laundry-stat strong {
+    font-size: 1rem;
   }
 }
