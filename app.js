@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.7.0-dev';
+const APP_VERSION = 'v0.7.1-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -328,20 +328,33 @@ function maybeAutoMapTaskFields(tasks) {
 }
 
 function taskIsCompleted(task) {
-  const field = appState.config.taskCompletedField;
-  if (!field || !(field in task)) return false;
-  const value = task[field];
-  if (appState.config.useStringCompleted) return String(value) === String(appState.config.taskCompletedValue);
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') return ['true', 'completed', 'done', 'yes'].includes(value.toLowerCase());
-  if (typeof value === 'number') return value === 1;
+  if (!task) return false;
+
+  const candidateValues = [];
+  const configuredField = appState.config.taskCompletedField;
+  if (configuredField && configuredField in task) {
+    candidateValues.push(task[configuredField]);
+  }
+
+  ['completed', 'done', 'is_completed', 'is_done', 'complete'].forEach((field) => {
+    if (field in task) candidateValues.push(task[field]);
+  });
+
+  for (const value of candidateValues) {
+    if (appState.config.useStringCompleted && String(value) === String(appState.config.taskCompletedValue)) return true;
+    if (typeof value === 'boolean' && value) return true;
+    if (typeof value === 'string' && ['true', 'completed', 'done', 'yes', '1'].includes(value.toLowerCase())) return true;
+    if (typeof value === 'number' && value === 1) return true;
+  }
+
+  if (typeof task.status === 'string' && ['done', 'completed'].includes(task.status.toLowerCase())) return true;
   return false;
 }
 
 function taskIsArchived(task) {
   if (!task) return false;
-  if (task.archived === true) return true;
-  if (typeof task.archived === 'string' && task.archived.toLowerCase() === 'true') return true;
+  if (task.archived === true || task.archived === 1) return true;
+  if (typeof task.archived === 'string' && ['true', '1', 'yes'].includes(task.archived.toLowerCase())) return true;
   if (task.archived_at) return true;
   if (typeof task.status === 'string' && task.status.toLowerCase() === 'archived') return true;
   return false;
