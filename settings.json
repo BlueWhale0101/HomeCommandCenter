@@ -1,0 +1,15 @@
+{
+  "supabaseUrl": "https://pssgbrtyhwoumhiynwlj.supabase.co",
+  "supabaseAnonKey": "sb_publishable_Ew7XkaYZV2w9vzFndOAq3w_ND4G6JQM",
+
+  "taskMapping": {
+    "title": "task",
+    "owner": "owner",
+    "dueDate": "due_date",
+    "completed": "completed"
+  },
+
+  "ui": {
+    "refreshSeconds": 60
+  }
+}
