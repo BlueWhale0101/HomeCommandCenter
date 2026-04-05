@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.2-dev';
+const APP_VERSION = 'v0.9.3-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -25,6 +25,7 @@ const DEFAULT_CONFIG = {
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
 const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
+const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -60,6 +61,7 @@ let appState = {
   snapshots: {},
   subscriptions: [],
   connectionStatus: typeof structuredClone === 'function' ? structuredClone(DEFAULT_CONNECTION_STATUS) : JSON.parse(JSON.stringify(DEFAULT_CONNECTION_STATUS)),
+  testTimeOverride: loadTestTimeOverride(),
 };
 
 const screenEl = document.getElementById('screen');
@@ -75,10 +77,46 @@ const devConsoleMetaEl = document.getElementById('dev-console-meta');
 const closeConsoleButton = document.getElementById('close-console-button');
 const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
+const testTimeInput = document.getElementById('test-time-input');
+const setTestTimeButton = document.getElementById('set-test-time-button');
+const clearTestTimeButton = document.getElementById('clear-test-time-button');
 const testConnectionButton = document.getElementById('test-connection-button');
 const connectionStatusGrid = document.getElementById('connection-status-grid');
 
 let bootstrapPromise = null;
+
+
+function getNowDate() {
+  return appState?.testTimeOverride ? new Date(appState.testTimeOverride) : new Date();
+}
+
+function getNowMs() {
+  return getNowDate().getTime();
+}
+
+function loadTestTimeOverride() {
+  try {
+    const value = localStorage.getItem(TEST_TIME_STORAGE);
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTestTimeOverride(value) {
+  try {
+    if (value) localStorage.setItem(TEST_TIME_STORAGE, value);
+    else localStorage.removeItem(TEST_TIME_STORAGE);
+  } catch {}
+}
+
+function currentDateInputValue() {
+  const d = getNowDate();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function initApp() {
   try {
@@ -159,8 +197,8 @@ async function ensureSupabase() {
 
 
 async function waitForSupabaseGlobal(timeoutMs = 6000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  const started = getNowMs();
+  while (getNowMs() - started < timeoutMs) {
     if (window.supabase && typeof window.supabase.createClient === 'function') return window.supabase;
     if (window.__hccSupabaseLoadError) {
       throw new Error('Supabase library failed to load');
@@ -305,7 +343,7 @@ async function refreshAll() {
     ]);
     renderMode();
     renderDevConsole();
-    setStatus(`Showing ${appState.config.mode} mode · Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+    setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
   } catch (error) {
     handleRuntimeActionError('Refresh failed', error);
     renderDevConsole();
@@ -633,11 +671,11 @@ function buildTvHero() {
 
   const date = document.createElement('div');
   date.className = 'tv-date';
-  date.textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  date.textContent = getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
   const timeEl = document.createElement('div');
   timeEl.className = 'tv-clock';
-  timeEl.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  timeEl.textContent = getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
   topRow.append(date, timeEl);
 
@@ -750,7 +788,7 @@ function renderLaundrySummary() {
 
 function buildLaundrySignalItems() {
   const items = [];
-  const now = Date.now();
+  const now = getNowMs();
   const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
   const staleLoads = activeLoads.filter((load) => {
     const movedAt = new Date(load.last_transition_at || load.updated_at || load.created_at).getTime();
@@ -1020,7 +1058,7 @@ function buildCard(title, subtitle, body, extraClass = '') {
 
 function buildTaskDigest() {
   const tasks = normalizeTaskRows();
-  const today = new Date();
+  const today = getNowDate();
   const todayTasks = tasks.filter((task) => task.dueDate && isSameDay(task.dueDate, today));
   const overdueTasks = tasks.filter((task) => task.dueDate && task.dueDate < startOfDay(today));
   const upcomingTasks = tasks.filter((task) => task.dueDate && task.dueDate > endOfDay(today)).slice(0, 8);
@@ -1151,8 +1189,8 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
     return {
       title: task.title,
       meta: [owner, dueMeta].filter(Boolean).join(' · '),
-      pill: task.dueDate && task.dueDate < startOfDay(new Date()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, new Date()) ? 'Today' : fallbackPill,
-      pillClass: task.dueDate && task.dueDate < startOfDay(new Date()) ? 'danger' : '',
+      pill: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
+      pillClass: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : '',
     };
   });
 }
@@ -1167,7 +1205,7 @@ function buildKitchenHeadline(digest) {
 }
 
 function activeDbSignals() {
-  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > new Date());
+  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > getNowDate());
 }
 
 function buildSyntheticLaundrySignals() {
@@ -1430,7 +1468,7 @@ function setupDevConsole() {
   function capture(level, args) {
     const rendered = args.map(renderConsoleArg).join(' ');
     devConsoleEntries.unshift({
-      time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+      time: getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
       level,
       text: rendered,
     });
@@ -1454,7 +1492,40 @@ function setupDevConsole() {
   closeConsoleButton.onclick = (event) => { event.preventDefault(); hideDevConsole(); };
   clearConsoleButton.onclick = (event) => { event.preventDefault(); clearDevConsole(); };
   copyDiagnosticsButton.onclick = (event) => { event.preventDefault(); copyDiagnostics(); };
+  if (testTimeInput) testTimeInput.value = appState.testTimeOverride ? currentDateInputValue() : '';
+  if (setTestTimeButton) setTestTimeButton.onclick = (event) => { event.preventDefault(); applyTestTimeOverride(); };
+  if (clearTestTimeButton) clearTestTimeButton.onclick = (event) => { event.preventDefault(); clearTestTimeOverride(); };
   console.info(`Household Command Center ${APP_VERSION} booting`);
+}
+
+
+function applyTestTimeOverride() {
+  const raw = testTimeInput?.value?.trim();
+  if (!raw) {
+    showToast('Choose a test date and time first', 'error');
+    return;
+  }
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) {
+    showToast('Invalid test date/time', 'error');
+    return;
+  }
+  appState.testTimeOverride = parsed.toISOString();
+  saveTestTimeOverride(appState.testTimeOverride);
+  pushDevLog('info', `Set test time override to ${appState.testTimeOverride}`);
+  showToast('Test time set', 'success');
+  refreshAll().catch((error) => console.error('Refresh after setting test time failed', error));
+  renderDevConsole();
+}
+
+function clearTestTimeOverride() {
+  appState.testTimeOverride = null;
+  saveTestTimeOverride(null);
+  if (testTimeInput) testTimeInput.value = '';
+  pushDevLog('info', 'Cleared test time override.');
+  showToast('Returned to real time', 'success');
+  refreshAll().catch((error) => console.error('Refresh after clearing test time failed', error));
+  renderDevConsole();
 }
 
 function pushDevLog(level, message) {
@@ -1517,7 +1588,8 @@ function buildDiagnosticsText() {
     loadCount: appState.loads.length,
     snapshotTypes: Object.keys(appState.snapshots),
     status: statusLine.textContent,
-    time: new Date().toISOString(),
+    time: getNowDate().toISOString(),
+    testTimeOverride: appState.testTimeOverride,
   };
   const lines = [
     'Household Command Center Diagnostics',
@@ -1615,7 +1687,8 @@ async function runConnectionTest() {
 }
 
 function renderDevConsole() {
-  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length}`;
+  const timeMeta = appState.testTimeOverride ? ` · test time ${new Date(appState.testTimeOverride).toLocaleString()}` : '';
+  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length}${timeMeta}`;
   devConsoleLogEl.replaceChildren();
   if (!devConsoleEntries.length) {
     const empty = document.createElement('div');
@@ -1797,7 +1870,7 @@ function setStatus(text) {
 
 function describeDateContext() {
   const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
-  return weather?.summary || new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  return weather?.summary || getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
 function getSnapshot(type) {
@@ -1810,13 +1883,13 @@ function getSnapshotPayload(type) {
 
 function snapshotFreshnessPill(snapshot, fallback = 'Live') {
   if (!snapshot) return fallback;
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < new Date()) return 'Stale';
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'Stale';
   return fallback;
 }
 
 function snapshotFreshnessClass(snapshot) {
   if (!snapshot) return '';
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < new Date()) return 'warning';
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'warning';
   return '';
 }
 
@@ -1836,14 +1909,14 @@ function formatDate(date) {
 }
 
 function formatTaskTiming(date) {
-  if (isSameDay(date, new Date())) return 'Today';
+  if (isSameDay(date, getNowDate())) return 'Today';
   if (isTomorrow(date)) return 'Tomorrow';
   return formatDate(date);
 }
 
 function relativeTime(value) {
   if (!value) return 'just now';
-  const deltaMs = Date.now() - new Date(value).getTime();
+  const deltaMs = getNowMs() - new Date(value).getTime();
   const mins = Math.round(deltaMs / 60000);
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins} min ago`;
@@ -1870,13 +1943,13 @@ function isSameDay(a, b) {
 }
 
 function isTomorrow(date) {
-  const tomorrow = new Date();
+  const tomorrow = getNowDate();
   tomorrow.setDate(tomorrow.getDate() + 1);
   return isSameDay(date, tomorrow);
 }
 
 function isEvening() {
-  const hour = new Date().getHours();
+  const hour = getNowDate().getHours();
   return hour >= 16;
 }
 

@@ -27,7 +27,7 @@
     <main id="screen" class="screen"></main>
   </div>
 
-  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.9.2-dev</button>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.9.3-dev</button>
 
   <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
     <div class="dev-console-header">
@@ -41,7 +41,16 @@
         <button id="close-console-button" class="secondary-button">Close</button>
       </div>
     </div>
-    <div id="dev-console-log" class="dev-console-log"></div>
+    
+<div class="dev-console-tools">
+  <label class="dev-console-tool">
+    <span>Set test time</span>
+    <input id="test-time-input" type="datetime-local" />
+  </label>
+  <button id="set-test-time-button" class="secondary-button">Use test time</button>
+  <button id="clear-test-time-button" class="secondary-button">Use real time</button>
+</div>
+<div id="dev-console-log" class="dev-console-log"></div>
   </aside>
 
   <dialog id="settings-dialog">

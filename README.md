@@ -136,12 +136,18 @@ That keeps the widget layer simple and avoids coupling view code directly to Goo
 - Add Google Calendar snapshot sync
 
 - v0.8.4-dev: smaller blue quick-action buttons, toast feedback, tap animation, cleaner quick-view dialog.
-- v0.9.2-dev: first laundry polish pass with a workflow summary, stronger load rows, and laundry-specific recent activity.
+- v0.9.3-dev: first laundry polish pass with a workflow summary, stronger load rows, and laundry-specific recent activity.
 
 
-## v0.9.2-dev notes
+## v0.9.3-dev notes
 - Laundry state colors increased for clearer scanning.
 - Laundry summary counters compacted and the Done counter removed.
 - Replaced Recent Laundry Activity with workflow-first laundry signals:
   - flag when an active load has not moved for 90+ minutes
   - flag when no laundry activity has happened for over a day
+
+
+## v0.9.3 notes
+- Laundry counters compressed into a single no-wrap horizontal workflow row.
+- Laundry page shows only actionable laundry signals, while generic in-progress laundry signals continue to feed other views.
+- Developer console now supports a test time override for simulating future behaviors.
