@@ -31,9 +31,21 @@ body.tv-mode {
 }
 
 body.tv-mode #app {
-  max-width: 1440px;
-  padding-top: 0.75rem;
+  max-width: 1680px;
+  min-height: 100vh;
+  padding-top: 0.6rem;
+  padding-bottom: 4.5rem;
 }
+
+body.tv-mode .topbar {
+  padding-top: 0.35rem;
+  padding-bottom: 0.8rem;
+}
+
+body.tv-mode .screen {
+  min-height: calc(100vh - 8rem);
+}
+
 
 button,
 input,
@@ -372,9 +384,11 @@ body, button, .version-tag, .version-tag * {
 
 .tv-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
-  gap: 1.1rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.22fr) minmax(360px, 0.78fr);
+  gap: 1.35rem;
+  align-items: stretch;
+  min-height: calc(100vh - 7.5rem);
+  grid-auto-rows: minmax(0, auto);
 }
 
 .tv-layout > :first-child {
@@ -385,78 +399,112 @@ body, button, .version-tag, .version-tag * {
   grid-column: 1 / -1;
 }
 
+.tv-layout > :nth-child(2),
+.tv-layout > :nth-child(3) {
+  min-height: 0;
+}
+
+.tv-layout > :nth-child(2) .card-body,
+.tv-layout > :nth-child(3) .card-body {
+  min-height: 100%;
+}
+
 .tv-hero {
   display: grid;
-  gap: 0.85rem;
-  padding: 1.15rem 1.2rem;
+  gap: 1.05rem;
+  padding: 1.45rem 1.5rem 1.3rem;
+  min-height: 17rem;
 }
 
 .tv-hero-top {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 .tv-context-row {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 1.2rem;
   align-items: center;
   flex-wrap: wrap;
 }
 
 .tv-date {
-  font-size: clamp(1.75rem, 2.25vw, 2.3rem);
+  font-size: clamp(2rem, 2.7vw, 2.8rem);
   font-weight: 800;
 }
 
 .tv-clock {
   margin-left: auto;
   text-align: right;
-  font-size: clamp(3.8rem, 6vw, 6.6rem);
-  line-height: 0.95;
+  font-size: clamp(4.8rem, 7.5vw, 8rem);
+  line-height: 0.9;
   font-weight: 900;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.05em;
 }
 
 .tv-weather {
-  font-size: clamp(1.1rem, 1.7vw, 1.45rem);
+  font-size: clamp(1.2rem, 1.9vw, 1.7rem);
   color: var(--muted);
 }
 
 .tv-next {
-  font-size: clamp(1rem, 1.55vw, 1.3rem);
+  font-size: clamp(1.12rem, 1.8vw, 1.55rem);
   font-weight: 700;
   color: var(--text);
 }
 
 .tv-freshness {
-  font-size: 0.95rem;
+  font-size: 1rem;
+}
+
+.tv-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 24rem;
+  padding: 1.2rem 1.15rem 1.15rem;
+}
+
+.tv-card .card-body {
+  flex: 1;
 }
 
 .tv-card .card-header h2 {
-  font-size: clamp(1.2rem, 1.9vw, 1.7rem);
+  font-size: clamp(1.45rem, 2.3vw, 2rem);
 }
 
 .tv-card .card-header {
-  margin-bottom: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.tv-card .list {
+  gap: 0.85rem;
 }
 
 .tv-card .list-item,
 .tv-card .focus-text,
 .tv-card .empty-state,
 .tv-card .card-subtitle {
-  font-size: clamp(1rem, 1.3vw, 1.3rem);
+  font-size: clamp(1.08rem, 1.48vw, 1.45rem);
 }
 
 .tv-card .list-item {
-  padding: 1rem 1rem;
-  border-radius: 18px;
+  padding: 1.1rem 1.05rem;
+  border-radius: 20px;
 }
 
 .tv-card .pill {
-  font-size: 0.82rem;
+  font-size: 0.9rem;
+}
+
+.tv-layout > :last-child.tv-card {
+  min-height: 9.25rem;
+}
+
+.tv-layout > :last-child .focus-text {
+  font-size: clamp(1.7rem, 2.5vw, 2.4rem);
 }
 
 .bedroom-layout {
