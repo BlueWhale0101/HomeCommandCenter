@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.5.5-dev';
+const APP_VERSION = 'v0.5.6-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -68,8 +68,6 @@ const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
 
 let bootstrapPromise = null;
-
-initApp();
 
 function initApp() {
   try {
@@ -903,6 +901,12 @@ async function advanceLoad(load) {
 function setupVersionUi() {
   versionTag.textContent = APP_VERSION;
   versionTag.title = 'Long press to open developer console';
+  versionTag.setAttribute('unselectable', 'on');
+  versionTag.setAttribute('draggable', 'false');
+  versionTag.style.userSelect = 'none';
+  versionTag.style.webkitUserSelect = 'none';
+  versionTag.style.webkitTouchCallout = 'none';
+  versionTag.style.webkitTapHighlightColor = 'transparent';
 }
 
 function setupVersionBadgeLongPress() {
@@ -1382,3 +1386,17 @@ async function registerServiceWorker() {
 }
 
 resetAutoRefreshTimer();
+
+
+let __hccInitStarted = false;
+function scheduleInitApp() {
+  if (__hccInitStarted) return;
+  __hccInitStarted = true;
+  initApp();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', scheduleInitApp, { once: true });
+} else {
+  scheduleInitApp();
+}

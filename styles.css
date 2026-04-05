@@ -102,6 +102,8 @@ button {
   -webkit-touch-callout: none !important;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
 }
 
 .title-row .version-tag {
@@ -463,4 +465,19 @@ body.version-pressing, body.version-pressing * {
 .version-tag:focus,
 .version-tag:active {
   outline: none;
+}
+
+.version-tag, .version-tag *, body.version-pressing, body.version-pressing * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+
+.version-tag, .version-tag * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-user-drag: none !important;
+  -webkit-tap-highlight-color: transparent !important;
 }
