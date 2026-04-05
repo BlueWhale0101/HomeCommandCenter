@@ -481,3 +481,61 @@ body.version-pressing, body.version-pressing * {
   -webkit-user-drag: none !important;
   -webkit-tap-highlight-color: transparent !important;
 }
+
+
+.settings-status-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.settings-status-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.connection-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.status-chip {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+}
+
+.status-chip span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.status-chip strong {
+  font-size: 0.98rem;
+}
+
+.status-chip.ok {
+  border-color: rgba(125, 215, 154, 0.36);
+  background: rgba(84, 187, 119, 0.12);
+}
+
+.status-chip.warn {
+  border-color: rgba(255, 213, 124, 0.36);
+  background: rgba(255, 213, 124, 0.12);
+}
+
+.status-chip.error {
+  border-color: rgba(255, 139, 139, 0.36);
+  background: rgba(255, 139, 139, 0.12);
+}
+
+.status-chip.unknown {
+  border-color: rgba(181, 220, 189, 0.16);
+  background: rgba(255,255,255,0.02);
+}

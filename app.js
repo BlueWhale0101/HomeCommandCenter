@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.6.0-dev';
+const APP_VERSION = 'v0.6.1-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -41,6 +41,13 @@ const LOAD_STATUS_ORDER = ['washing', 'drying', 'ready', 'done'];
 
 let autoRefreshTimer = null;
 
+const DEFAULT_CONNECTION_STATUS = {
+  supabase: { level: 'unknown', text: 'Not tested' },
+  tasks: { level: 'unknown', text: 'Not tested' },
+  deviceProfile: { level: 'unknown', text: 'Not tested' },
+  realtime: { level: 'unknown', text: 'Not tested' },
+};
+
 let appState = {
   config: loadConfig(),
   supabase: null,
@@ -52,6 +59,7 @@ let appState = {
   loads: [],
   snapshots: {},
   subscriptions: [],
+  connectionStatus: typeof structuredClone === 'function' ? structuredClone(DEFAULT_CONNECTION_STATUS) : JSON.parse(JSON.stringify(DEFAULT_CONNECTION_STATUS)),
 };
 
 const screenEl = document.getElementById('screen');
@@ -67,6 +75,8 @@ const devConsoleMetaEl = document.getElementById('dev-console-meta');
 const closeConsoleButton = document.getElementById('close-console-button');
 const clearConsoleButton = document.getElementById('clear-console-button');
 const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button');
+const testConnectionButton = document.getElementById('test-connection-button');
+const connectionStatusGrid = document.getElementById('connection-status-grid');
 
 let bootstrapPromise = null;
 
@@ -1162,6 +1172,90 @@ function buildDiagnosticsText() {
   return lines.join('\n');
 }
 
+function freshConnectionStatus() {
+  return typeof structuredClone === 'function'
+    ? structuredClone(DEFAULT_CONNECTION_STATUS)
+    : JSON.parse(JSON.stringify(DEFAULT_CONNECTION_STATUS));
+}
+
+function setConnectionStatus(key, level, textValue) {
+  appState.connectionStatus[key] = { level, text: textValue };
+  renderConnectionStatusPanel();
+}
+
+function renderConnectionStatusPanel() {
+  if (!connectionStatusGrid) return;
+  const rows = [
+    ['supabase', 'Supabase'],
+    ['tasks', 'Tasks'],
+    ['deviceProfile', 'Device profile'],
+    ['realtime', 'Realtime'],
+  ];
+  connectionStatusGrid.replaceChildren();
+  for (const [key, label] of rows) {
+    const state = appState.connectionStatus[key] || { level: 'unknown', text: 'Not tested' };
+    const chip = document.createElement('div');
+    chip.className = `status-chip ${state.level || 'unknown'}`;
+    const title = document.createElement('span');
+    title.textContent = label;
+    const value = document.createElement('strong');
+    value.textContent = state.text || 'Not tested';
+    chip.append(title, value);
+    connectionStatusGrid.append(chip);
+  }
+}
+
+async function runConnectionTest() {
+  appState.connectionStatus = freshConnectionStatus();
+  renderConnectionStatusPanel();
+
+  const config = readSettingsUi();
+  if (!config.supabaseUrl || !config.supabaseKey) {
+    setConnectionStatus('supabase', 'error', 'Missing URL or key');
+    setConnectionStatus('tasks', 'unknown', 'Waiting for config');
+    setConnectionStatus('deviceProfile', 'unknown', 'Waiting for config');
+    setConnectionStatus('realtime', 'unknown', 'Waiting for config');
+    pushDevLog('warn', 'Connection test skipped: missing Supabase URL/key.');
+    return;
+  }
+
+  try {
+    const client = window.supabase.createClient(config.supabaseUrl, config.supabaseKey);
+    setConnectionStatus('supabase', 'ok', 'Client initialized');
+
+    let tasksOk = false;
+    try {
+      const { error } = await client.from(config.taskTable || 'tasks').select('id', { head: true, count: 'exact' }).limit(1);
+      if (error) throw error;
+      tasksOk = true;
+      setConnectionStatus('tasks', 'ok', `Read ${config.taskTable || 'tasks'}`);
+    } catch (error) {
+      setConnectionStatus('tasks', 'error', error.message || 'Task query failed');
+    }
+
+    try {
+      const { error } = await client.from('device_profiles').select('id', { head: true, count: 'exact' }).limit(1);
+      if (error) throw error;
+      setConnectionStatus('deviceProfile', 'ok', 'device_profiles readable');
+    } catch (error) {
+      setConnectionStatus('deviceProfile', 'error', error.message || 'device_profiles query failed');
+    }
+
+    if (tasksOk) {
+      setConnectionStatus('realtime', 'ok', 'Configured in app');
+    } else {
+      setConnectionStatus('realtime', 'warn', 'Check task access first');
+    }
+    pushDevLog('info', 'Connection test completed.');
+  } catch (error) {
+    setConnectionStatus('supabase', 'error', error?.message || 'Could not initialize client');
+    setConnectionStatus('tasks', 'unknown', 'Not tested');
+    setConnectionStatus('deviceProfile', 'unknown', 'Not tested');
+    setConnectionStatus('realtime', 'unknown', 'Not tested');
+    pushDevLog('error', `Connection test failed: ${error?.message || error}`);
+  }
+}
+
 function renderDevConsole() {
   devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length}`;
   devConsoleLogEl.replaceChildren();
@@ -1182,6 +1276,7 @@ function renderDevConsole() {
 
 function setupSettingsUi() {
   fillSettingsForm();
+  renderConnectionStatusPanel();
 }
 
 function fillSettingsForm() {
@@ -1197,6 +1292,7 @@ function fillSettingsForm() {
   document.getElementById('task-completed-value').value = appState.config.taskCompletedValue;
   document.getElementById('use-string-completed').checked = appState.config.useStringCompleted;
   document.getElementById('ui-refresh-seconds').value = appState.config.uiRefreshSeconds;
+  renderConnectionStatusPanel();
 }
 
 function readSettingsUi() {
@@ -1226,6 +1322,9 @@ function setupButtons() {
     } catch (error) {
       handleRuntimeActionError('Refresh failed', error);
     }
+  };
+  testConnectionButton.onclick = async () => {
+    await runConnectionTest();
   };
   saveSettingsButton.onclick = async (event) => {
     event.preventDefault();
@@ -1270,6 +1369,7 @@ function openSettingsDialog() {
     fillSettingsForm();
     if (typeof settingsDialog.showModal === 'function') settingsDialog.showModal();
     else settingsDialog.setAttribute('open', 'open');
+    runConnectionTest().catch((error) => pushDevLog('warn', `Connection panel test failed: ${error?.message || error}`));
   } catch (error) {
     handleRuntimeActionError('Could not open settings', error);
   }

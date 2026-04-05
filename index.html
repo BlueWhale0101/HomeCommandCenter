@@ -27,7 +27,7 @@
     <main id="screen" class="screen"></main>
   </div>
 
-  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.5.6-dev</button>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.6.1-dev</button>
 
   <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
     <div class="dev-console-header">
@@ -115,6 +115,22 @@
       <section>
         <label for="ui-refresh-seconds">UI refresh seconds</label>
         <input id="ui-refresh-seconds" type="number" min="15" step="5" placeholder="60" />
+      </section>
+
+      <section class="settings-status-panel">
+        <div class="settings-status-header">
+          <div>
+            <strong>Connection status</strong>
+            <div class="muted">Quick check of config and key tables</div>
+          </div>
+          <button id="test-connection-button" type="button" class="secondary-button">Run test</button>
+        </div>
+        <div id="connection-status-grid" class="connection-status-grid">
+          <div class="status-chip unknown"><span>Supabase</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Tasks</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Device profile</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Realtime</span><strong>Not tested</strong></div>
+        </div>
       </section>
 
       <menu class="dialog-actions">
