@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.4.0-dev';
+const APP_VERSION = 'v0.5.0-dev';
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
@@ -57,7 +57,6 @@ const refreshButton = document.getElementById('refresh-button');
 const settingsDialog = document.getElementById('settings-dialog');
 const saveSettingsButton = document.getElementById('save-settings');
 const versionTag = document.getElementById('version-tag');
-const devConsoleButton = document.getElementById('dev-console-button');
 const devConsoleEl = document.getElementById('dev-console');
 const devConsoleLogEl = document.getElementById('dev-console-log');
 const devConsoleMetaEl = document.getElementById('dev-console-meta');
@@ -71,13 +70,14 @@ setupDevConsole();
 setupSettingsUi();
 setupButtons();
 registerServiceWorker();
-bootstrap();
+bootstrap().catch(handleFatalStartupError);
 
 async function bootstrap() {
   setStatus('Loading household command center…');
   await ensureSupabase();
   resetAutoRefreshTimer();
   if (!appState.supabase) {
+    setStatus('Supabase settings needed.');
     renderEmptyShell('Open Settings and add your Supabase URL and anon key to start.');
     return;
   }
@@ -141,18 +141,26 @@ async function loadDeviceProfile() {
 }
 
 async function refreshAll() {
-  if (!appState.supabase) return;
+  if (!appState.supabase) {
+    setStatus('Supabase settings needed.');
+    return;
+  }
   setStatus(`Refreshing ${appState.config.mode} view…`);
-  await Promise.all([
-    fetchTasks(),
-    fetchSignals(),
-    fetchLoads(),
-    fetchSnapshots(),
-    fetchRecentLogs(),
-  ]);
-  renderMode();
-  renderDevConsole();
-  setStatus(`Showing ${appState.config.mode} mode · Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  try {
+    await Promise.all([
+      fetchTasks(),
+      fetchSignals(),
+      fetchLoads(),
+      fetchSnapshots(),
+      fetchRecentLogs(),
+    ]);
+    renderMode();
+    renderDevConsole();
+    setStatus(`Showing ${appState.config.mode} mode · Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  } catch (error) {
+    handleRuntimeActionError('Refresh failed', error);
+    renderDevConsole();
+  }
 }
 
 function fieldExistsOnTask(fieldName, sample) {
@@ -1047,9 +1055,14 @@ function readSettingsUi() {
 }
 
 function setupButtons() {
-  settingsButton.addEventListener('click', () => settingsDialog.showModal());
-  refreshButton.addEventListener('click', refreshAll);
-  devConsoleButton.addEventListener('click', toggleDevConsole);
+  settingsButton.addEventListener('click', openSettingsDialog);
+  refreshButton.addEventListener('click', async () => {
+    try {
+      await refreshAll();
+    } catch (error) {
+      handleRuntimeActionError('Refresh failed', error);
+    }
+  });
   closeConsoleButton.addEventListener('click', hideDevConsole);
   clearConsoleButton.addEventListener('click', clearDevConsole);
   copyDiagnosticsButton.addEventListener('click', copyDiagnostics);
@@ -1059,7 +1072,7 @@ function setupButtons() {
     saveConfig(appState.config);
     fillSettingsForm();
     resetAutoRefreshTimer();
-    settingsDialog.close();
+    closeSettingsDialog();
     clearSubscriptions();
     await ensureSupabase();
     await upsertDeviceProfile();
@@ -1088,6 +1101,37 @@ async function upsertDeviceProfile() {
     return;
   }
   appState.deviceProfile = data;
+}
+
+
+function openSettingsDialog() {
+  try {
+    fillSettingsForm();
+    if (typeof settingsDialog.showModal === 'function') settingsDialog.showModal();
+    else settingsDialog.setAttribute('open', 'open');
+  } catch (error) {
+    handleRuntimeActionError('Could not open settings', error);
+  }
+}
+
+function closeSettingsDialog() {
+  try {
+    if (typeof settingsDialog.close === 'function') settingsDialog.close();
+    else settingsDialog.removeAttribute('open');
+  } catch (error) {
+    handleRuntimeActionError('Could not close settings', error);
+  }
+}
+
+function handleRuntimeActionError(prefix, error) {
+  console.error(error);
+  setStatus(`${prefix}: ${error?.message || error}`);
+}
+
+function handleFatalStartupError(error) {
+  console.error('Fatal startup error', error);
+  setStatus(`Startup error: ${error?.message || error}`);
+  renderEmptyShell('Startup failed. Long-press the version badge for diagnostics, then open Settings and verify your Supabase URL/key and field mapping.');
 }
 
 function renderEmptyShell(message) {
