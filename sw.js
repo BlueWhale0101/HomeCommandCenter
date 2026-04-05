@@ -1,4 +1,4 @@
-const CACHE_NAME = 'household-command-center-v0.5.1-dev';
+const CACHE_NAME = 'household-command-center-v0.5.2-dev';
 const ASSETS = [
   './',
   './index.html',

@@ -69,26 +69,40 @@ button {
 }
 
 .version-tag {
-  position: fixed;
-  right: 1rem;
-  bottom: 1rem;
-  z-index: 950;
+  position: fixed !important;
+  inset: auto 1rem 1rem auto !important;
+  z-index: 1200;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.25rem;
+  min-height: 2.5rem;
+  min-width: 5.5rem;
+  margin: 0 !important;
   border-radius: 999px;
-  padding: 0.35rem 0.85rem;
-  background: rgba(8, 15, 11, 0.92);
-  border: 1px solid rgba(181, 220, 189, 0.2);
+  padding: 0.45rem 0.95rem;
+  background: rgba(8, 15, 11, 0.96);
+  border: 1px solid rgba(181, 220, 189, 0.24);
   color: var(--accent);
   font-size: 0.85rem;
   font-weight: 700;
+  line-height: 1;
   box-shadow: 0 16px 36px rgba(0,0,0,0.34);
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+.title-row .version-tag {
+  position: fixed !important;
+}
+
+body, button, .version-tag, .version-tag * {
   user-select: none;
   -webkit-user-select: none;
-  -webkit-touch-callout: none;
-  touch-action: manipulation;
 }
 
 
@@ -421,3 +435,5 @@ code {
     bottom: 0.75rem;
   }
 }
+
+.version-tag:focus, .version-tag:active { outline: none; }

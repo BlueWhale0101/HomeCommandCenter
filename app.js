@@ -1,4 +1,5 @@
-const APP_VERSION = 'v0.5.1-dev';
+const APP_VERSION = 'v0.5.2-dev';
+const BOOT_TIMEOUT_MS = 8000;
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
@@ -68,7 +69,7 @@ initApp();
 
 function initApp() {
   try {
-    setStatus('Loading household command center…');
+    setStatus('Initializing app shell…');
     setupVersionUi();
     setupVersionBadgeLongPress();
     setupDevConsole();
@@ -82,7 +83,7 @@ function initApp() {
 }
 
 async function bootstrap() {
-  setStatus('Loading household command center…');
+  setStatus('Connecting to Supabase…');
   await ensureSupabase();
   resetAutoRefreshTimer();
   if (!appState.supabase) {
@@ -90,9 +91,19 @@ async function bootstrap() {
     renderEmptyShell('Open Settings and add your Supabase URL and anon key to start.');
     return;
   }
-  await loadDeviceProfile();
-  await refreshAll();
+  setStatus('Loading device profile…');
+  await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+  setStatus('Loading household data…');
+  await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
   bindRealtime();
+}
+
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => window.setTimeout(() => reject(new Error(label)), ms)),
+  ]);
 }
 
 async function ensureSupabase() {
@@ -888,12 +899,16 @@ function setupVersionBadgeLongPress() {
   const cancel = () => {
     clearTimeout(pressTimer);
   };
-  versionTag.addEventListener('pointerdown', start);
+  versionTag.addEventListener('pointerdown', start, { passive: false });
   versionTag.addEventListener('pointerup', cancel);
+  versionTag.addEventListener('touchstart', start, { passive: false });
+  versionTag.addEventListener('touchend', cancel);
+  versionTag.addEventListener('touchcancel', cancel);
   versionTag.addEventListener('pointermove', cancel);
   versionTag.addEventListener('pointerleave', cancel);
   versionTag.addEventListener('pointercancel', cancel);
   versionTag.addEventListener('contextmenu', (event) => event.preventDefault());
+  versionTag.addEventListener('selectstart', (event) => event.preventDefault());
   versionTag.addEventListener('mouseup', () => {
     if (window.getSelection) {
       const selection = window.getSelection();
@@ -901,6 +916,7 @@ function setupVersionBadgeLongPress() {
     }
   });
   versionTag.addEventListener('click', (event) => {
+    event.preventDefault();
     if (longPressed) {
       event.preventDefault();
       event.stopPropagation();
@@ -1152,6 +1168,7 @@ function handleFatalStartupError(error) {
   console.error('Fatal startup error', error);
   setStatus(`Startup error: ${error?.message || error}`);
   renderEmptyShell('Startup failed. Long-press the version badge for diagnostics, then open Settings and verify your Supabase URL/key and field mapping.');
+  renderDevConsole();
 }
 
 function renderEmptyShell(message) {
