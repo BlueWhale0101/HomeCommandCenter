@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.8.4-dev';
+const APP_VERSION = 'v0.9.0-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -536,7 +536,7 @@ const MODE_LAYOUTS = {
   },
   laundry: {
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
-    widgets: ['laundryLoads', 'laundrySignals'],
+    widgets: ['laundrySummary', 'laundryLoads', 'laundryRecent', 'laundrySignals'],
   },
   bedroom: {
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
@@ -613,7 +613,9 @@ const WIDGETS = {
   tvToday: (context) => buildCard('Today', '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
   tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
   tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
-  laundryLoads: () => buildCard('Laundry', 'Track each load at a glance', renderLaundryLoads()),
+  laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
+  laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
+  laundryRecent: () => buildCard('Recent Laundry Activity', '', renderLaundryRecent()),
   laundrySignals: (context) => buildCard('Light House Signals', '', renderList(context.signals.slice(0, 2).map(signalToItem), 'Laundry is the main thing here.')),
   bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(context.isEvening ? context.tomorrowItems : context.digest.todayTasks.slice(0, 5), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
@@ -694,37 +696,99 @@ function buildQuickActionsCard() {
   return buildCard('Quick Actions', 'One tap, then done', wrap, 'kitchen-quick-actions-card');
 }
 
+
+function loadStatusRank(status) {
+  const order = { ready: 0, drying: 1, washing: 2, done: 3 };
+  return order[status] ?? 9;
+}
+
+function loadNextStep(status) {
+  if (status === 'washing') return 'Next: move to dryer';
+  if (status === 'drying') return 'Next: mark ready for folding';
+  if (status === 'ready') return 'Next: mark done';
+  return 'Done';
+}
+
+function renderLaundrySummary() {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'laundry-summary';
+
+  const counts = { washing: 0, drying: 0, ready: 0, done: 0 };
+  for (const load of appState.loads) {
+    if (load.archived_at) continue;
+    if (counts[load.status] !== undefined) counts[load.status] += 1;
+  }
+
+  const addButton = document.createElement('button');
+  addButton.className = 'primary-button laundry-start-button';
+  addButton.textContent = 'Start new load';
+  addButton.addEventListener('click', () => createLoad(addButton));
+  wrapper.append(addButton);
+
+  const grid = document.createElement('div');
+  grid.className = 'laundry-summary-grid';
+  const items = [
+    ['Washing', counts.washing, 'washing'],
+    ['Drying', counts.drying, 'drying'],
+    ['Ready', counts.ready, 'ready'],
+    ['Done', counts.done, 'done'],
+  ];
+  for (const [label, value, status] of items) {
+    const chip = document.createElement('div');
+    chip.className = `laundry-stat status-${status}`;
+    chip.innerHTML = `<strong>${value}</strong><span>${label}</span>`;
+    grid.append(chip);
+  }
+  wrapper.append(grid);
+
+  const hint = document.createElement('div');
+  hint.className = 'laundry-tip muted';
+  hint.textContent = counts.ready
+    ? 'You have at least one load ready for folding.'
+    : 'Tap any load below to move it to the next step.';
+  wrapper.append(hint);
+  return wrapper;
+}
+
+function renderLaundryRecent() {
+  const laundryLogs = appState.logs.filter((log) => /laundry/i.test(log.event_type || '') || log.location === 'laundry');
+  return renderList(laundryLogs.slice(0, 4).map(logToItem), 'No recent laundry activity yet.');
+}
+
 function renderLaundryLoads() {
   const wrapper = document.createElement('div');
   wrapper.className = 'list';
 
-  const loads = [...appState.loads];
+  const loads = [...appState.loads]
+    .filter((load) => !load.archived_at && load.status !== 'done')
+    .sort((a, b) => {
+      const byStatus = loadStatusRank(a.status) - loadStatusRank(b.status);
+      if (byStatus !== 0) return byStatus;
+      return new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at);
+    });
+
   if (!loads.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = 'No active loads right now.';
     wrapper.append(empty);
-  } else {
-    for (const load of loads) {
-      const row = document.createElement('button');
-      row.className = 'load-row load-button';
-      row.innerHTML = `
-        <div>
-          <div class="list-item-title">${escapeHtml(load.label || `Load ${load.id.slice(0, 4)}`)}</div>
-          <div class="list-item-meta">Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
-        </div>
-        <span class="pill">${escapeHtml(capitalize(load.status))}</span>
-      `;
-      row.addEventListener('click', () => advanceLoad(load));
-      wrapper.append(row);
-    }
+    return wrapper;
   }
 
-  const addButton = document.createElement('button');
-  addButton.className = 'primary-button';
-  addButton.textContent = 'Start new load';
-  addButton.addEventListener('click', createLoad);
-  wrapper.append(addButton);
+  for (const load of loads) {
+    const row = document.createElement('button');
+    row.className = `load-row load-button status-${load.status}`;
+    row.innerHTML = `
+      <div class="load-row-main">
+        <div class="list-item-title">${escapeHtml(load.label || `Load ${load.id.slice(0, 4)}`)}</div>
+        <div class="list-item-meta">${loadNextStep(load.status)} · Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
+      </div>
+      <span class="pill">${escapeHtml(capitalize(load.status))}</span>
+    `;
+    row.addEventListener('click', () => advanceLoad(load, row));
+    wrapper.append(row);
+  }
+
   return wrapper;
 }
 
@@ -1173,7 +1237,7 @@ async function createQuickLog(item, button) {
   }
 }
 
-async function createLoad() {
+async function createLoad(button = null) {
   try {
     const payload = {
       label: null,
@@ -1184,14 +1248,17 @@ async function createLoad() {
     };
     const { error } = await appState.supabase.from('laundry_loads').insert(payload);
     if (error) throw error;
+    pulseButton(button);
+    showToast('Started new laundry load', 'success');
     setStatus('Started a new laundry load.');
   } catch (error) {
     console.error(error);
+    showToast('Could not start laundry load', 'error');
     setStatus(`Could not start load: ${error.message}`);
   }
 }
 
-async function advanceLoad(load) {
+async function advanceLoad(load, button = null) {
   try {
     const nextStatus = LOAD_STATUS_ORDER[Math.min(LOAD_STATUS_ORDER.indexOf(load.status) + 1, LOAD_STATUS_ORDER.length - 1)];
     const payload = {
@@ -1202,9 +1269,12 @@ async function advanceLoad(load) {
     };
     const { error } = await appState.supabase.from('laundry_loads').update(payload).eq('id', load.id);
     if (error) throw error;
+    pulseButton(button);
+    showToast(`Moved load to ${capitalize(nextStatus)}`, 'success');
     setStatus(`Laundry load moved to ${nextStatus}.`);
   } catch (error) {
     console.error(error);
+    showToast('Could not update laundry load', 'error');
     setStatus(`Could not update load: ${error.message}`);
   }
 }

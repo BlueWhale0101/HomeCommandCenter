@@ -885,3 +885,80 @@ body.version-pressing, body.version-pressing * {
   border-color: rgba(255, 139, 139, 0.28);
   background: rgba(58, 20, 20, 0.96);
 }
+
+
+.widget-layout-laundry {
+  max-width: 980px;
+}
+
+.laundry-summary-card .card-body,
+.laundry-loads-card .card-body {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.laundry-summary {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.laundry-start-button {
+  width: 100%;
+}
+
+.laundry-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.laundry-stat {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.85rem 0.9rem;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.laundry-stat strong {
+  font-size: 1.45rem;
+}
+
+.laundry-stat span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.laundry-tip {
+  font-size: 0.95rem;
+}
+
+.load-row {
+  width: 100%;
+  text-align: left;
+}
+
+.load-row-main {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.load-row.status-ready {
+  border-color: rgba(255, 193, 7, 0.4);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.load-row.status-drying {
+  border-color: rgba(125, 215, 154, 0.28);
+}
+
+.load-row.status-washing {
+  border-color: rgba(64, 162, 255, 0.28);
+}
+
+@media (max-width: 720px) {
+  .laundry-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
