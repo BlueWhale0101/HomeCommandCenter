@@ -1055,3 +1055,57 @@ body.version-pressing, body.version-pressing * {
 .widget-layout-bedroom .card {
   padding: 1rem;
 }
+
+
+.calendar-settings-section {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.settings-section-heading {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.calendar-settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.google-calendar-accounts {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.calendar-account-card {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  border-radius: 16px;
+  padding: 0.8rem 0.9rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.calendar-account-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.calendar-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.calendar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+}
+
+.compact-empty {
+  padding: 0.75rem 0.9rem;
+}

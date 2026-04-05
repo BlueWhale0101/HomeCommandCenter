@@ -27,7 +27,7 @@
     <main id="screen" class="screen"></main>
   </div>
 
-  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.9.7-dev</button>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v1.0.0-dev</button>
 
   <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
     <div class="dev-console-header">
@@ -126,6 +126,17 @@
         <input id="ui-refresh-seconds" type="number" min="15" step="5" placeholder="60" />
       </section>
 
+      <section class="calendar-settings-section">
+        <div class="settings-section-heading">Google Calendar</div>
+        <label for="google-client-id">Google OAuth client ID</label>
+        <input id="google-client-id" type="text" placeholder="Paste your Google web client ID" />
+        <div class="calendar-settings-actions">
+          <button id="connect-google-account-button" type="button" class="secondary-button">Add Google account</button>
+        </div>
+        <div class="muted">Connect one account at a time, then choose which calendars should appear in the household views.</div>
+        <div id="google-calendar-accounts" class="google-calendar-accounts"></div>
+      </section>
+
       <section class="settings-status-panel">
         <div class="settings-status-header">
           <div>
@@ -190,6 +201,7 @@
     }, 4000);
   </script>
   <script id="supabase-cdn" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="window.__hccSupabaseLoadError=true;"></script>
+  <script id="google-gis-cdn" src="https://accounts.google.com/gsi/client" async defer onerror="window.__hccGoogleLoadError=true;"></script>
   <script src="app.js" defer></script>
 </body>
 </html>

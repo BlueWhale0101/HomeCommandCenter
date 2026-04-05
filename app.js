@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.7-dev';
+const APP_VERSION = 'v1.0.0-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -20,12 +20,14 @@ const DEFAULT_CONFIG = {
   calendarTodaySnapshotType: 'calendar_today',
   calendarTomorrowSnapshotType: 'calendar_tomorrow',
   uiRefreshSeconds: 60,
+  googleClientId: '',
 };
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
 const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
+const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -62,6 +64,7 @@ let appState = {
   subscriptions: [],
   connectionStatus: typeof structuredClone === 'function' ? structuredClone(DEFAULT_CONNECTION_STATUS) : JSON.parse(JSON.stringify(DEFAULT_CONNECTION_STATUS)),
   testTimeOverride: loadTestTimeOverride(),
+  calendarAccounts: loadCalendarAccounts(),
 };
 
 const screenEl = document.getElementById('screen');
@@ -82,6 +85,9 @@ const setTestTimeButton = document.getElementById('set-test-time-button');
 const clearTestTimeButton = document.getElementById('clear-test-time-button');
 const testConnectionButton = document.getElementById('test-connection-button');
 const connectionStatusGrid = document.getElementById('connection-status-grid');
+const googleClientIdInput = document.getElementById('google-client-id');
+const connectGoogleAccountButton = document.getElementById('connect-google-account-button');
+const googleCalendarAccountsEl = document.getElementById('google-calendar-accounts');
 
 let bootstrapPromise = null;
 
@@ -239,6 +245,7 @@ function normalizeExternalConfig(input) {
     taskTitleField: taskMapping.title || input.taskTitleField || DEFAULT_CONFIG.taskTitleField,
     taskCompletedField: taskMapping.completed || input.taskCompletedField || DEFAULT_CONFIG.taskCompletedField,
     uiRefreshSeconds: Math.max(15, Number(ui.refreshSeconds || input.uiRefreshSeconds || DEFAULT_CONFIG.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds),
+    googleClientId: String(input.googleClientId || input.googleOAuthClientId || DEFAULT_CONFIG.googleClientId || '').trim(),
   };
 }
 
@@ -339,6 +346,7 @@ async function refreshAll() {
       fetchSignals(),
       fetchLoads(),
       fetchSnapshots(),
+      fetchGoogleCalendarSnapshots(),
       fetchRecentLogs(),
     ]);
     renderMode();
@@ -690,7 +698,7 @@ function buildTvHero() {
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
-  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}` : 'Nothing urgent on the calendar';
+  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
 
   contextRow.append(weatherEl, nextEl);
 
@@ -711,7 +719,7 @@ function buildTvTodayItems(context) {
   const eventItems = Array.isArray(todaySnapshot?.items)
     ? todaySnapshot.items.slice(0, 3).map((item) => ({
         title: item.title,
-        meta: item.time ? `Event · ${item.time}` : 'Event',
+        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
         pill: 'Calendar',
       }))
     : [];
@@ -739,7 +747,7 @@ function buildBedroomPrimaryItems(context) {
   const eventItems = Array.isArray(todaySnapshot?.items)
     ? todaySnapshot.items.slice(0, 3).map((item) => ({
         title: item.title,
-        meta: item.time ? `Event · ${item.time}` : 'Event',
+        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
         pill: 'Calendar',
       }))
     : [];
@@ -1042,7 +1050,7 @@ function renderContextStack() {
   if (next) {
     items.push({
       title: next.title,
-      meta: next.time ? `${snapshotMetaLabel('Next event', todayCal)} · ${next.time}` : snapshotMetaLabel('Next event', todayCal),
+      meta: [snapshotMetaLabel('Next event', todayCal), next.time, next.sourceLabel].filter(Boolean).join(' · '),
       pill: snapshotFreshnessPill(todayCal, 'Calendar'),
       pillClass: snapshotFreshnessClass(todayCal),
     });
@@ -1075,6 +1083,249 @@ function renderTaskMappingSummary() {
 }
 
 
+
+
+function loadCalendarAccounts() {
+  try {
+    const raw = localStorage.getItem(CALENDAR_ACCOUNTS_STORAGE);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCalendarAccounts(accounts) {
+  appState.calendarAccounts = Array.isArray(accounts) ? accounts : [];
+  try {
+    localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(appState.calendarAccounts));
+  } catch {}
+  renderCalendarAccounts();
+  renderDevConsole();
+}
+
+function isCalendarAccountExpired(account) {
+  if (!account?.expiresAt) return true;
+  return Date.now() > Number(account.expiresAt) - 60 * 1000;
+}
+
+async function waitForGoogleIdentity(timeoutMs = 6000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (window.google?.accounts?.oauth2?.initTokenClient) return window.google.accounts.oauth2;
+    if (window.__hccGoogleLoadError) throw new Error('Google Identity Services failed to load');
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+  }
+  throw new Error('Google Identity Services unavailable');
+}
+
+async function googleApiFetch(url, accessToken) {
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Google API error ${response.status}`);
+  }
+  return response.json();
+}
+
+async function fetchGoogleUserInfo(accessToken) {
+  return googleApiFetch('https://www.googleapis.com/oauth2/v3/userinfo', accessToken);
+}
+
+async function fetchGoogleCalendarList(accessToken) {
+  const data = await googleApiFetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', accessToken);
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+function mergeCalendarSelections(existingCalendars, freshCalendars) {
+  const existingMap = new Map((existingCalendars || []).map(cal => [cal.id, cal]));
+  return freshCalendars.map(cal => ({
+    id: cal.id,
+    summary: cal.summary || cal.id,
+    primary: !!cal.primary,
+    backgroundColor: cal.backgroundColor || '',
+    selected: existingMap.has(cal.id) ? !!existingMap.get(cal.id).selected : !!cal.primary,
+  }));
+}
+
+async function connectGoogleCalendarAccount() {
+  if (!appState.config.googleClientId) {
+    showToast('Add your Google OAuth client ID in Settings first', 'error');
+    return;
+  }
+  try {
+    const oauth2 = await waitForGoogleIdentity();
+    await new Promise((resolve, reject) => {
+      const tokenClient = oauth2.initTokenClient({
+        client_id: appState.config.googleClientId,
+        scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+        prompt: 'consent select_account',
+        callback: async (response) => {
+          if (!response || response.error) {
+            reject(new Error(response?.error || 'Google authorization failed'));
+            return;
+          }
+          try {
+            const accessToken = response.access_token;
+            const [userInfo, calendarList] = await Promise.all([
+              fetchGoogleUserInfo(accessToken),
+              fetchGoogleCalendarList(accessToken),
+            ]);
+            const existing = appState.calendarAccounts.find(account => account.email === userInfo.email);
+            const accountRecord = {
+              email: userInfo.email,
+              name: userInfo.name || userInfo.email,
+              accessToken,
+              expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
+              calendars: mergeCalendarSelections(existing?.calendars, calendarList),
+            };
+            const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
+            nextAccounts.push(accountRecord);
+            saveCalendarAccounts(nextAccounts);
+            showToast(`Connected ${accountRecord.email}`, 'success');
+            pushDevLog('info', `Connected Google Calendar account ${accountRecord.email}`);
+            await refreshAll();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        },
+      });
+      tokenClient.requestAccessToken();
+    });
+  } catch (error) {
+    console.error('Google account connect failed', error);
+    showToast('Could not connect Google Calendar', 'error');
+  }
+}
+
+function renderCalendarAccounts() {
+  if (!googleCalendarAccountsEl) return;
+  googleCalendarAccountsEl.replaceChildren();
+  if (!appState.calendarAccounts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state compact-empty';
+    empty.textContent = 'No Google accounts connected yet.';
+    googleCalendarAccountsEl.append(empty);
+    return;
+  }
+
+  for (const account of appState.calendarAccounts) {
+    const card = document.createElement('div');
+    card.className = 'calendar-account-card';
+
+    const header = document.createElement('div');
+    header.className = 'calendar-account-header';
+    const left = document.createElement('div');
+    left.innerHTML = `<strong>${escapeHtml(account.name || account.email)}</strong><div class="muted">${escapeHtml(account.email || '')}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}</div>`;
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'secondary-button mini-button';
+    removeButton.textContent = 'Remove';
+    removeButton.addEventListener('click', () => {
+      saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
+      refreshAll().catch((error) => console.error('Refresh after removing calendar account failed', error));
+    });
+    header.append(left, removeButton);
+    card.append(header);
+
+    const calList = document.createElement('div');
+    calList.className = 'calendar-list';
+    for (const calendar of account.calendars || []) {
+      const row = document.createElement('label');
+      row.className = 'calendar-row';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !!calendar.selected;
+      checkbox.addEventListener('change', () => {
+        const next = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
+          ...item,
+          calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
+        });
+        saveCalendarAccounts(next);
+        refreshAll().catch((error) => console.error('Refresh after calendar toggle failed', error));
+      });
+      const labelText = document.createElement('span');
+      labelText.textContent = calendar.summary || calendar.id;
+      row.append(checkbox, labelText);
+      calList.append(row);
+    }
+    card.append(calList);
+    googleCalendarAccountsEl.append(card);
+  }
+}
+
+function formatCalendarEventTime(event) {
+  if (event.start?.date) return 'All day';
+  const startValue = event.start?.dateTime;
+  if (!startValue) return '';
+  const date = new Date(startValue);
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function normalizeCalendarEvent(event, account, calendar) {
+  return {
+    id: event.id,
+    title: event.summary || '(Untitled event)',
+    time: formatCalendarEventTime(event),
+    sourceLabel: `${account.name || account.email} — ${calendar.summary || calendar.id}`,
+    start: event.start?.dateTime || event.start?.date || '',
+  };
+}
+
+async function fetchGoogleCalendarSnapshots() {
+  const selectedSources = appState.calendarAccounts
+    .filter(account => !isCalendarAccountExpired(account))
+    .flatMap(account => (account.calendars || []).filter(cal => cal.selected).map(calendar => ({ account, calendar })));
+
+  if (!selectedSources.length) return;
+
+  const now = getNowDate();
+  const todayStart = startOfDay(now);
+  const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
+
+  const todayItems = [];
+  const tomorrowItems = [];
+
+  for (const source of selectedSources) {
+    try {
+      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.calendar.id)}/events`);
+      url.searchParams.set('singleEvents', 'true');
+      url.searchParams.set('orderBy', 'startTime');
+      url.searchParams.set('timeMin', todayStart.toISOString());
+      url.searchParams.set('timeMax', dayAfterStart.toISOString());
+      const data = await googleApiFetch(url.toString(), source.account.accessToken);
+      for (const event of Array.isArray(data.items) ? data.items : []) {
+        const normalized = normalizeCalendarEvent(event, source.account, source.calendar);
+        const starts = event.start?.dateTime ? new Date(event.start.dateTime) : event.start?.date ? new Date(`${event.start.date}T00:00:00`) : null;
+        if (!starts || !Number.isFinite(starts.getTime())) continue;
+        if (isSameDay(starts, todayStart)) todayItems.push(normalized);
+        else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
+      }
+    } catch (error) {
+      console.warn(`Calendar fetch failed for ${source.account.email} / ${source.calendar.summary}`, error);
+    }
+  }
+
+  const sortByStart = (a, b) => String(a.start).localeCompare(String(b.start));
+  todayItems.sort(sortByStart);
+  tomorrowItems.sort(sortByStart);
+  const createdAt = getNowDate().toISOString();
+  appState.snapshots[appState.config.calendarTodaySnapshotType] = {
+    context_type: appState.config.calendarTodaySnapshotType,
+    created_at: createdAt,
+    valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+    payload: { items: todayItems },
+  };
+  appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
+    context_type: appState.config.calendarTomorrowSnapshotType,
+    created_at: createdAt,
+    valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+    payload: { items: tomorrowItems },
+  };
+}
 function buildKitchenTodayCard(context) {
   const wrap = document.createElement('div');
   wrap.className = 'kitchen-today-wrap';
@@ -1146,14 +1397,14 @@ function buildTaskDigest() {
   const calendarTodayItems = Array.isArray(todaySnapshot?.items)
     ? todaySnapshot.items.map((item) => ({
         title: item.title,
-        meta: item.time ? `Event · ${item.time}` : 'Event',
+        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
         pill: 'Calendar',
       }))
     : [];
   const calendarTomorrowItems = Array.isArray(tomorrowSnapshot?.items)
     ? tomorrowSnapshot.items.map((item) => ({
         title: item.title,
-        meta: item.time ? `Tomorrow · ${item.time}` : 'Tomorrow event',
+        meta: [item.sourceLabel || 'Calendar', item.time ? `Tomorrow · ${item.time}` : 'Tomorrow'].filter(Boolean).join(' · '),
         pill: 'Calendar',
       }))
     : [];
@@ -1373,7 +1624,7 @@ function buildTomorrowItems() {
 
   const taskItems = toDisplayTaskItems(tasks, 'Tomorrow');
   const events = Array.isArray(snapshot?.items)
-    ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: item.time ? `Event · ${item.time}` : 'Event', pill: 'Calendar' }))
+    ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '), pill: 'Calendar' }))
     : [];
 
   return [...events, ...taskItems].slice(0, 5);
@@ -1697,6 +1948,7 @@ function buildDiagnosticsText() {
     signalCount: appState.signals.length,
     loadCount: appState.loads.length,
     snapshotTypes: Object.keys(appState.snapshots),
+    calendarAccounts: appState.calendarAccounts.map(account => ({ email: account.email, calendars: (account.calendars || []).filter(cal => cal.selected).length, expired: isCalendarAccountExpired(account) })),
     status: statusLine.textContent,
     time: getNowDate().toISOString(),
     testTimeOverride: appState.testTimeOverride,
@@ -1798,7 +2050,8 @@ async function runConnectionTest() {
 
 function renderDevConsole() {
   const timeMeta = appState.testTimeOverride ? ` · test time ${new Date(appState.testTimeOverride).toLocaleString()}` : '';
-  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length}${timeMeta}`;
+  const activeCalendarCount = appState.calendarAccounts.reduce((sum, account) => sum + (account.calendars || []).filter(cal => cal.selected).length, 0);
+  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length} · calendars ${activeCalendarCount}${timeMeta}`;
   devConsoleLogEl.replaceChildren();
   if (!devConsoleEntries.length) {
     const empty = document.createElement('div');
@@ -1833,6 +2086,8 @@ function fillSettingsForm() {
   document.getElementById('task-completed-value').value = appState.config.taskCompletedValue;
   document.getElementById('use-string-completed').checked = appState.config.useStringCompleted;
   document.getElementById('ui-refresh-seconds').value = appState.config.uiRefreshSeconds;
+  if (googleClientIdInput) googleClientIdInput.value = appState.config.googleClientId || '';
+  renderCalendarAccounts();
   renderConnectionStatusPanel();
 }
 
@@ -1851,6 +2106,7 @@ function readSettingsUi() {
     taskCompletedValue: document.getElementById('task-completed-value').value.trim() || DEFAULT_CONFIG.taskCompletedValue,
     useStringCompleted: document.getElementById('use-string-completed').checked,
     uiRefreshSeconds: Math.max(15, Number(document.getElementById('ui-refresh-seconds').value) || DEFAULT_CONFIG.uiRefreshSeconds),
+    googleClientId: googleClientIdInput?.value?.trim() || DEFAULT_CONFIG.googleClientId,
   };
 }
 
@@ -1866,6 +2122,10 @@ function setupButtons() {
   };
   testConnectionButton.onclick = async () => {
     await runConnectionTest();
+  };
+  if (connectGoogleAccountButton) connectGoogleAccountButton.onclick = async (event) => {
+    event.preventDefault();
+    await connectGoogleCalendarAccount();
   };
   saveSettingsButton.onclick = async (event) => {
     event.preventDefault();

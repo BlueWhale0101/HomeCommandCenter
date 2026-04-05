@@ -180,3 +180,9 @@ Current presentation-phase behavior:
 ## v0.9.7-dev
 - Wednesday bins reminder now starts at 12:00 PM on Wednesday.
 - Bedroom view includes a lightweight Laundry card under the main Today/Tomorrow card so loads can be advanced without switching views.
+
+
+## v1.0.0-dev notes
+- First Google Calendar integration pass added for multiple Google accounts and selectable calendars per account.
+- Calendar events are merged into shared household views with source labels like account and calendar name.
+- This first pass uses browser-based Google auth and local account storage, so reconnecting may be needed after tokens expire.
