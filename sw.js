@@ -1,9 +1,10 @@
-const CACHE_NAME = 'household-command-center-v0.5.6-dev';
+const CACHE_NAME = 'household-command-center-v0.6.0-dev';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './settings.json',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png'
@@ -28,7 +29,7 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  const isLocalAsset = url.origin === self.location.origin && (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html') || url.pathname.endsWith('/styles.css') || url.pathname.endsWith('/app.js') || url.pathname.endsWith('/manifest.json'));
+  const isLocalAsset = url.origin === self.location.origin && (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html') || url.pathname.endsWith('/styles.css') || url.pathname.endsWith('/app.js') || url.pathname.endsWith('/manifest.json') || url.pathname.endsWith('/settings.json'));
 
   if (isLocalAsset) {
     event.respondWith(

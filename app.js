@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.5.6-dev';
+const APP_VERSION = 'v0.6.0-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -24,6 +24,7 @@ const DEFAULT_CONFIG = {
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
 const CONFIG_STORAGE = 'household-command-center-config';
+const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -103,6 +104,10 @@ async function bootstrap() {
   window.__hccBootState.started = true;
   window.__hccBootState.phase = 'bootstrap-started';
   pushDevLog('info', 'Bootstrap started.');
+  window.__hccBootState.phase = 'loading-hosted-settings';
+  setStatus('Checking hosted settings…');
+  await loadHostedSettingsOnce();
+  fillSettingsForm();
   window.__hccBootState.phase = 'connecting-supabase';
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
@@ -138,6 +143,81 @@ async function ensureSupabase() {
     return;
   }
   appState.supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+}
+
+
+function hasLocalConfig() {
+  try {
+    return !!localStorage.getItem(CONFIG_STORAGE);
+  } catch {
+    return false;
+  }
+}
+
+function markHostedSettingsChecked() {
+  try {
+    localStorage.setItem(SETTINGS_JSON_AUTOLOAD_DONE, 'true');
+  } catch {}
+}
+
+function normalizeExternalConfig(input) {
+  if (!input || typeof input !== 'object') return null;
+  const taskMapping = input.taskMapping || {};
+  const ui = input.ui || {};
+  return {
+    ...DEFAULT_CONFIG,
+    ...input,
+    supabaseUrl: String(input.supabaseUrl || DEFAULT_CONFIG.supabaseUrl || '').trim(),
+    supabaseKey: String(input.supabaseKey || input.supabaseAnonKey || DEFAULT_CONFIG.supabaseKey || '').trim(),
+    deviceName: String(input.deviceName || DEFAULT_CONFIG.deviceName || 'New device').trim(),
+    mode: input.mode || DEFAULT_CONFIG.mode,
+    location: input.location || DEFAULT_CONFIG.location,
+    taskDateField: taskMapping.dueDate || input.taskDateField || DEFAULT_CONFIG.taskDateField,
+    taskOwnerField: taskMapping.owner || input.taskOwnerField || DEFAULT_CONFIG.taskOwnerField,
+    taskTitleField: taskMapping.title || input.taskTitleField || DEFAULT_CONFIG.taskTitleField,
+    taskCompletedField: taskMapping.completed || input.taskCompletedField || DEFAULT_CONFIG.taskCompletedField,
+    uiRefreshSeconds: Math.max(15, Number(ui.refreshSeconds || input.uiRefreshSeconds || DEFAULT_CONFIG.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds),
+  };
+}
+
+async function loadHostedSettingsOnce() {
+  if (hasLocalConfig()) {
+    pushDevLog('info', 'Using saved local settings.');
+    return false;
+  }
+  try {
+    const alreadyChecked = localStorage.getItem(SETTINGS_JSON_AUTOLOAD_DONE) === 'true';
+    if (alreadyChecked) {
+      pushDevLog('info', 'No local settings found. Hosted settings were already checked before.');
+      return false;
+    }
+  } catch {}
+
+  try {
+    const response = await fetch('./settings.json', { cache: 'no-store' });
+    if (!response.ok) {
+      markHostedSettingsChecked();
+      pushDevLog('warn', `settings.json not loaded (${response.status})`);
+      return false;
+    }
+    const raw = await response.json();
+    const normalized = normalizeExternalConfig(raw);
+    if (!normalized?.supabaseUrl || !normalized?.supabaseKey) {
+      markHostedSettingsChecked();
+      pushDevLog('warn', 'settings.json found, but Supabase URL/key were incomplete.');
+      return false;
+    }
+    appState.config = normalized;
+    saveConfig(appState.config);
+    markHostedSettingsChecked();
+    pushDevLog('info', 'Loaded hosted settings from settings.json');
+    setStatus('Loaded hosted settings.');
+    return true;
+  } catch (error) {
+    markHostedSettingsChecked();
+    pushDevLog('warn', `settings.json load failed: ${error?.message || error}`);
+    return false;
+  }
 }
 
 async function loadDeviceProfile() {
