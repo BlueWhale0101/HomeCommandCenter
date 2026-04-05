@@ -14,8 +14,8 @@ Current working status:
 - Realtime is wired for tasks, household logs, signals, laundry loads, and context snapshots.
 
 Current focus:
-- Kitchen polish
-- Better quick-action ergonomics
+- Laundry polish
+- Kitchen refinement from real use
 - Lightweight quick views for all tasks and all events
 
 ## Build notes
@@ -114,6 +114,7 @@ Used for cached external context such as:
 ### Laundry
 - multi-load workflow tracking
 - designed around low-friction state progression
+- now includes a summary card, clearer next-step hints, and laundry-specific recent activity
 
 ### Bedroom
 - calm time-oriented view
@@ -133,3 +134,14 @@ That keeps the widget layer simple and avoids coupling view code directly to Goo
 - Improve quick views for all tasks and all events
 - Polish laundry workflow
 - Add Google Calendar snapshot sync
+
+- v0.8.4-dev: smaller blue quick-action buttons, toast feedback, tap animation, cleaner quick-view dialog.
+- v0.9.2-dev: first laundry polish pass with a workflow summary, stronger load rows, and laundry-specific recent activity.
+
+
+## v0.9.2-dev notes
+- Laundry state colors increased for clearer scanning.
+- Laundry summary counters compacted and the Done counter removed.
+- Replaced Recent Laundry Activity with workflow-first laundry signals:
+  - flag when an active load has not moved for 90+ minutes
+  - flag when no laundry activity has happened for over a day

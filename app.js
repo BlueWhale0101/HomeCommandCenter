@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.1-dev';
+const APP_VERSION = 'v0.9.2-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -734,7 +734,7 @@ function renderLaundrySummary() {
   for (const [label, value, status] of items) {
     const chip = document.createElement('div');
     chip.className = `laundry-stat status-${status}`;
-    chip.innerHTML = `<strong>${value}</strong><span>${label}</span>`;
+    chip.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
     grid.append(chip);
   }
   wrapper.append(grid);
@@ -1166,8 +1166,36 @@ function buildKitchenHeadline(digest) {
   return parts.join(' · ');
 }
 
-function activeSignals() {
+function activeDbSignals() {
   return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > new Date());
+}
+
+function buildSyntheticLaundrySignals() {
+  const items = [];
+  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
+  if (activeLoads.length) {
+    const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
+    const dryingCount = activeLoads.filter((load) => load.status === 'drying').length;
+    const washingCount = activeLoads.filter((load) => load.status === 'washing').length;
+    const detailParts = [];
+    if (washingCount) detailParts.push(`${washingCount} washing`);
+    if (dryingCount) detailParts.push(`${dryingCount} drying`);
+    if (readyCount) detailParts.push(`${readyCount} ready`);
+    items.push({
+      id: 'synthetic-laundry-active',
+      signal_type: 'laundry_active',
+      title: activeLoads.length === 1 ? 'Laundry load in progress' : 'Laundry in progress',
+      description: detailParts.join(' · ') || `${activeLoads.length} active load${activeLoads.length === 1 ? '' : 's'}`,
+      severity: readyCount ? 'warning' : 'notice',
+      location: 'laundry',
+      metadata: { synthetic: true },
+    });
+  }
+  return items;
+}
+
+function activeSignals() {
+  return [...activeDbSignals(), ...buildSyntheticLaundrySignals()];
 }
 
 function buildForgetItems() {
