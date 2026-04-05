@@ -1,100 +1,135 @@
+
 # Household Command Center
 
-A separate PWA shell for the new household dashboard, designed to use the same Supabase project as the current task board without breaking backward compatibility.
+A separate PWA for ambient household awareness and low-friction room-based interaction, built against the same Supabase project as the existing task board while preserving backward compatibility.
 
-## What this starter includes
+## Project status
 
-- Separate app shell and deploy target
-- Device profile boot flow using `device_profiles`
-- Realtime subscriptions to:
-  - `tasks`
-  - `household_logs`
-  - `household_signals`
-  - `laundry_loads`
-  - `context_snapshots`
-- Fixed mode layouts built from reusable widgets for:
-  - TV
-  - Kitchen
-  - Laundry
-  - Bedroom
-  - Mobile
-- One-tap quick logs into `household_logs`
-- Multi-load laundry workflow using `laundry_loads`
-- PWA manifest and service worker
+Current working status:
+- TV view is the default landing screen and is tuned for across-room readability.
+- Kitchen view is the richer operational view and is allowed to scroll.
+- Laundry and Bedroom modes exist as secondary surfaces.
+- Settings can autoload from `settings.json` on first run.
+- Dev console is available by long-pressing the version pill.
+- Realtime is wired for tasks, household logs, signals, laundry loads, and context snapshots.
 
+Current focus:
+- Kitchen polish
+- Better quick-action ergonomics
+- Lightweight quick views for all tasks and all events
 
-## Architecture note
+## Build notes
 
-This starter now uses a **reusable widget architecture** with fixed per-mode layout definitions.
+### Versioning
+Every build should bump all of the following together:
+- `APP_VERSION` in `app.js`
+- version badge text in `index.html`
+- service worker cache name in `sw.js`
+- ZIP filename
 
-- Widgets are shared building blocks like Today, Spotlight, Signals, Context, Quick Actions, and Laundry.
-- Modes such as Kitchen, TV, Laundry, Bedroom, and Mobile are just fixed widget lists for now.
-- Later, this can evolve into per-device configurable widget ordering without breaking the core rendering model.
+### Deployment notes
+- This app is designed for static hosting such as GitHub Pages.
+- `settings.json` can be hosted beside the app for first-run autoload.
+- TVs should use TV mode as the default no-interaction landing view.
+- Kitchen is intentionally more detailed and can scroll.
+
+### Debugging notes
+- Long-press the version pill to open the dev console.
+- Startup issues typically surface there first.
+- If Supabase fails to load, the app should now show a clearer startup error instead of silently hanging.
+
+## Data schema overview
+
+The app reads your existing `tasks` table and writes new data to additive household tables.
+
+### Existing table: `tasks`
+The app reads task rows from the shared task board schema.
+
+Important fields currently observed in your board:
+- `id`
+- `title`
+- `owner`
+- `due_text`
+- `panel`
+- `completed_at`
+- `archived`
+- `archived_at`
+- `tag`
+- `recurrence`
+
+Filtering rules currently exclude tasks that are:
+- `panel = done`
+- `panel = archived`
+- `completed_at` present
+- `archived = true`
+- `archived_at` present
+
+### New table: `household_logs`
+Used for one-tap quick actions such as:
+- kitchen cleaned
+- dishes done
+- bins out
+
+### New table: `household_signals`
+Used for attention items such as:
+- bins likely due
+- laundry building up
+- kitchen reset due
+
+### New table: `laundry_loads`
+Used for multiple concurrent laundry loads with simple states such as:
+- washing
+- drying
+- ready
+- done
+
+### New table: `device_profiles`
+Used for assigning a device to a mode and location, such as:
+- TV
+- Kitchen
+- Laundry
+- Bedroom
+- Mobile
+
+### New table: `context_snapshots`
+Used for cached external context such as:
+- weather today
+- calendar today
+- calendar tomorrow
+
+## View roles
+
+### TV
+- passive awareness
+- weather, next event, today, attention, tomorrow/focus
+- should fit on one screen
+
+### Kitchen
+- richer operational view
+- weather and next event at the top
+- quick actions near the top
+- blended today list
+- can scroll
+
+### Laundry
+- multi-load workflow tracking
+- designed around low-friction state progression
+
+### Bedroom
+- calm time-oriented view
+- today or tomorrow emphasis depending on time of day
 
 ## Google Calendar plan
 
-The app is ready to consume calendar data through `context_snapshots`.
+The intended integration path is:
+1. fetch Google Calendar data separately
+2. write simplified calendar snapshots into `context_snapshots`
+3. keep the UI reading only snapshots
 
-When you are ready to add Google Calendar API support, the clean path is:
+That keeps the widget layer simple and avoids coupling view code directly to Google APIs.
 
-1. Fetch events from Google Calendar in a separate sync job or edge function.
-2. Store a simplified snapshot in `context_snapshots` under types like `calendar_today` and `calendar_tomorrow`.
-3. Keep the room widgets reading those snapshots, so the display layer stays simple and fast.
-
-This keeps Google Calendar integration isolated from the UI and preserves compatibility with the current task board.
-
-## Important compatibility note
-
-This app does **not** modify your existing task schema. It reads the existing `tasks` table and writes only to the new additive household tables, unless you later choose to add task write actions.
-
-## First-run setup
-
-Open Settings and enter:
-
-- Supabase URL
-- Supabase anon key
-- Device name
-- Mode and location
-
-Also set the task field mapping to match your current board schema.
-
-Defaults assume these task fields:
-
-- title: `task`
-- owner: `owner`
-- due date: `due_date`
-- completed: `completed`
-
-If your current schema uses different field names, update them in Settings.
-
-## Snapshot format suggestion
-
-This starter expects the `context_snapshots.payload` JSON to roughly look like:
-
-### `weather_today`
-```json
-{
-  "summary": "22°C · Rain later"
-}
-```
-
-### `calendar_today` or `calendar_tomorrow`
-```json
-{
-  "items": [
-    { "title": "Birthday planning", "time": "3:00 PM" }
-  ]
-}
-```
-
-## Next recommended build steps
-
-1. Replace manual field mapping with a small config file once your task schema is final.
-2. Add task completion from kitchen mode.
-3. Add basic signal generation logic.
-4. Add nicer room-specific themes.
-5. Add TV rotation / auto-refresh polish.
-
-## Deployment
-
-This app is designed to be deployable on GitHub Pages or any static host.
+## Next steps
+- Continue kitchen refinement from real use
+- Improve quick views for all tasks and all events
+- Polish laundry workflow
+- Add Google Calendar snapshot sync

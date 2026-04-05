@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.8.2-dev';
+const APP_VERSION = 'v0.8.3-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -521,13 +521,13 @@ const MODE_LAYOUTS = {
   kitchen: {
     screenClass: 'screen two-columns widget-layout widget-layout-kitchen',
     widgets: [
+      'context',
+      'quickActions',
       'kitchenHeader',
       'signals',
-      'quickActions',
       'forget',
       'spotlight',
       'upcoming',
-      'context',
     ],
   },
   tv: {
@@ -600,7 +600,7 @@ function renderWidget(widgetId, context) {
 }
 
 const WIDGETS = {
-  kitchenHeader: (context) => buildCard('Today', buildKitchenHeadline(context.digest), renderTaskList(context.digest.todayTasks, 'Nothing important for today yet.', { showPills: true })),
+  kitchenHeader: (context) => buildKitchenTodayCard(context),
   today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true })),
   spotlight: (context) => buildCard('Best Next Move', 'Most useful thing to do next', renderSpotlightCard(context.digest.spotlightTask)),
   signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
@@ -664,6 +664,7 @@ function buildTvHero() {
   return section;
 }
 
+
 function buildTvTodayItems(context) {
   const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
   const eventItems = Array.isArray(todaySnapshot?.items)
@@ -676,17 +677,9 @@ function buildTvTodayItems(context) {
 
   const taskItems = context.digest.todayTasks.slice(0, 3);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
-
-  const blended = [];
-  const maxLen = Math.max(taskItems.length, eventItems.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    if (taskItems[i]) blended.push(taskItems[i]);
-    if (eventItems[i]) blended.push(eventItems[i]);
-  }
-  if (overdueItems[0] && blended.length < 6) blended.push(overdueItems[0]);
-
-  return blended.slice(0, 6);
+  return blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
 }
+
 
 function buildQuickActionsCard() {
   const wrap = document.createElement('div');
@@ -698,7 +691,7 @@ function buildQuickActionsCard() {
     button.addEventListener('click', () => createQuickLog(item));
     wrap.append(button);
   }
-  return buildCard('Quick Actions', 'One tap, then done', wrap);
+  return buildCard('Quick Actions', 'One tap, then done', wrap, 'kitchen-quick-actions-card');
 }
 
 function renderLaundryLoads() {
@@ -864,6 +857,54 @@ function renderTaskMappingSummary() {
   return wrap;
 }
 
+
+function buildKitchenTodayCard(context) {
+  const wrap = document.createElement('div');
+  wrap.className = 'kitchen-today-wrap';
+
+  const actions = document.createElement('div');
+  actions.className = 'inline-action-row';
+
+  const allTasksBtn = document.createElement('button');
+  allTasksBtn.className = 'secondary-button mini-button';
+  allTasksBtn.textContent = `All Tasks (${context.digest.counts.all})`;
+  allTasksBtn.addEventListener('click', () => openQuickView('All Tasks', context.digest.allItems, 'No active tasks right now.'));
+
+  const allEventsBtn = document.createElement('button');
+  allEventsBtn.className = 'secondary-button mini-button';
+  allEventsBtn.textContent = `All Events (${context.digest.calendarTodayItems.length + context.digest.calendarTomorrowItems.length})`;
+  allEventsBtn.addEventListener('click', () => openQuickView('All Events', context.digest.allEventItems, 'No calendar items loaded yet.'));
+
+  actions.append(allTasksBtn, allEventsBtn);
+  wrap.append(actions, renderTaskList(context.digest.todayBlend, 'Nothing important for today yet.', { showPills: true }));
+
+  return buildCard('Today', buildKitchenHeadline(context.digest), wrap, 'kitchen-today-card');
+}
+
+function openQuickView(title, items, emptyText) {
+  let dialog = document.getElementById('quick-view-dialog');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'quick-view-dialog';
+    dialog.className = 'quick-view-dialog';
+    dialog.innerHTML = `
+      <form method="dialog" class="quick-view-form settings-form">
+        <div class="dialog-header">
+          <h2 id="quick-view-title">Quick View</h2>
+          <button value="cancel" class="secondary-button">Close</button>
+        </div>
+        <div id="quick-view-body"></div>
+      </form>
+    `;
+    document.body.append(dialog);
+  }
+  dialog.querySelector('#quick-view-title').textContent = title;
+  const body = dialog.querySelector('#quick-view-body');
+  body.replaceChildren(renderTaskList(items, emptyText, { showPills: true }));
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', 'open');
+}
+
 function buildCard(title, subtitle, body, extraClass = '') {
   const template = document.getElementById('card-template');
   const node = template.content.firstElementChild.cloneNode(true);
@@ -874,6 +915,7 @@ function buildCard(title, subtitle, body, extraClass = '') {
   return node;
 }
 
+
 function buildTaskDigest() {
   const tasks = normalizeTaskRows();
   const today = new Date();
@@ -881,13 +923,42 @@ function buildTaskDigest() {
   const overdueTasks = tasks.filter((task) => task.dueDate && task.dueDate < startOfDay(today));
   const upcomingTasks = tasks.filter((task) => task.dueDate && task.dueDate > endOfDay(today)).slice(0, 8);
   const undatedTasks = tasks.filter((task) => !task.dueDate);
+
+  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
+  const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const calendarTodayItems = Array.isArray(todaySnapshot?.items)
+    ? todaySnapshot.items.map((item) => ({
+        title: item.title,
+        meta: item.time ? `Event · ${item.time}` : 'Event',
+        pill: 'Calendar',
+      }))
+    : [];
+  const calendarTomorrowItems = Array.isArray(tomorrowSnapshot?.items)
+    ? tomorrowSnapshot.items.map((item) => ({
+        title: item.title,
+        meta: item.time ? `Tomorrow · ${item.time}` : 'Tomorrow event',
+        pill: 'Calendar',
+      }))
+    : [];
+
+  const todayTaskItems = toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today');
+  const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
+  const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
+  const allTaskItems = toDisplayTaskItems(tasks, 'Task');
+  const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
+
   const spotlightTask = overdueTasks[0] || todayTasks[0] || activeSignals().map(signalToItem)[0] || undatedTasks[0] || null;
 
   return {
     all: tasks,
-    todayTasks: toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today'),
-    overdueTasks: toDisplayTaskItems(overdueTasks, 'Overdue'),
-    upcomingTasks: toDisplayTaskItems(upcomingTasks, 'Upcoming'),
+    allItems: allTaskItems,
+    todayTasks: todayTaskItems,
+    todayBlend,
+    overdueTasks: overdueTaskItems,
+    upcomingTasks: upcomingTaskItems,
+    calendarTodayItems,
+    calendarTomorrowItems,
+    allEventItems: [...calendarTodayItems, ...calendarTomorrowItems],
     spotlightTask: spotlightTask ? toDisplayTaskItems([spotlightTask], spotlightTask.kind || 'Task')[0] : null,
     counts: {
       all: tasks.length,
@@ -895,8 +966,50 @@ function buildTaskDigest() {
       overdue: overdueTasks.length,
       upcoming: upcomingTasks.length,
       undated: undatedTasks.length,
+      eventsToday: calendarTodayItems.length,
     },
   };
+}
+
+function blendTaskAndEventItems(taskItems, eventItems, extraItems = [], maxItems = 8) {
+  const blended = [];
+  const maxLen = Math.max(taskItems.length, eventItems.length);
+  for (let i = 0; i < maxLen; i += 1) {
+    if (taskItems[i]) blended.push(taskItems[i]);
+    if (eventItems[i]) blended.push(eventItems[i]);
+    if (blended.length >= maxItems) break;
+  }
+  for (const item of extraItems) {
+    if (blended.length >= maxItems) break;
+    blended.push(item);
+  }
+  return blended.slice(0, maxItems);
+}
+
+
+function isTaskExcluded(task) {
+  if (!task) return true;
+  const panel = String(task.panel || '').toLowerCase();
+  const status = String(task.status || '').toLowerCase();
+  const completedField = appState.config.taskCompletedField;
+  const completedValue = task[completedField];
+
+  const isTruthy = (value) => value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+
+  return (
+    panel === 'done' ||
+    panel === 'archived' ||
+    status === 'done' ||
+    status === 'completed' ||
+    status === 'archived' ||
+    !!task.completed_at ||
+    !!task.archived_at ||
+    isTruthy(task.archived) ||
+    isTruthy(task.done) ||
+    isTruthy(task.is_done) ||
+    isTruthy(task.is_completed) ||
+    isTruthy(completedValue)
+  );
 }
 
 function normalizeTaskRows() {
@@ -906,6 +1019,7 @@ function normalizeTaskRows() {
   const actor = guessActor();
 
   return appState.tasks
+    .filter((task) => !isTaskExcluded(task))
     .map((task) => {
       const dueDate = normalizeDate(task[dateField]);
       const owner = task[ownerField] || '';
@@ -943,9 +1057,9 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
 
 function buildKitchenHeadline(digest) {
   const parts = [];
-  if (digest.counts.today) parts.push(`${digest.counts.today} today`);
+  if (digest.counts.today) parts.push(`${digest.counts.today} tasks today`);
+  if (digest.counts.eventsToday) parts.push(`${digest.counts.eventsToday} events`);
   if (digest.counts.overdue) parts.push(`${digest.counts.overdue} overdue`);
-  if (digest.counts.upcoming) parts.push(`${digest.counts.upcoming} upcoming`);
   if (!parts.length) parts.push(`${digest.counts.all} open tasks`);
   return parts.join(' · ');
 }

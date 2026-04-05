@@ -689,9 +689,12 @@ body.version-pressing, body.version-pressing * {
 }
 
 
+
 .widget-layout-kitchen {
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.9fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.92fr);
   align-items: start;
+  overflow-y: auto;
+  padding-right: 0.2rem;
 }
 
 .widget-layout-kitchen > :first-child {
@@ -699,11 +702,11 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen > :nth-child(2) {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 
 .widget-layout-kitchen > :nth-child(3) {
-  grid-column: 2;
+  grid-column: 1 / -1;
 }
 
 .widget-layout-kitchen > :nth-child(4) {
@@ -747,13 +750,18 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.65rem;
 }
 
 .widget-layout-kitchen .quick-button {
   min-height: 72px;
   border-radius: 18px;
+  text-align: center;
+}
+
+.kitchen-quick-actions-card .card-body {
+  overflow: visible;
 }
 
 @media (max-width: 900px) {
@@ -764,4 +772,32 @@ body.version-pressing, body.version-pressing * {
   .widget-layout-kitchen > * {
     grid-column: 1 !important;
   }
+
+  .widget-layout-kitchen .quick-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+
+.quick-view-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.inline-action-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+
+.mini-button {
+  padding: 0.55rem 0.8rem;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.kitchen-today-wrap {
+  display: grid;
+  gap: 0.25rem;
 }
