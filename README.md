@@ -14,9 +14,9 @@ Current working status:
 - Realtime is wired for tasks, household logs, signals, laundry loads, and context snapshots.
 
 Current focus:
-- Laundry polish
-- Kitchen refinement from real use
-- Lightweight quick views for all tasks and all events
+- Bedroom first-pass polish
+- Laundry refinement from real use
+- Rule-based household reminder signals (starting with bins)
 
 ## Build notes
 
@@ -118,7 +118,9 @@ Used for cached external context such as:
 
 ### Bedroom
 - calm time-oriented view
-- today or tomorrow emphasis depending on time of day
+- weather and next event at the top
+- blended today/tomorrow list depending on time of day
+- gentle reminder layer beneath the primary list
 
 ## Google Calendar plan
 
@@ -151,3 +153,25 @@ That keeps the widget layer simple and avoids coupling view code directly to Goo
 - Laundry counters compressed into a single no-wrap horizontal workflow row.
 - Laundry page shows only actionable laundry signals, while generic in-progress laundry signals continue to feed other views.
 - Developer console now supports a test time override for simulating future behaviors.
+
+
+## v0.9.4-dev notes
+- Laundry counters now stay on one compact horizontal row with larger numerals and a stronger left-to-right workflow feel.
+- Bedroom first pass now puts Weather & Next Event at the top and uses a blended primary list for day/evening orientation.
+- Next signal candidate: a rule-based Wednesday night bins reminder that stays visible in multiple views instead of getting buried as an ordinary task.
+
+
+## Reminder rule notes
+
+Current first rule-based reminder:
+- **Wednesday bins** signal
+  - active from **5:00 PM local time on Wednesday**
+  - visible on **TV, Bedroom, and Kitchen**
+  - clears automatically once a `bins_out` quick log is recorded that day
+
+## Time-based presentation notes
+
+Current presentation-phase behavior:
+- **Evening starts at 5:00 PM local time**
+- Bedroom and TV can shift to a more tomorrow-focused presentation during the evening
+- Dev-console **test time** can be used to simulate this behavior safely

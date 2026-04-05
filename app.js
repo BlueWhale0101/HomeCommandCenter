@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.9.4-dev';
+const APP_VERSION = 'v0.9.5-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1225,6 +1225,39 @@ function activeDbSignals() {
   return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > getNowDate());
 }
 
+function didLogEventToday(eventType) {
+  const today = getNowDate();
+  return appState.logs.some((log) => {
+    if (log.event_type !== eventType || !log.created_at) return false;
+    const created = new Date(log.created_at);
+    return isSameDay(created, today);
+  });
+}
+
+function buildSyntheticRuleSignals() {
+  const items = [];
+  const now = getNowDate();
+  const day = now.getDay(); // 0=Sun, 3=Wed
+  const hour = now.getHours();
+
+  const isWednesdayEvening = day === 3 && hour >= 17;
+  const binsDoneToday = didLogEventToday('bins_out');
+
+  if (isWednesdayEvening && !binsDoneToday) {
+    items.push({
+      id: 'synthetic-bins-wednesday',
+      signal_type: 'bins_wednesday',
+      title: 'Put bins out tonight',
+      description: hour >= 19 ? 'Wednesday night reminder · bins still need to go to the street.' : 'Wednesday evening reminder · bins need to go to the street tonight.',
+      severity: hour >= 19 ? 'warning' : 'notice',
+      location: 'outside',
+      metadata: { synthetic: true, rule: 'weekly_bins_wednesday', visible_in: ['tv', 'bedroom', 'kitchen'] },
+    });
+  }
+
+  return items;
+}
+
 function buildSyntheticLaundrySignals() {
   const items = [];
   const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
@@ -1250,7 +1283,7 @@ function buildSyntheticLaundrySignals() {
 }
 
 function activeSignals() {
-  return [...activeDbSignals(), ...buildSyntheticLaundrySignals()];
+  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(), ...buildSyntheticRuleSignals()];
 }
 
 function buildForgetItems() {
@@ -1967,7 +2000,7 @@ function isTomorrow(date) {
 
 function isEvening() {
   const hour = getNowDate().getHours();
-  return hour >= 16;
+  return hour >= 17;
 }
 
 function capitalize(value) {
