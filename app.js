@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.7.4-dev';
+const APP_VERSION = 'v0.7.5-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -598,9 +598,9 @@ const WIDGETS = {
   context: () => buildCard('Weather & Next Event', '', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard('Today', '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card'),
-  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 3).map(signalToItem), 'House is in a good place.'), 'tv-card'),
-  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems, 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card'),
+  tvToday: (context) => buildCard('Today', '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
+  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
+  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
   laundryLoads: () => buildCard('Laundry', 'Track each load at a glance', renderLaundryLoads()),
   laundrySignals: (context) => buildCard('Light House Signals', '', renderList(context.signals.slice(0, 2).map(signalToItem), 'Laundry is the main thing here.')),
   bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(context.isEvening ? context.tomorrowItems : context.digest.todayTasks.slice(0, 5), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
@@ -655,24 +655,25 @@ function buildTvHero() {
 function buildTvTodayItems(context) {
   const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
   const eventItems = Array.isArray(todaySnapshot?.items)
-    ? todaySnapshot.items.slice(0, 2).map((item) => ({
+    ? todaySnapshot.items.slice(0, 3).map((item) => ({
         title: item.title,
         meta: item.time ? `Event · ${item.time}` : 'Event',
         pill: 'Calendar',
       }))
     : [];
 
-  const taskItems = context.digest.todayTasks.slice(0, 2);
+  const taskItems = context.digest.todayTasks.slice(0, 3);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
 
   const blended = [];
-  if (taskItems[0]) blended.push(taskItems[0]);
-  if (eventItems[0]) blended.push(eventItems[0]);
-  if (taskItems[1]) blended.push(taskItems[1]);
-  if (eventItems[1]) blended.push(eventItems[1]);
-  if (overdueItems[0]) blended.push(overdueItems[0]);
+  const maxLen = Math.max(taskItems.length, eventItems.length);
+  for (let i = 0; i < maxLen; i += 1) {
+    if (taskItems[i]) blended.push(taskItems[i]);
+    if (eventItems[i]) blended.push(eventItems[i]);
+  }
+  if (overdueItems[0] && blended.length < 6) blended.push(overdueItems[0]);
 
-  return blended.slice(0, 4);
+  return blended.slice(0, 6);
 }
 
 function buildQuickActionsCard() {
