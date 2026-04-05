@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.8.1-dev';
+const APP_VERSION = 'v0.8.2-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -152,9 +152,23 @@ async function ensureSupabase() {
     setStatus('Supabase settings needed.');
     return;
   }
-  appState.supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+  const supabaseLib = await waitForSupabaseGlobal();
+  appState.supabase = supabaseLib.createClient(supabaseUrl, supabaseKey);
 }
 
+
+
+async function waitForSupabaseGlobal(timeoutMs = 6000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (window.supabase && typeof window.supabase.createClient === 'function') return window.supabase;
+    if (window.__hccSupabaseLoadError) {
+      throw new Error('Supabase library failed to load');
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+  }
+  throw new Error('Supabase library unavailable');
+}
 
 function hasLocalConfig() {
   try {
@@ -1277,7 +1291,8 @@ async function runConnectionTest() {
   }
 
   try {
-    const client = window.supabase.createClient(config.supabaseUrl, config.supabaseKey);
+    const supabaseLib = await waitForSupabaseGlobal();
+    const client = supabaseLib.createClient(config.supabaseUrl, config.supabaseKey);
     setConnectionStatus('supabase', 'ok', 'Client initialized');
 
     let tasksOk = false;

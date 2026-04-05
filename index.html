@@ -27,7 +27,7 @@
     <main id="screen" class="screen"></main>
   </div>
 
-  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.8.1-dev</button>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v0.8.2-dev</button>
 
   <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
     <div class="dev-console-header">
@@ -180,7 +180,7 @@
       } catch (e) {}
     }, 4000);
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script id="supabase-cdn" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="window.__hccSupabaseLoadError=true;"></script>
   <script src="app.js" defer></script>
 </body>
 </html>
