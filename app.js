@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.5.2-dev';
+const APP_VERSION = 'v0.5.3-dev';
 const BOOT_TIMEOUT_MS = 8000;
 
 const DEFAULT_CONFIG = {
@@ -70,19 +70,29 @@ initApp();
 function initApp() {
   try {
     setStatus('Initializing app shell…');
-    setupVersionUi();
-    setupVersionBadgeLongPress();
-    setupDevConsole();
-    setupSettingsUi();
-    setupButtons();
-    registerServiceWorker();
-    bootstrap().catch(handleFatalStartupError);
+    safeInitStep('Version UI', setupVersionUi);
+    safeInitStep('Version badge gesture', setupVersionBadgeLongPress);
+    safeInitStep('Developer console', setupDevConsole);
+    safeInitStep('Settings UI', setupSettingsUi);
+    safeInitStep('Buttons', setupButtons);
+    safeInitStep('Service worker', () => { registerServiceWorker(); });
+    window.setTimeout(() => bootstrap().catch(handleFatalStartupError), 0);
   } catch (error) {
     handleFatalStartupError(error);
   }
 }
 
+function safeInitStep(label, fn) {
+  try {
+    fn();
+  } catch (error) {
+    console.error(`Init step failed: ${label}`, error);
+    setStatus(`Startup warning: ${label}`);
+  }
+}
+
 async function bootstrap() {
+  pushDevLog('info', 'Bootstrap started.');
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
   resetAutoRefreshTimer();
@@ -881,24 +891,40 @@ function setupVersionUi() {
 function setupVersionBadgeLongPress() {
   let pressTimer = null;
   let longPressed = false;
-  const start = (event) => {
-    event.preventDefault();
-    longPressed = false;
-    clearTimeout(pressTimer);
-    pressTimer = window.setTimeout(() => {
-      longPressed = true;
-      toggleDevConsole(true);
+
+  const clearSelection = () => {
+    try {
+      versionTag.blur();
+      document.activeElement?.blur?.();
       if (window.getSelection) {
         const selection = window.getSelection();
         if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
       }
+    } catch {}
+  };
+
+  const cancel = () => {
+    clearTimeout(pressTimer);
+    document.body.classList.remove('version-pressing');
+    window.setTimeout(clearSelection, 0);
+  };
+
+  const start = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    longPressed = false;
+    clearTimeout(pressTimer);
+    document.body.classList.add('version-pressing');
+    clearSelection();
+    pressTimer = window.setTimeout(() => {
+      longPressed = true;
+      toggleDevConsole(true);
+      clearSelection();
       pushDevLog('info', 'Opened dev console from version badge long press.');
       if (navigator.vibrate) navigator.vibrate(20);
     }, 550);
   };
-  const cancel = () => {
-    clearTimeout(pressTimer);
-  };
+
   versionTag.addEventListener('pointerdown', start, { passive: false });
   versionTag.addEventListener('pointerup', cancel);
   versionTag.addEventListener('touchstart', start, { passive: false });
@@ -909,17 +935,14 @@ function setupVersionBadgeLongPress() {
   versionTag.addEventListener('pointercancel', cancel);
   versionTag.addEventListener('contextmenu', (event) => event.preventDefault());
   versionTag.addEventListener('selectstart', (event) => event.preventDefault());
-  versionTag.addEventListener('mouseup', () => {
-    if (window.getSelection) {
-      const selection = window.getSelection();
-      if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
-    }
-  });
+  versionTag.addEventListener('dragstart', (event) => event.preventDefault());
+  versionTag.addEventListener('mousedown', (event) => event.preventDefault());
+  versionTag.addEventListener('mouseup', clearSelection);
   versionTag.addEventListener('click', (event) => {
     event.preventDefault();
+    event.stopPropagation();
+    clearSelection();
     if (longPressed) {
-      event.preventDefault();
-      event.stopPropagation();
       longPressed = false;
     }
   });
@@ -960,6 +983,9 @@ function setupDevConsole() {
     capture('error', ['Unhandled promise rejection', event.reason]);
   });
 
+  closeConsoleButton.onclick = (event) => { event.preventDefault(); hideDevConsole(); };
+  clearConsoleButton.onclick = (event) => { event.preventDefault(); clearDevConsole(); };
+  copyDiagnosticsButton.onclick = (event) => { event.preventDefault(); copyDiagnostics(); };
   console.info(`Household Command Center ${APP_VERSION} booting`);
 }
 
@@ -1091,18 +1117,16 @@ function readSettingsUi() {
 }
 
 function setupButtons() {
-  settingsButton.addEventListener('click', openSettingsDialog);
-  refreshButton.addEventListener('click', async () => {
+  pushDevLog('info', 'Button handlers attached.');
+  settingsButton.onclick = openSettingsDialog;
+  refreshButton.onclick = async () => {
     try {
       await refreshAll();
     } catch (error) {
       handleRuntimeActionError('Refresh failed', error);
     }
-  });
-  closeConsoleButton.addEventListener('click', hideDevConsole);
-  clearConsoleButton.addEventListener('click', clearDevConsole);
-  copyDiagnosticsButton.addEventListener('click', copyDiagnostics);
-  saveSettingsButton.addEventListener('click', async (event) => {
+  };
+  saveSettingsButton.onclick = async (event) => {
     event.preventDefault();
     appState.config = readSettingsUi();
     saveConfig(appState.config);
@@ -1114,7 +1138,7 @@ function setupButtons() {
     await upsertDeviceProfile();
     await refreshAll();
     bindRealtime();
-  });
+  };
 }
 
 async function upsertDeviceProfile() {

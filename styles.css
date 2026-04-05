@@ -70,6 +70,14 @@ button {
 
 .version-tag {
   position: fixed !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+  touch-action: manipulation;
+  outline: none;
+  caret-color: transparent;
+
   inset: auto 1rem 1rem auto !important;
   z-index: 1200;
   display: inline-flex;
@@ -98,6 +106,14 @@ button {
 
 .title-row .version-tag {
   position: fixed !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+  touch-action: manipulation;
+  outline: none;
+  caret-color: transparent;
+
 }
 
 body, button, .version-tag, .version-tag * {
@@ -437,3 +453,14 @@ code {
 }
 
 .version-tag:focus, .version-tag:active { outline: none; }
+
+body.version-pressing, body.version-pressing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+.version-tag:focus,
+.version-tag:active {
+  outline: none;
+}
