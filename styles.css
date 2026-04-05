@@ -397,3 +397,6 @@ code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--accent);
 }
+
+
+.tv-hero .muted { margin-top: 0.35rem; }

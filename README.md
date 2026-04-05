@@ -12,7 +12,7 @@ A separate PWA shell for the new household dashboard, designed to use the same S
   - `household_signals`
   - `laundry_loads`
   - `context_snapshots`
-- Mode rendering for:
+- Fixed mode layouts built from reusable widgets for:
   - TV
   - Kitchen
   - Laundry
@@ -21,6 +21,27 @@ A separate PWA shell for the new household dashboard, designed to use the same S
 - One-tap quick logs into `household_logs`
 - Multi-load laundry workflow using `laundry_loads`
 - PWA manifest and service worker
+
+
+## Architecture note
+
+This starter now uses a **reusable widget architecture** with fixed per-mode layout definitions.
+
+- Widgets are shared building blocks like Today, Spotlight, Signals, Context, Quick Actions, and Laundry.
+- Modes such as Kitchen, TV, Laundry, Bedroom, and Mobile are just fixed widget lists for now.
+- Later, this can evolve into per-device configurable widget ordering without breaking the core rendering model.
+
+## Google Calendar plan
+
+The app is ready to consume calendar data through `context_snapshots`.
+
+When you are ready to add Google Calendar API support, the clean path is:
+
+1. Fetch events from Google Calendar in a separate sync job or edge function.
+2. Store a simplified snapshot in `context_snapshots` under types like `calendar_today` and `calendar_tomorrow`.
+3. Keep the room widgets reading those snapshots, so the display layer stays simple and fast.
+
+This keeps Google Calendar integration isolated from the UI and preserves compatibility with the current task board.
 
 ## Important compatibility note
 
@@ -42,7 +63,7 @@ Defaults assume these task fields:
 - title: `task`
 - owner: `owner`
 - due date: `due_date`
-- completed: `done`
+- completed: `completed`
 
 If your current schema uses different field names, update them in Settings.
 

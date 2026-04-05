@@ -15,7 +15,7 @@
       <div>
         <div class="title-row">
           <h1>Household Command Center</h1>
-          <span id="version-tag" class="version-tag">v0.1.1-dev</span>
+          <span id="version-tag" class="version-tag">v0.4.0-dev</span>
         </div>
         <div id="status-line" class="status-line">Starting up…</div>
       </div>
@@ -110,6 +110,11 @@
       <section class="checkbox-row">
         <input id="use-string-completed" type="checkbox" />
         <label for="use-string-completed">Compare completed field as a string value</label>
+      </section>
+
+      <section>
+        <label for="ui-refresh-seconds">UI refresh seconds</label>
+        <input id="ui-refresh-seconds" type="number" min="15" step="5" placeholder="60" />
       </section>
 
       <menu class="dialog-actions">

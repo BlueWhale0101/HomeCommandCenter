@@ -1,4 +1,4 @@
-const APP_VERSION = 'v0.2.0-dev';
+const APP_VERSION = 'v0.4.0-dev';
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
@@ -34,6 +34,8 @@ const QUICK_LOGS = [
   { label: 'Laundry done', eventType: 'laundry_done', location: 'laundry' },
 ];
 const LOAD_STATUS_ORDER = ['washing', 'drying', 'ready', 'done'];
+
+let autoRefreshTimer = null;
 
 let appState = {
   config: loadConfig(),
@@ -74,6 +76,7 @@ bootstrap();
 async function bootstrap() {
   setStatus('Loading household command center…');
   await ensureSupabase();
+  resetAutoRefreshTimer();
   if (!appState.supabase) {
     renderEmptyShell('Open Settings and add your Supabase URL and anon key to start.');
     return;
@@ -331,111 +334,143 @@ function clearSubscriptions() {
   appState.subscriptions = [];
 }
 
+
+const MODE_LAYOUTS = {
+  kitchen: {
+    screenClass: 'screen two-columns widget-layout widget-layout-kitchen',
+    widgets: [
+      'kitchenHeader',
+      'today',
+      'spotlight',
+      'signals',
+      'upcoming',
+      'quickActions',
+      'forget',
+      'context',
+      'taskMapping',
+    ],
+  },
+  tv: {
+    screenClass: 'screen single-column widget-layout widget-layout-tv',
+    widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
+  },
+  laundry: {
+    screenClass: 'screen single-column widget-layout widget-layout-laundry',
+    widgets: ['laundryLoads', 'laundrySignals'],
+  },
+  bedroom: {
+    screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
+    widgets: ['bedroomPrimary', 'bedroomForget', 'context'],
+  },
+  mobile: {
+    screenClass: 'screen two-columns widget-layout widget-layout-mobile',
+    widgets: ['today', 'laundryLoads', 'upcoming', 'recentLogs', 'signals', 'quickActions', 'context', 'taskMapping'],
+  },
+};
+
 function renderMode() {
-  document.body.classList.toggle('tv-mode', appState.config.mode === 'tv');
-  switch (appState.config.mode) {
-    case 'tv':
-      renderTvMode();
-      break;
-    case 'laundry':
-      renderLaundryMode();
-      break;
-    case 'bedroom':
-      renderBedroomMode();
-      break;
-    case 'mobile':
-      renderMobileMode();
-      break;
-    case 'kitchen':
-    default:
-      renderKitchenMode();
-      break;
+  const mode = appState.config.mode || 'kitchen';
+  document.body.classList.toggle('tv-mode', mode === 'tv');
+  const digest = buildTaskDigest();
+  const widgetContext = buildWidgetContext(digest);
+  renderModeLayout(mode, widgetContext);
+}
+
+function buildWidgetContext(digest) {
+  return {
+    mode: appState.config.mode,
+    digest,
+    signals: activeSignals(),
+    tomorrowItems: buildTomorrowItems(),
+    forgetItems: buildForgetItems(),
+    focusItem: buildSoftFocus(),
+    isEvening: isEvening(),
+  };
+}
+
+function renderModeLayout(mode, context) {
+  const layout = MODE_LAYOUTS[mode] || MODE_LAYOUTS.kitchen;
+  screenEl.className = layout.screenClass;
+  screenEl.replaceChildren();
+
+  if (mode === 'tv') {
+    const tvWrap = document.createElement('div');
+    tvWrap.className = 'tv-layout';
+    for (const widgetId of layout.widgets) {
+      const node = renderWidget(widgetId, context);
+      if (node) tvWrap.append(node);
+    }
+    screenEl.append(tvWrap);
+    return;
+  }
+
+  for (const widgetId of layout.widgets) {
+    const node = renderWidget(widgetId, context);
+    if (node) screenEl.append(node);
   }
 }
 
-function renderKitchenMode() {
-  const digest = buildTaskDigest();
-  screenEl.className = 'screen two-columns';
-  screenEl.replaceChildren(
-    buildCard('Today', buildKitchenHeadline(digest), renderTaskList(digest.todayTasks, 'Nothing important for today yet.', { showPills: true })),
-    buildCard('Task Spotlight', 'Best next task from the board', renderSpotlightCard(digest.spotlightTask)),
-    buildCard('Needs Attention', `${activeSignals().length} visible`, renderList(activeSignals().slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
-    buildCard('Upcoming Tasks', `${digest.upcomingTasks.length} coming soon`, renderTaskList(digest.upcomingTasks, 'Nothing is queued up soon.', { showPills: true })),
-    buildQuickActionsCard(),
-    buildCard('Overdue & Don’t Forget', 'Short and important', renderTaskList(digest.overdueTasks.slice(0, 6).concat(buildForgetItems().slice(0, 2)), 'Nothing critical is waiting.', { showPills: true })),
-    buildCard('Weather & Next Event', '', renderContextStack()),
-    buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
-  );
+function renderWidget(widgetId, context) {
+  const widget = WIDGETS[widgetId];
+  if (!widget) {
+    pushDevLog('warn', `Unknown widget: ${widgetId}`);
+    return null;
+  }
+  return widget(context);
 }
 
-function renderTvMode() {
-  screenEl.className = 'screen single-column';
-  const digest = buildTaskDigest();
-  const wrap = document.createElement('div');
-  wrap.className = 'tv-layout';
-  wrap.append(
-    buildTvHero(),
-    buildCard('Today', '', renderTaskList(digest.todayTasks.slice(0, 4), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card'),
-    buildCard('Attention', '', renderList(activeSignals().slice(0, 3).map(signalToItem), 'House is in a good place.'), 'tv-card'),
-    buildCard(isEvening() ? 'Tomorrow' : 'Focus', '', isEvening() ? renderTaskList(buildTomorrowItems(), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(buildSoftFocus()), 'tv-card'),
-  );
-  screenEl.append(wrap);
-}
-
-function renderLaundryMode() {
-  screenEl.className = 'screen single-column';
-  screenEl.replaceChildren(
-    buildCard('Laundry', 'Track each load at a glance', renderLaundryLoads()),
-    buildCard('Light House Signals', '', renderList(activeSignals().slice(0, 2).map(signalToItem), 'Laundry is the main thing here.')),
-  );
-}
-
-function renderBedroomMode() {
-  screenEl.className = 'screen single-column bedroom-layout';
-  const title = isEvening() ? 'Tomorrow' : 'Today';
-  const items = isEvening() ? buildTomorrowItems() : buildTaskDigest().todayTasks.slice(0, 5);
-  screenEl.replaceChildren(
-    buildCard(title, describeDateContext(), renderTaskList(items, `Nothing big for ${title.toLowerCase()} yet.`, { showPills: true })),
-    buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(buildForgetItems(), 'No key reminders right now.', { showPills: true })),
-    buildCard('Weather & Next Event', '', renderContextStack()),
-  );
-}
-
-function renderMobileMode() {
-  const digest = buildTaskDigest();
-  screenEl.className = 'screen two-columns';
-  screenEl.replaceChildren(
-    buildCard('Today', '', renderTaskList(digest.todayTasks, 'No tasks visible.', { showPills: true })),
-    buildCard('Laundry', '', renderLaundryLoads()),
-    buildCard('Upcoming', '', renderTaskList(digest.upcomingTasks, 'Nothing upcoming.', { showPills: true })),
-    buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
-    buildCard('Signals', '', renderList(activeSignals().map(signalToItem), 'No active signals.')),
-    buildQuickActionsCard(),
-    buildCard('Context', '', renderContextStack()),
-    buildCard('Task Mapping', '', renderTaskMappingSummary()),
-  );
-}
+const WIDGETS = {
+  kitchenHeader: (context) => buildCard('Today', buildKitchenHeadline(context.digest), renderTaskList(context.digest.todayTasks, 'Nothing important for today yet.', { showPills: true })),
+  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true })),
+  spotlight: (context) => buildCard('Task Spotlight', 'Best next task from the board', renderSpotlightCard(context.digest.spotlightTask)),
+  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
+  upcoming: (context) => buildCard('Upcoming Tasks', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks, 'Nothing is queued up soon.', { showPills: true })),
+  quickActions: () => buildQuickActionsCard(),
+  forget: (context) => buildCard('Overdue & Don’t Forget', 'Short and important', renderTaskList(context.digest.overdueTasks.slice(0, 6).concat(context.forgetItems.slice(0, 2)), 'Nothing critical is waiting.', { showPills: true })),
+  context: () => buildCard('Weather & Next Event', '', renderContextStack()),
+  taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
+  tvHero: () => buildTvHero(),
+  tvToday: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks.slice(0, 4), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card'),
+  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 3).map(signalToItem), 'House is in a good place.'), 'tv-card'),
+  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems, 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card'),
+  laundryLoads: () => buildCard('Laundry', 'Track each load at a glance', renderLaundryLoads()),
+  laundrySignals: (context) => buildCard('Light House Signals', '', renderList(context.signals.slice(0, 2).map(signalToItem), 'Laundry is the main thing here.')),
+  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(), renderTaskList(context.isEvening ? context.tomorrowItems : context.digest.todayTasks.slice(0, 5), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
+  recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
+};
 
 function buildTvHero() {
   const section = document.createElement('section');
   section.className = 'card tv-card tv-hero';
-  const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
-  const todayCal = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const nextEvent = Array.isArray(todayCal?.items) ? todayCal.items[0] : null;
+  const weather = getSnapshot(appState.config.weatherSnapshotType);
+  const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
+  const nextEvent = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
 
   const date = document.createElement('div');
   date.className = 'tv-date';
   date.textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
+  const timeEl = document.createElement('div');
+  timeEl.className = 'muted';
+  timeEl.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
   const weatherEl = document.createElement('div');
   weatherEl.className = 'tv-weather';
-  weatherEl.textContent = weather?.summary || 'Weather snapshot not loaded yet';
+  weatherEl.textContent = weather?.payload?.summary || 'Weather snapshot not loaded yet';
 
   const nextEl = document.createElement('div');
   nextEl.className = 'focus-text';
   nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}` : 'Nothing urgent on the calendar';
 
-  section.append(date, weatherEl, nextEl);
+  const freshnessEl = document.createElement('div');
+  freshnessEl.className = 'muted';
+  freshnessEl.textContent = [
+    weather ? snapshotMetaLabel('Weather', weather) : null,
+    todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
+  ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
+
+  section.append(date, timeEl, weatherEl, nextEl, freshnessEl);
   return section;
 }
 
@@ -569,11 +604,25 @@ function renderFocusBlock(item) {
 
 function renderContextStack() {
   const items = [];
-  const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
-  const todayCal = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  if (weather?.summary) items.push({ title: weather.summary, meta: 'Weather', pill: 'Live' });
-  const next = Array.isArray(todayCal?.items) ? todayCal.items[0] : null;
-  if (next) items.push({ title: next.title, meta: next.time ? `Next event · ${next.time}` : 'Next event', pill: 'Calendar' });
+  const weather = getSnapshot(appState.config.weatherSnapshotType);
+  const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
+  if (weather?.payload?.summary) {
+    items.push({
+      title: weather.payload.summary,
+      meta: snapshotMetaLabel('Weather', weather),
+      pill: snapshotFreshnessPill(weather),
+      pillClass: snapshotFreshnessClass(weather),
+    });
+  }
+  const next = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
+  if (next) {
+    items.push({
+      title: next.title,
+      meta: next.time ? `${snapshotMetaLabel('Next event', todayCal)} · ${next.time}` : snapshotMetaLabel('Next event', todayCal),
+      pill: snapshotFreshnessPill(todayCal, 'Calendar'),
+      pillClass: snapshotFreshnessClass(todayCal),
+    });
+  }
   return renderTaskList(items, 'Weather and calendar snapshots are ready to plug in later.', { showPills: true });
 }
 
@@ -884,8 +933,10 @@ function renderConsoleArg(value) {
   }
 }
 
-function toggleDevConsole() {
-  devConsoleEl.classList.toggle('hidden');
+function toggleDevConsole(forceOpen = null) {
+  if (forceOpen === true) devConsoleEl.classList.remove('hidden');
+  else if (forceOpen === false) devConsoleEl.classList.add('hidden');
+  else devConsoleEl.classList.toggle('hidden');
   renderDevConsole();
 }
 
@@ -974,6 +1025,7 @@ function fillSettingsForm() {
   document.getElementById('task-completed-field').value = appState.config.taskCompletedField;
   document.getElementById('task-completed-value').value = appState.config.taskCompletedValue;
   document.getElementById('use-string-completed').checked = appState.config.useStringCompleted;
+  document.getElementById('ui-refresh-seconds').value = appState.config.uiRefreshSeconds;
 }
 
 function readSettingsUi() {
@@ -990,6 +1042,7 @@ function readSettingsUi() {
     taskCompletedField: document.getElementById('task-completed-field').value.trim() || DEFAULT_CONFIG.taskCompletedField,
     taskCompletedValue: document.getElementById('task-completed-value').value.trim() || DEFAULT_CONFIG.taskCompletedValue,
     useStringCompleted: document.getElementById('use-string-completed').checked,
+    uiRefreshSeconds: Math.max(15, Number(document.getElementById('ui-refresh-seconds').value) || DEFAULT_CONFIG.uiRefreshSeconds),
   };
 }
 
@@ -1004,6 +1057,8 @@ function setupButtons() {
     event.preventDefault();
     appState.config = readSettingsUi();
     saveConfig(appState.config);
+    fillSettingsForm();
+    resetAutoRefreshTimer();
     settingsDialog.close();
     clearSubscriptions();
     await ensureSupabase();
@@ -1076,8 +1131,29 @@ function describeDateContext() {
   return weather?.summary || new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+function getSnapshot(type) {
+  return appState.snapshots[type] || null;
+}
+
 function getSnapshotPayload(type) {
-  return appState.snapshots[type]?.payload || null;
+  return getSnapshot(type)?.payload || null;
+}
+
+function snapshotFreshnessPill(snapshot, fallback = 'Live') {
+  if (!snapshot) return fallback;
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < new Date()) return 'Stale';
+  return fallback;
+}
+
+function snapshotFreshnessClass(snapshot) {
+  if (!snapshot) return '';
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < new Date()) return 'warning';
+  return '';
+}
+
+function snapshotMetaLabel(prefix, snapshot) {
+  if (!snapshot) return prefix;
+  return `${prefix} · ${relativeTime(snapshot.created_at)}`;
 }
 
 function normalizeDate(value) {
@@ -1156,6 +1232,17 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+
+function resetAutoRefreshTimer() {
+  if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
+  const refreshSeconds = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  autoRefreshTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden) return;
+    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s)`);
+    refreshAll();
+  }, refreshSeconds * 1000);
+}
+
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
@@ -1166,6 +1253,4 @@ async function registerServiceWorker() {
   }
 }
 
-setInterval(() => {
-  if (appState.supabase) refreshAll();
-}, DEFAULT_CONFIG.uiRefreshSeconds * 1000);
+resetAutoRefreshTimer();
