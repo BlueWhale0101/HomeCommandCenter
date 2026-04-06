@@ -201,3 +201,30 @@ Event chips now use account display name + calendar summary and no longer includ
 - Weather location lookup is more forgiving and now tries common Australia variants automatically.
 - Weather display is cleaner and includes a compact tomorrow hint when useful in evening-oriented views.
 - Event source chips no longer show raw email addresses.
+
+
+## v1.1.0-dev
+- Added a mobile control-panel view with Status, Logs, Calendar, Weather, and Debug tabs.
+- Added a Supabase project shortcut in the mobile Logs tab.
+- Weather location labels now use the town name only when available.
+
+
+## v1.2.0-dev - Shared household config
+
+This build adds the first shared config/control-plane layer.
+
+### What it syncs
+- Google OAuth client ID
+- Connected Google Calendar accounts and selected calendars
+- Shared weather location + resolved coordinates
+
+### How it works
+- Mobile can push shared config to the `household_config` table in Supabase.
+- Other devices load that config on startup and subscribe to updates through Realtime.
+- Supabase bootstrap config still comes from local settings or `settings.json`.
+
+### Required SQL setup
+Run the SQL in `household_config_setup.sql` to create the table and permissive anon policies for this shared-household setup.
+
+### Notes
+- Google access tokens are synced in this first pass so shared displays can read calendar events. Because browser access tokens expire, reconnecting on mobile may occasionally be needed.

@@ -1109,3 +1109,110 @@ body.version-pressing, body.version-pressing * {
 .compact-empty {
   padding: 0.75rem 0.9rem;
 }
+
+
+.mobile-control-screen {
+  gap: 0.85rem;
+}
+
+.mobile-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.45rem;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: linear-gradient(180deg, rgba(12,22,16,0.97), rgba(12,22,16,0.86));
+  padding-bottom: 0.35rem;
+}
+
+.mobile-tab-button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  color: var(--muted);
+  border-radius: 14px;
+  padding: 0.8rem 0.55rem;
+  font-weight: 700;
+}
+
+.mobile-tab-button.active {
+  background: rgba(125, 215, 154, 0.16);
+  color: var(--text);
+  border-color: rgba(125, 215, 154, 0.4);
+}
+
+.mobile-panel {
+  padding: 0.9rem;
+}
+
+.mobile-stack {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.mobile-inline-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.mobile-link-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-compact-card .card-header h2 {
+  font-size: 1rem;
+}
+
+.mobile-compact-card {
+  padding: 0.8rem;
+}
+
+.mobile-accounts-copy .calendar-account-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 0.8rem;
+}
+
+.mobile-accounts-copy .calendar-account-title {
+  font-weight: 700;
+}
+
+.mobile-accounts-copy .calendar-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.mobile-accounts-copy .calendar-list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: center;
+  background: rgba(255,255,255,0.03);
+  border-radius: 14px;
+  padding: 0.6rem 0.75rem;
+}
+
+body.mobile-mode #app {
+  max-width: 760px;
+}
+
+body.mobile-mode .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: linear-gradient(180deg, rgba(12,22,16,0.98), rgba(12,22,16,0.88));
+  backdrop-filter: blur(4px);
+}
+
+@media (max-width: 720px) {
+  .mobile-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.0.2-dev';
+const APP_VERSION = 'v1.2.0-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -33,6 +33,12 @@ const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
+const SHARED_CONFIG_TABLE = 'household_config';
+const SHARED_CONFIG_KEYS = {
+  googleClientId: 'google_client_id',
+  weather: 'weather_config',
+  calendarAccounts: 'google_calendar_accounts',
+};
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -70,6 +76,8 @@ let appState = {
   connectionStatus: typeof structuredClone === 'function' ? structuredClone(DEFAULT_CONNECTION_STATUS) : JSON.parse(JSON.stringify(DEFAULT_CONNECTION_STATUS)),
   testTimeOverride: loadTestTimeOverride(),
   calendarAccounts: loadCalendarAccounts(),
+  mobileTab: 'status',
+  sharedConfig: {},
 };
 
 const screenEl = document.getElementById('screen');
@@ -172,6 +180,11 @@ async function bootstrap() {
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
   resetAutoRefreshTimer();
+  if (appState.supabase) {
+    window.__hccBootState.phase = 'loading-shared-config';
+    setStatus('Loading household config…');
+    await fetchHouseholdConfig();
+  }
   if (!appState.supabase) {
     setStatus('Supabase settings needed.');
     renderEmptyShell('Open Settings and add your Supabase URL and anon key to start.');
@@ -557,6 +570,7 @@ function bindRealtime() {
     { table: 'household_signals', event: '*', handler: refreshAll },
     { table: 'laundry_loads', event: '*', handler: refreshAll },
     { table: 'context_snapshots', event: '*', handler: refreshAll },
+    { table: SHARED_CONFIG_TABLE, event: '*', handler: async () => { await fetchHouseholdConfig(); await refreshAll(); } },
   ];
 
   appState.subscriptions = channels.map(({ table, event, handler }) => {
@@ -609,8 +623,13 @@ const MODE_LAYOUTS = {
 function renderMode() {
   const mode = appState.config.mode || 'tv';
   document.body.classList.toggle('tv-mode', mode === 'tv');
+  document.body.classList.toggle('mobile-mode', mode === 'mobile');
   const digest = buildTaskDigest();
   const widgetContext = buildWidgetContext(digest);
+  if (mode === 'mobile') {
+    renderMobileControlPanel(widgetContext);
+    return;
+  }
   renderModeLayout(mode, widgetContext);
 }
 
@@ -680,6 +699,226 @@ const WIDGETS = {
   bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
+
+
+function renderMobileControlPanel(context) {
+  screenEl.className = 'screen single-column mobile-control-screen';
+  screenEl.replaceChildren();
+
+  const tabs = [
+    ['status', 'Status'],
+    ['logs', 'Logs'],
+    ['calendar', 'Calendar'],
+    ['weather', 'Weather'],
+    ['debug', 'Debug'],
+  ];
+
+  const nav = document.createElement('div');
+  nav.className = 'mobile-tabs';
+  for (const [key, label] of tabs) {
+    const btn = document.createElement('button');
+    btn.className = `mobile-tab-button ${appState.mobileTab === key ? 'active' : ''}`.trim();
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      appState.mobileTab = key;
+      renderMode();
+    });
+    nav.append(btn);
+  }
+  screenEl.append(nav);
+
+  const panel = document.createElement('section');
+  panel.className = 'card mobile-panel';
+  const body = document.createElement('div');
+  body.className = 'card-body';
+
+  const title = document.createElement('div');
+  title.className = 'card-header';
+  const h2 = document.createElement('h2');
+  h2.textContent = tabs.find(([k]) => k === appState.mobileTab)?.[1] || 'Status';
+  const sub = document.createElement('span');
+  sub.className = 'card-subtitle';
+  sub.textContent = mobileTabSubtitle(appState.mobileTab, context);
+  title.append(h2, sub);
+  panel.append(title);
+
+  const content = renderMobileTabContent(appState.mobileTab, context);
+  body.append(content);
+  panel.append(body);
+  screenEl.append(panel);
+}
+
+function mobileTabSubtitle(tab, context) {
+  if (tab === 'status') return 'Whole-house summary';
+  if (tab === 'logs') return 'Recent actions and links';
+  if (tab === 'calendar') return `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`;
+  if (tab === 'weather') return appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration';
+  if (tab === 'debug') return appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls';
+  return '';
+}
+
+function renderMobileTabContent(tab, context) {
+  if (tab === 'status') return renderMobileStatus(context);
+  if (tab === 'logs') return renderMobileLogs();
+  if (tab === 'calendar') return renderMobileCalendar();
+  if (tab === 'weather') return renderMobileWeather();
+  if (tab === 'debug') return renderMobileDebug();
+  return document.createTextNode('');
+}
+
+function renderMobileStatus(context) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
+  wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
+  const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
+  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
+  wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
+  return wrap;
+}
+
+function renderMobileLogs() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  const openSupabase = document.createElement('a');
+  openSupabase.className = 'secondary-button mobile-link-button';
+  openSupabase.href = 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj';
+  openSupabase.target = '_blank';
+  openSupabase.rel = 'noreferrer';
+  openSupabase.textContent = 'Open Supabase project';
+  actions.append(openSupabase);
+  wrap.append(actions);
+  wrap.append(renderList(appState.logs.slice(0, 30).map(logToItem), 'No recent logs yet.'));
+  return wrap;
+}
+
+function renderMobileCalendar() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  const addBtn = document.createElement('button');
+  addBtn.className = 'secondary-button';
+  addBtn.textContent = 'Add Google account';
+  addBtn.addEventListener('click', () => connectGoogleAccountButton?.click());
+  const pushBtn = document.createElement('button');
+  pushBtn.className = 'secondary-button';
+  pushBtn.textContent = 'Push calendar config';
+  pushBtn.addEventListener('click', async () => {
+    try {
+      await pushSharedCalendarConfig();
+    } catch (error) {
+      handleRuntimeActionError('Calendar push failed', error);
+      showToast('Could not push calendar config', 'error');
+    }
+  });
+  const settingsBtn = document.createElement('button');
+  settingsBtn.className = 'secondary-button';
+  settingsBtn.textContent = 'Open Settings';
+  settingsBtn.addEventListener('click', () => settingsButton?.click());
+  actions.append(addBtn, pushBtn, settingsBtn);
+  wrap.append(actions);
+  const accounts = document.createElement('div');
+  accounts.className = 'mobile-accounts-copy';
+  accounts.append(renderCalendarAccountsClone());
+  wrap.append(accounts);
+  return wrap;
+}
+
+function renderCalendarAccountsClone() {
+  const host = document.createElement('div');
+  host.className = 'google-calendar-accounts';
+  if (!appState.calendarAccounts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No Google accounts connected yet.';
+    host.append(empty);
+    return host;
+  }
+  for (const account of appState.calendarAccounts) {
+    const card = document.createElement('div');
+    card.className = 'calendar-account-card';
+    const header = document.createElement('div');
+    header.className = 'calendar-account-header';
+    const title = document.createElement('div');
+    title.className = 'calendar-account-title';
+    title.textContent = account.displayName || account.email || 'Google account';
+    const subtitle = document.createElement('div');
+    subtitle.className = 'muted';
+    subtitle.textContent = `${(account.calendars || []).filter(c => c.selected).length} selected calendar${(account.calendars || []).filter(c => c.selected).length === 1 ? '' : 's'}`;
+    header.append(title, subtitle);
+    card.append(header);
+    const list = document.createElement('div');
+    list.className = 'calendar-list';
+    for (const calendar of account.calendars || []) {
+      const row = document.createElement('div');
+      row.className = 'calendar-list-item';
+      row.innerHTML = `<span>${escapeHtml(calendar.summary || calendar.id)}</span><span class="pill">${calendar.selected ? 'Included' : 'Hidden'}</span>`;
+      list.append(row);
+    }
+    card.append(list);
+    host.append(card);
+  }
+  return host;
+}
+
+function renderMobileWeather() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  const refresh = document.createElement('button');
+  refresh.className = 'secondary-button';
+  refresh.textContent = 'Refresh weather';
+  refresh.addEventListener('click', () => refreshAll());
+  const push = document.createElement('button');
+  push.className = 'secondary-button';
+  push.textContent = 'Push weather config';
+  push.addEventListener('click', async () => {
+    try {
+      await pushSharedWeatherConfig();
+      await refreshAll();
+    } catch (error) {
+      handleRuntimeActionError('Weather push failed', error);
+      showToast('Could not push weather config', 'error');
+    }
+  });
+  const openSettings = document.createElement('button');
+  openSettings.className = 'secondary-button';
+  openSettings.textContent = 'Edit weather settings';
+  openSettings.addEventListener('click', () => settingsButton?.click());
+  actions.append(refresh, push, openSettings);
+  wrap.append(actions);
+  const weather = getSnapshot(appState.config.weatherSnapshotType);
+  wrap.append(buildCard('Current Weather', appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured', renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  return wrap;
+}
+
+function renderMobileDebug() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  const openConsole = document.createElement('button');
+  openConsole.className = 'secondary-button';
+  openConsole.textContent = 'Open dev console';
+  openConsole.addEventListener('click', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); });
+  const forceRefresh = document.createElement('button');
+  forceRefresh.className = 'secondary-button';
+  forceRefresh.textContent = 'Force refresh';
+  forceRefresh.addEventListener('click', () => refreshAll());
+  actions.append(openConsole, forceRefresh);
+  wrap.append(actions);
+  wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
+    { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
+    { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
+    { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
+  ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
+  return wrap;
+}
 
 function buildTvHero() {
   const section = document.createElement('section');
@@ -1107,7 +1346,77 @@ function loadCalendarAccounts() {
   }
 }
 
-function saveCalendarAccounts(accounts) {
+
+async function fetchHouseholdConfig() {
+  if (!appState.supabase) return;
+  try {
+    const { data, error } = await appState.supabase
+      .from(SHARED_CONFIG_TABLE)
+      .select('key, value, updated_at');
+    if (error) throw error;
+    const rows = Array.isArray(data) ? data : [];
+    applySharedConfigRows(rows);
+    pushDevLog('info', `Loaded ${rows.length} household config entr${rows.length === 1 ? 'y' : 'ies'}.`);
+  } catch (error) {
+    pushDevLog('warn', `Household config unavailable: ${error?.message || error}`);
+  }
+}
+
+function applySharedConfigRows(rows) {
+  const map = {};
+  for (const row of rows || []) map[row.key] = row.value;
+  appState.sharedConfig = map;
+  if (typeof map[SHARED_CONFIG_KEYS.googleClientId] === 'string' && map[SHARED_CONFIG_KEYS.googleClientId].trim()) {
+    appState.config.googleClientId = map[SHARED_CONFIG_KEYS.googleClientId].trim();
+  }
+  const weather = map[SHARED_CONFIG_KEYS.weather];
+  if (weather && typeof weather === 'object') {
+    appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
+    appState.config.weatherLocationName = String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim();
+    appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
+    appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
+    appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
+  }
+  const sharedAccounts = map[SHARED_CONFIG_KEYS.calendarAccounts];
+  if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
+    appState.calendarAccounts = sharedAccounts;
+    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(sharedAccounts)); } catch {}
+  }
+  saveConfig(appState.config);
+  try { fillSettingsForm(); } catch {}
+}
+
+async function upsertSharedConfigEntry(key, value) {
+  if (!appState.supabase) throw new Error('Supabase not connected');
+  const payload = { key, value, updated_at: new Date(getNowMs()).toISOString() };
+  const { error } = await appState.supabase.from(SHARED_CONFIG_TABLE).upsert(payload, { onConflict: 'key' });
+  if (error) throw error;
+}
+
+async function pushSharedWeatherConfig() {
+  const payload = {
+    weatherLocationQuery: appState.config.weatherLocationQuery || '',
+    weatherLocationName: appState.config.weatherLocationName || '',
+    weatherLatitude: appState.config.weatherLatitude || '',
+    weatherLongitude: appState.config.weatherLongitude || '',
+    weatherTimezone: appState.config.weatherTimezone || '',
+  };
+  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.weather, payload);
+  appState.sharedConfig[SHARED_CONFIG_KEYS.weather] = payload;
+  showToast('Pushed weather config to household', 'success');
+  pushDevLog('info', 'Pushed weather config to household.');
+}
+
+async function pushSharedCalendarConfig() {
+  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.googleClientId, appState.config.googleClientId || '');
+  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.calendarAccounts, appState.calendarAccounts || []);
+  appState.sharedConfig[SHARED_CONFIG_KEYS.googleClientId] = appState.config.googleClientId || '';
+  appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] = appState.calendarAccounts || [];
+  showToast('Pushed calendar config to household', 'success');
+  pushDevLog('info', 'Pushed calendar config to household.');
+}
+
+function saveCalendarAccounts(accounts, options = {}) {
   appState.calendarAccounts = Array.isArray(accounts) ? accounts : [];
   try {
     localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(appState.calendarAccounts));
@@ -1268,7 +1577,7 @@ async function geocodeWeatherLocation(query) {
       const item = results[0];
       if (!item) throw new Error('Weather location not found');
       return {
-        name: [item.name, item.admin1, item.country].filter(Boolean).join(', '),
+        name: item.name || [item.name, item.admin1, item.country].filter(Boolean).join(', '),
         latitude: String(item.latitude),
         longitude: String(item.longitude),
         timezone: item.timezone || 'auto',
