@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.7-dev';
+const APP_VERSION = 'v1.2.5-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -33,7 +33,6 @@ const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
-const SHARED_CONFIG_META_STORAGE = 'household-command-center-shared-config-meta';
 const SHARED_CONFIG_TABLE = 'household_config';
 const SHARED_CONFIG_KEYS = {
   googleClientId: 'google_client_id',
@@ -79,7 +78,6 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
-  sharedConfigMeta: loadSharedConfigMeta(),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
 };
 
@@ -667,14 +665,6 @@ function buildWidgetContext(digest) {
   };
 }
 
-function getTvLayoutVariant() {
-  const width = window.innerWidth || 0;
-  const height = window.innerHeight || 0;
-  const aspect = height ? width / height : 0;
-  if (height <= 820 || aspect >= 1.95) return 'wide';
-  return 'tall';
-}
-
 function renderModeLayout(mode, context) {
   const layout = MODE_LAYOUTS[mode] || MODE_LAYOUTS.kitchen;
   screenEl.className = layout.screenClass;
@@ -682,10 +672,7 @@ function renderModeLayout(mode, context) {
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
-    const tvVariant = getTvLayoutVariant();
-    document.body.classList.toggle('tv-layout-wide', tvVariant === 'wide');
-    document.body.classList.toggle('tv-layout-tall', tvVariant !== 'wide');
-    tvWrap.className = `tv-layout tv-layout-${tvVariant}`;
+    tvWrap.className = 'tv-layout';
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
@@ -798,54 +785,15 @@ function renderMobileTabContent(tab, context) {
   return document.createTextNode('');
 }
 
-
-function renderHouseholdSyncCard() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-
-  const metaItems = [
-    {
-      title: appState.sharedConfigMeta?.lastPushedAt ? `Last pushed ${relativeTime(appState.sharedConfigMeta.lastPushedAt)}` : 'Nothing pushed yet',
-      meta: appState.sharedConfigMeta?.lastPushedAt ? new Date(appState.sharedConfigMeta.lastPushedAt).toLocaleString() : 'Use mobile to push household config to other devices.',
-      pill: 'Push',
-    },
-    {
-      title: appState.sharedConfigMeta?.lastReceivedAt ? `Last received ${relativeTime(appState.sharedConfigMeta.lastReceivedAt)}` : 'Nothing received yet',
-      meta: appState.sharedConfigMeta?.lastReceivedAt ? new Date(appState.sharedConfigMeta.lastReceivedAt).toLocaleString() : 'Devices will update from household config when available.',
-      pill: 'Sync',
-    },
-  ];
-  wrap.append(renderTaskList(metaItems, 'No sync state yet.', { showPills: true }));
-
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const pushAll = document.createElement('button');
-  pushAll.className = 'secondary-button';
-  pushAll.textContent = 'Push all household config';
-  pushAll.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
-  actions.append(pushAll);
-  wrap.append(actions);
-  return wrap;
-}
-
 function renderMobileStatus(context) {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
   wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
   wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
-  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
   wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
-  wrap.append(buildCard('Household Sync', 'Push config to every device', renderHouseholdSyncCard(), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -886,23 +834,11 @@ function renderMobileCalendar() {
       showToast('Could not push calendar config', 'error');
     }
   });
-  const pushAllBtn = document.createElement('button');
-  pushAllBtn.className = 'secondary-button';
-  pushAllBtn.textContent = 'Push all';
-  pushAllBtn.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
   const settingsBtn = document.createElement('button');
   settingsBtn.className = 'secondary-button';
   settingsBtn.textContent = 'Open Settings';
   settingsBtn.addEventListener('click', () => settingsButton?.click());
-  actions.append(addBtn, pushBtn, pushAllBtn, settingsBtn);
+  actions.append(addBtn, pushBtn, settingsBtn);
   wrap.append(actions);
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
@@ -969,23 +905,11 @@ function renderMobileWeather() {
       showToast('Could not push weather config', 'error');
     }
   });
-  const pushAllBtn = document.createElement('button');
-  pushAllBtn.className = 'secondary-button';
-  pushAllBtn.textContent = 'Push all';
-  pushAllBtn.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
   const openSettings = document.createElement('button');
   openSettings.className = 'secondary-button';
   openSettings.textContent = 'Edit weather settings';
   openSettings.addEventListener('click', () => settingsButton?.click());
-  actions.append(refresh, push, pushAllBtn, openSettings);
+  actions.append(refresh, push, openSettings);
   wrap.append(actions);
   const weather = getSnapshot(appState.config.weatherSnapshotType);
   wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
@@ -1012,7 +936,6 @@ function renderMobileDebug() {
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
-    { title: `Calendar state: ${getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'Available'}`, meta: `Accounts ${getCalendarAvailabilityState().totalAccounts} · Connected ${getCalendarAvailabilityState().hasConnectedLocalAccount ? 'yes' : 'no'}`, pill: 'Calendar' },
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -1046,10 +969,7 @@ function buildTvHero() {
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
-  const calState = getCalendarAvailabilityState();
-  nextEl.textContent = nextEvent
-    ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}`
-    : (calState.isUnavailable ? getCalendarUnavailableMessage() : 'Nothing urgent on the calendar');
+  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
 
   contextRow.append(weatherEl, nextEl);
 
@@ -1406,10 +1326,7 @@ function renderContextStack() {
       pillClass: snapshotFreshnessClass(todayCal),
     });
   }
-  const fallback = weather?.payload
-    ? (getCalendarAvailabilityState().isUnavailable ? 'Calendar is unavailable on this device.' : 'No upcoming events right now.')
-    : (getCalendarAvailabilityState().isUnavailable ? 'Weather is not connected yet. Calendar is unavailable on this device.' : 'Weather is not connected yet.');
-  return renderTaskList(items, fallback, { showPills: true });
+  return renderTaskList(items, 'Weather or calendar data is not connected yet.', { showPills: true });
 }
 
 function renderTaskMappingSummary() {
@@ -1459,43 +1376,10 @@ async function fetchHouseholdConfig() {
     if (error) throw error;
     const rows = Array.isArray(data) ? data : [];
     applySharedConfigRows(rows);
-    markSharedConfigReceived();
     pushDevLog('info', `Loaded ${rows.length} household config entr${rows.length === 1 ? 'y' : 'ies'}.`);
   } catch (error) {
     pushDevLog('warn', `Household config unavailable: ${error?.message || error}`);
   }
-}
-
-
-
-function getCalendarAvailabilityState() {
-  const accounts = appState.calendarAccounts || [];
-  const total = accounts.length;
-  const selectedSources = accounts
-    .filter(account => !isCalendarAccountExpired(account))
-    .flatMap(account => (account.calendars || []).filter(cal => cal.selected));
-  const hasConnectedLocalAccount = accounts.some(account => !isCalendarAccountExpired(account));
-  const hasSelectedSources = selectedSources.length > 0;
-  const diagnostics = appState.calendarDiagnostics || {};
-  return {
-    totalAccounts: total,
-    hasConnectedLocalAccount,
-    hasSelectedSources,
-    selectedSourcesCount: selectedSources.length,
-    expiredAccounts: diagnostics.expiredAccounts || 0,
-    fetchedEvents: diagnostics.fetchedEvents || 0,
-    mergedEvents: (diagnostics.mergedToday || 0) + (diagnostics.mergedTomorrow || 0),
-    lastError: diagnostics.lastError || '',
-    isUnavailable: total === 0 || !hasConnectedLocalAccount || !hasSelectedSources,
-  };
-}
-
-function getCalendarUnavailableMessage() {
-  const state = getCalendarAvailabilityState();
-  if (!state.totalAccounts) return 'Calendar not connected on this device';
-  if (!state.hasConnectedLocalAccount) return 'Calendar needs reconnect on this device';
-  if (!state.hasSelectedSources) return 'No calendars selected';
-  return 'Calendar unavailable on this device';
 }
 
 function applySharedConfigRows(rows) {
@@ -1521,7 +1405,6 @@ function applySharedConfigRows(rows) {
   }
   saveConfig(appState.config);
   try { fillSettingsForm(); } catch {}
-  try { renderMode(); } catch {}
 }
 
 async function upsertSharedConfigEntry(key, value) {
@@ -1541,7 +1424,6 @@ async function pushSharedWeatherConfig() {
   };
   await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.weather, payload);
   appState.sharedConfig[SHARED_CONFIG_KEYS.weather] = payload;
-  markSharedConfigPushed();
   showToast('Pushed weather config to household', 'success');
   pushDevLog('info', 'Pushed weather config to household.');
 }
@@ -1552,16 +1434,8 @@ async function pushSharedCalendarConfig() {
   await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.calendarAccounts, sharedAccounts);
   appState.sharedConfig[SHARED_CONFIG_KEYS.googleClientId] = appState.config.googleClientId || '';
   appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] = sharedAccounts;
-  markSharedConfigPushed();
   showToast('Pushed calendar config to household', 'success');
   pushDevLog('info', 'Pushed calendar config to household.');
-}
-
-async function pushAllSharedConfig() {
-  await pushSharedCalendarConfig();
-  await pushSharedWeatherConfig();
-  showToast('Pushed all household config', 'success');
-  pushDevLog('info', 'Pushed all household config.');
 }
 
 function saveCalendarAccounts(accounts, options = {}) {
@@ -2070,7 +1944,7 @@ function buildKitchenTodayCard(context) {
   const allEventsBtn = document.createElement('button');
   allEventsBtn.className = 'secondary-button mini-button';
   allEventsBtn.textContent = `All Events (${context.digest.calendarTodayItems.length + context.digest.calendarTomorrowItems.length})`;
-  allEventsBtn.addEventListener('click', () => openQuickView('All Events', context.digest.allEventItems, getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'No calendar items loaded yet.'));
+  allEventsBtn.addEventListener('click', () => openQuickView('All Events', context.digest.allEventItems, 'No calendar items loaded yet.'));
 
   actions.append(allTasksBtn, allEventsBtn);
   wrap.append(actions, renderTaskList(context.digest.todayBlend, 'Nothing important for today yet.', { showPills: true }));
@@ -3255,16 +3129,11 @@ if (document.readyState === 'loading') {
   window.summarizeCalendarAuthState = summarizeCalendarAuthState;
 
   window.renderCalendarAuthBanner = function renderCalendarAuthBanner() {
+    const summary = summarizeCalendarAuthState();
     const el = document.getElementById('calendar-auth-banner');
     if (!el) return;
-    const isMobileMode = (appState?.config?.mode || '') === 'mobile';
-    if (!isMobileMode) {
-      el.style.display = 'none';
-      return;
-    }
-    const summary = summarizeCalendarAuthState();
     if (!summary.total) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected on this device.</strong> Use Mobile → Calendar to connect this device.</div>';
+      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
       el.style.display = 'block';
       return;
     }
@@ -3302,7 +3171,13 @@ if (document.readyState === 'loading') {
 
   document.addEventListener('DOMContentLoaded', function () {
     try {
-      // calendar auth banner is mobile-only now
+      const app = document.getElementById('app');
+      if (app && !document.getElementById('calendar-auth-banner')) {
+        const banner = document.createElement('div');
+        banner.id = 'calendar-auth-banner';
+        banner.className = 'calendar-auth-banner-slot';
+        app.prepend(banner);
+      }
     } catch (e) {}
     setTimeout(() => {
       try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
@@ -3366,15 +3241,3 @@ if (document.readyState === 'loading') {
     try { window.renderMobileCalendar && window.renderMobileCalendar(); } catch (e) {}
   };
 })();
-
-
-
-let resizeRenderTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeRenderTimer);
-  resizeRenderTimer = window.setTimeout(() => {
-    try {
-      if ((appState.config.mode || 'tv') === 'tv') renderMode();
-    } catch {}
-  }, 120);
-});
