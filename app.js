@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.4-dev';
+const APP_VERSION = 'v1.2.5-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1429,10 +1429,11 @@ async function pushSharedWeatherConfig() {
 }
 
 async function pushSharedCalendarConfig() {
+  const sharedAccounts = sanitizeCalendarAccountsForShare(appState.calendarAccounts || []);
   await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.googleClientId, appState.config.googleClientId || '');
-  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.calendarAccounts, appState.calendarAccounts || []);
+  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.calendarAccounts, sharedAccounts);
   appState.sharedConfig[SHARED_CONFIG_KEYS.googleClientId] = appState.config.googleClientId || '';
-  appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] = appState.calendarAccounts || [];
+  appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] = sharedAccounts;
   showToast('Pushed calendar config to household', 'success');
   pushDevLog('info', 'Pushed calendar config to household.');
 }
@@ -1444,6 +1445,7 @@ function saveCalendarAccounts(accounts, options = {}) {
   } catch {}
   renderCalendarAccounts();
   renderDevConsole();
+  try { window.refreshCalendarAuthIndicators && window.refreshCalendarAuthIndicators(); } catch {}
 }
 
 function isCalendarAccountExpired(account) {
@@ -2964,7 +2966,6 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
-
 function cleanLocationName(name) {
   return String(name || '').split(',')[0].trim();
 }
@@ -2979,6 +2980,24 @@ function getCalendarSourceLabel(account, calendar) {
   return preferred || calendarLabel || 'Calendar';
 }
 
+function normalizeEmailKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function sanitizeCalendarAccountsForShare(accounts) {
+  return (accounts || []).map(account => ({
+    email: account.email || '',
+    name: stripEmailLikeText(account.name || account.displayName || account.email || ''),
+    calendars: (account.calendars || []).map(cal => ({
+      id: cal.id,
+      summary: cal.summary || cal.id,
+      primary: !!cal.primary,
+      backgroundColor: cal.backgroundColor || '',
+      selected: !!cal.selected,
+    })),
+  }));
+}
+
 function mergeSharedCalendarSelections(localCalendars, sharedCalendars) {
   const localMap = new Map((localCalendars || []).map(cal => [cal.id, cal]));
   return (sharedCalendars || []).map(sharedCal => {
@@ -2988,21 +3007,53 @@ function mergeSharedCalendarSelections(localCalendars, sharedCalendars) {
 }
 
 function mergeSharedCalendarAccounts(sharedAccounts, localAccounts) {
-  const localMap = new Map((localAccounts || []).map(account => [account.email, account]));
+  const localMap = new Map((localAccounts || []).map(account => [normalizeEmailKey(account.email), account]));
   const merged = (sharedAccounts || []).map(shared => {
-    const local = localMap.get(shared.email);
+    const local = localMap.get(normalizeEmailKey(shared.email));
     if (!local) return { ...shared };
     return {
       ...shared,
       ...local,
-      name: local.name || shared.name || shared.email,
+      email: local.email || shared.email,
+      name: stripEmailLikeText(local.name || shared.name || local.email || shared.email),
       calendars: mergeSharedCalendarSelections(local.calendars, shared.calendars),
     };
   });
   for (const local of (localAccounts || [])) {
-    if (!merged.find(account => account.email === local.email)) merged.push(local);
+    if (!merged.find(account => normalizeEmailKey(account.email) === normalizeEmailKey(local.email))) merged.push(local);
   }
   return merged;
+}
+
+function getCalendarAuthRequirementState() {
+  const sharedAccounts = Array.isArray(appState?.sharedConfig?.[SHARED_CONFIG_KEYS.calendarAccounts]) ? appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] : [];
+  const localAccounts = Array.isArray(appState?.calendarAccounts) ? appState.calendarAccounts : [];
+  const requiredShared = sharedAccounts.filter(acc => (acc.calendars || []).some(cal => cal.selected));
+  const fallbackRequired = requiredShared.length ? requiredShared : localAccounts.filter(acc => (acc.calendars || []).some(cal => cal.selected));
+  const localMap = new Map(localAccounts.map(acc => [normalizeEmailKey(acc.email), acc]));
+
+  const required = fallbackRequired.map(acc => {
+    const local = localMap.get(normalizeEmailKey(acc.email)) || acc || {};
+    const hasToken = !!(local.accessToken || local.token || local.googleAccessToken);
+    const expiresAt = local.expiresAt || local.tokenExpiry || local.expiry || null;
+    const expMs = expiresAt ? new Date(expiresAt).getTime() : null;
+    const nowMs = (window.getEffectiveNow ? new Date(window.getEffectiveNow()).getTime() : Date.now());
+    const isExpired = expMs ? expMs <= nowMs : !hasToken;
+    return {
+      email: acc.email,
+      name: stripEmailLikeText(local.name || acc.name || acc.email || ''),
+      hasToken,
+      isExpired,
+      connected: hasToken && !isExpired,
+    };
+  });
+
+  return {
+    totalRequired: required.length,
+    connected: required.filter(r => r.connected).length,
+    needsReconnect: required.filter(r => !r.connected).length,
+    details: required,
+  };
 }
 
 
@@ -3045,7 +3096,7 @@ if (document.readyState === 'loading') {
 
 
 
-/* v1.2.4-dev calendar auth status helpers */
+/* v1.2.3-dev calendar auth status helpers */
 (function () {
   const originalInit = window.initCalendarDiagnostics;
   const originalRenderMobileStatus = window.renderMobileStatus;
@@ -3061,35 +3112,17 @@ if (document.readyState === 'loading') {
   }
 
   function summarizeCalendarAuthState() {
-    const accounts = getCalendarAccountsSafe();
-    let connected = 0;
-    let expired = 0;
-    let needsReconnect = 0;
-
-    const details = accounts.map((acct, idx) => {
-      const name = acct.displayName || acct.email || acct.accountName || `Account ${idx + 1}`;
-      const expiresAt = acct.expiresAt || acct.tokenExpiry || acct.expiry || null;
-      const hasToken = !!(acct.accessToken || acct.token || acct.googleAccessToken);
-      const expMs = expiresAt ? new Date(expiresAt).getTime() : null;
-      const nowMs = (window.getEffectiveNow ? new Date(window.getEffectiveNow()).getTime() : Date.now());
-      const isExpired = expMs ? expMs <= nowMs : !hasToken;
-      const status = isExpired ? 'Needs reconnect' : 'Connected';
-      if (isExpired) {
-        expired += 1;
-        needsReconnect += 1;
-      } else {
-        connected += 1;
-      }
-      return { name, status };
-    });
-
+    const requirement = getCalendarAuthRequirementState();
     return {
-      total: accounts.length,
-      connected,
-      expired,
-      needsReconnect,
-      details,
-      hasProblem: needsReconnect > 0 || accounts.length === 0
+      total: requirement.totalRequired,
+      connected: requirement.connected,
+      expired: requirement.needsReconnect,
+      needsReconnect: requirement.needsReconnect,
+      details: requirement.details.map((item, idx) => ({
+        name: item.name || item.email || `Account ${idx + 1}`,
+        status: item.connected ? 'Connected' : 'Needs reconnect',
+      })),
+      hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
     };
   }
 
