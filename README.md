@@ -182,7 +182,7 @@ Current presentation-phase behavior:
 - Bedroom view includes a lightweight Laundry card under the main Today/Tomorrow card so loads can be advanced without switching views.
 
 
-## v1.0.1-dev notes
+## v1.0.2-dev notes
 - First Google Calendar integration pass added for multiple Google accounts and selectable calendars per account.
 - Calendar events are merged into shared household views with source labels like account and calendar name.
 - This first pass uses browser-based Google auth and local account storage, so reconnecting may be needed after tokens expire.
@@ -195,3 +195,9 @@ This build adds a first-pass weather integration using an Open-Meteo location lo
 ## Google Calendar source labels
 
 Event chips now use account display name + calendar summary and no longer include the raw email address.
+
+
+## v1.0.2-dev notes
+- Weather location lookup is more forgiving and now tries common Australia variants automatically.
+- Weather display is cleaner and includes a compact tomorrow hint when useful in evening-oriented views.
+- Event source chips no longer show raw email addresses.

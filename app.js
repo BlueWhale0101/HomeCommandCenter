@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.0.1-dev';
+const APP_VERSION = 'v1.0.2-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -706,7 +706,7 @@ function buildTvHero() {
 
   const weatherEl = document.createElement('div');
   weatherEl.className = 'tv-weather';
-  weatherEl.textContent = weather?.payload?.summary || 'Weather snapshot not loaded yet';
+  weatherEl.textContent = weather?.payload ? formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }) : 'Weather snapshot not loaded yet';
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
@@ -1052,8 +1052,8 @@ function renderContextStack() {
   const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
   if (weather?.payload?.summary) {
     items.push({
-      title: weather.payload.summary,
-      meta: snapshotMetaLabel('Weather', weather),
+      title: formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }),
+      meta: [weather.payload.locationName, snapshotMetaLabel('Weather', weather)].filter(Boolean).join(' · '),
       pill: snapshotFreshnessPill(weather),
       pillClass: snapshotFreshnessClass(weather),
     });
@@ -1229,22 +1229,69 @@ function weatherCodeLabel(code) {
   return groups[Number(code)] || 'Weather';
 }
 
+function buildWeatherQueryCandidates(query) {
+  const raw = String(query || '').trim();
+  if (!raw) return [];
+  const variants = new Set([raw]);
+  const expanded = raw
+    .replace(/\bNT\b/gi, 'Northern Territory')
+    .replace(/\bSA\b/gi, 'South Australia')
+    .replace(/\bNSW\b/gi, 'New South Wales')
+    .replace(/\bQLD\b/gi, 'Queensland')
+    .replace(/\bVIC\b/gi, 'Victoria')
+    .replace(/\bWA\b/gi, 'Western Australia')
+    .replace(/\bTAS\b/gi, 'Tasmania');
+  variants.add(expanded);
+  if (!/australia/i.test(raw)) {
+    variants.add(`${raw}, Australia`);
+    variants.add(`${expanded}, Australia`);
+  }
+  if (/alice springs/i.test(raw) && !/australia/i.test(raw)) {
+    variants.add('Alice Springs, Northern Territory, Australia');
+  }
+  return Array.from(variants).filter(Boolean);
+}
+
 async function geocodeWeatherLocation(query) {
-  const url = new URL('https://geocoding-api.open-meteo.com/v1/search');
-  url.searchParams.set('name', query);
-  url.searchParams.set('count', '1');
-  url.searchParams.set('language', 'en');
-  const response = await fetch(url.toString(), { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Weather geocoding failed (${response.status})`);
-  const data = await response.json();
-  const item = Array.isArray(data.results) ? data.results[0] : null;
-  if (!item) throw new Error('Weather location not found');
-  return {
-    name: [item.name, item.admin1, item.country].filter(Boolean).join(', '),
-    latitude: String(item.latitude),
-    longitude: String(item.longitude),
-    timezone: item.timezone || 'auto',
-  };
+  const attempts = buildWeatherQueryCandidates(query);
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const url = new URL('https://geocoding-api.open-meteo.com/v1/search');
+      url.searchParams.set('name', attempt);
+      url.searchParams.set('count', '5');
+      url.searchParams.set('language', 'en');
+      const response = await fetch(url.toString(), { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Weather geocoding failed (${response.status})`);
+      const data = await response.json();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const item = results[0];
+      if (!item) throw new Error('Weather location not found');
+      return {
+        name: [item.name, item.admin1, item.country].filter(Boolean).join(', '),
+        latitude: String(item.latitude),
+        longitude: String(item.longitude),
+        timezone: item.timezone || 'auto',
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('Weather location not found');
+}
+
+function formatWeatherSummary(payload, options = {}) {
+  if (!payload) return 'Weather snapshot not loaded yet';
+  const bits = [];
+  if (Number.isFinite(payload.currentTemp)) bits.push(`${payload.currentTemp}°`);
+  if (payload.weatherLabel) bits.push(payload.weatherLabel);
+  if (Number.isFinite(payload.high) && Number.isFinite(payload.low)) bits.push(`H ${payload.high}° · L ${payload.low}°`);
+  if (options.includeTomorrow && Number.isFinite(payload.tomorrowHigh) && Number.isFinite(payload.tomorrowLow)) {
+    const tomorrowBits = [`Tomorrow ${payload.tomorrowHigh}°/${payload.tomorrowLow}°`];
+    if (payload.tomorrowWeatherLabel) tomorrowBits.push(payload.tomorrowWeatherLabel);
+    bits.push(tomorrowBits.join(' · '));
+  }
+  return bits.filter(Boolean).join(' · ') || (payload.locationName || 'Weather unavailable');
 }
 
 async function fetchWeatherSnapshot() {
@@ -1277,21 +1324,29 @@ async function fetchWeatherSnapshot() {
   const high = Math.round(Number(data.daily?.temperature_2m_max?.[0]));
   const low = Math.round(Number(data.daily?.temperature_2m_min?.[0]));
   const code = Number(data.current?.weather_code ?? data.daily?.weather_code?.[0]);
-  const summaryBits = [locationName || query, Number.isFinite(currentTemp) ? `${currentTemp}° now` : '', weatherCodeLabel(code), Number.isFinite(high) && Number.isFinite(low) ? `H ${high}° · L ${low}°` : ''].filter(Boolean);
+  const tomorrowHigh = Math.round(Number(data.daily?.temperature_2m_max?.[1]));
+  const tomorrowLow = Math.round(Number(data.daily?.temperature_2m_min?.[1]));
+  const tomorrowCode = Number(data.daily?.weather_code?.[1]);
   const createdAt = getNowDate().toISOString();
-  appState.snapshots[appState.config.weatherSnapshotType] = {
-    context_type: appState.config.weatherSnapshotType,
-    created_at: createdAt,
-    valid_until: new Date(getNowMs() + 30 * 60 * 1000).toISOString(),
-    payload: {
-      summary: summaryBits.join(' · '),
+  const payload = {
       locationName: locationName || query,
       currentTemp,
       high,
       low,
       weatherCode: code,
       weatherLabel: weatherCodeLabel(code),
-    },
+      tomorrowHigh,
+      tomorrowLow,
+      tomorrowWeatherCode: tomorrowCode,
+      tomorrowWeatherLabel: weatherCodeLabel(tomorrowCode),
+  };
+  payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
+  payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
+  appState.snapshots[appState.config.weatherSnapshotType] = {
+    context_type: appState.config.weatherSnapshotType,
+    created_at: createdAt,
+    valid_until: new Date(getNowMs() + 30 * 60 * 1000).toISOString(),
+    payload,
   };
 }
 
@@ -2354,7 +2409,7 @@ function getPresentationPhase() {
 function describeDateContext(context = null) {
   const weather = getSnapshotPayload(appState.config.weatherSnapshotType);
   if (context?.isEvening) return 'Tomorrow is now the main focus.';
-  return weather?.summary || getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  return weather ? formatWeatherSummary(weather, { includeTomorrow: !!context?.isEvening }) : getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
 function getSnapshot(type) {
