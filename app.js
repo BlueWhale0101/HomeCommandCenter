@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.7-dev';
+const APP_VERSION = 'v1.2.6-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -842,7 +842,7 @@ function renderMobileStatus(context) {
   wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
   wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
-  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
   wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
   wrap.append(buildCard('Household Sync', 'Push config to every device', renderHouseholdSyncCard(), 'mobile-compact-card'));
@@ -1012,7 +1012,6 @@ function renderMobileDebug() {
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
-    { title: `Calendar state: ${getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'Available'}`, meta: `Accounts ${getCalendarAvailabilityState().totalAccounts} · Connected ${getCalendarAvailabilityState().hasConnectedLocalAccount ? 'yes' : 'no'}`, pill: 'Calendar' },
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -1046,10 +1045,7 @@ function buildTvHero() {
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
-  const calState = getCalendarAvailabilityState();
-  nextEl.textContent = nextEvent
-    ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}`
-    : (calState.isUnavailable ? getCalendarUnavailableMessage() : 'Nothing urgent on the calendar');
+  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
 
   contextRow.append(weatherEl, nextEl);
 
@@ -1406,10 +1402,7 @@ function renderContextStack() {
       pillClass: snapshotFreshnessClass(todayCal),
     });
   }
-  const fallback = weather?.payload
-    ? (getCalendarAvailabilityState().isUnavailable ? 'Calendar is unavailable on this device.' : 'No upcoming events right now.')
-    : (getCalendarAvailabilityState().isUnavailable ? 'Weather is not connected yet. Calendar is unavailable on this device.' : 'Weather is not connected yet.');
-  return renderTaskList(items, fallback, { showPills: true });
+  return renderTaskList(items, 'Weather or calendar data is not connected yet.', { showPills: true });
 }
 
 function renderTaskMappingSummary() {
@@ -1464,38 +1457,6 @@ async function fetchHouseholdConfig() {
   } catch (error) {
     pushDevLog('warn', `Household config unavailable: ${error?.message || error}`);
   }
-}
-
-
-
-function getCalendarAvailabilityState() {
-  const accounts = appState.calendarAccounts || [];
-  const total = accounts.length;
-  const selectedSources = accounts
-    .filter(account => !isCalendarAccountExpired(account))
-    .flatMap(account => (account.calendars || []).filter(cal => cal.selected));
-  const hasConnectedLocalAccount = accounts.some(account => !isCalendarAccountExpired(account));
-  const hasSelectedSources = selectedSources.length > 0;
-  const diagnostics = appState.calendarDiagnostics || {};
-  return {
-    totalAccounts: total,
-    hasConnectedLocalAccount,
-    hasSelectedSources,
-    selectedSourcesCount: selectedSources.length,
-    expiredAccounts: diagnostics.expiredAccounts || 0,
-    fetchedEvents: diagnostics.fetchedEvents || 0,
-    mergedEvents: (diagnostics.mergedToday || 0) + (diagnostics.mergedTomorrow || 0),
-    lastError: diagnostics.lastError || '',
-    isUnavailable: total === 0 || !hasConnectedLocalAccount || !hasSelectedSources,
-  };
-}
-
-function getCalendarUnavailableMessage() {
-  const state = getCalendarAvailabilityState();
-  if (!state.totalAccounts) return 'Calendar not connected on this device';
-  if (!state.hasConnectedLocalAccount) return 'Calendar needs reconnect on this device';
-  if (!state.hasSelectedSources) return 'No calendars selected';
-  return 'Calendar unavailable on this device';
 }
 
 function applySharedConfigRows(rows) {
@@ -2070,7 +2031,7 @@ function buildKitchenTodayCard(context) {
   const allEventsBtn = document.createElement('button');
   allEventsBtn.className = 'secondary-button mini-button';
   allEventsBtn.textContent = `All Events (${context.digest.calendarTodayItems.length + context.digest.calendarTomorrowItems.length})`;
-  allEventsBtn.addEventListener('click', () => openQuickView('All Events', context.digest.allEventItems, getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'No calendar items loaded yet.'));
+  allEventsBtn.addEventListener('click', () => openQuickView('All Events', context.digest.allEventItems, 'No calendar items loaded yet.'));
 
   actions.append(allTasksBtn, allEventsBtn);
   wrap.append(actions, renderTaskList(context.digest.todayBlend, 'Nothing important for today yet.', { showPills: true }));
@@ -3255,16 +3216,11 @@ if (document.readyState === 'loading') {
   window.summarizeCalendarAuthState = summarizeCalendarAuthState;
 
   window.renderCalendarAuthBanner = function renderCalendarAuthBanner() {
+    const summary = summarizeCalendarAuthState();
     const el = document.getElementById('calendar-auth-banner');
     if (!el) return;
-    const isMobileMode = (appState?.config?.mode || '') === 'mobile';
-    if (!isMobileMode) {
-      el.style.display = 'none';
-      return;
-    }
-    const summary = summarizeCalendarAuthState();
     if (!summary.total) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected on this device.</strong> Use Mobile → Calendar to connect this device.</div>';
+      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
       el.style.display = 'block';
       return;
     }
@@ -3302,7 +3258,13 @@ if (document.readyState === 'loading') {
 
   document.addEventListener('DOMContentLoaded', function () {
     try {
-      // calendar auth banner is mobile-only now
+      const app = document.getElementById('app');
+      if (app && !document.getElementById('calendar-auth-banner')) {
+        const banner = document.createElement('div');
+        banner.id = 'calendar-auth-banner';
+        banner.className = 'calendar-auth-banner-slot';
+        app.prepend(banner);
+      }
     } catch (e) {}
     setTimeout(() => {
       try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
