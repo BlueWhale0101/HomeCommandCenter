@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.8-dev';
+const APP_VERSION = 'v1.2.7-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -568,24 +568,6 @@ async function fetchSnapshots() {
   appState.snapshots = snapshots;
 }
 
-
-async function publishContextSnapshot(contextType, payload, source = 'headless-google-calendar', validMinutes = 15) {
-  if (!appState.supabase) throw new Error('Supabase not connected');
-  const row = {
-    context_type: contextType,
-    payload,
-    source,
-    valid_until: new Date(getNowMs() + validMinutes * 60 * 1000).toISOString(),
-  };
-  const { error } = await appState.supabase.from('context_snapshots').insert(row);
-  if (error) throw error;
-}
-
-function hasUsableCalendarPublisherSources() {
-  const accounts = appState.calendarAccounts || [];
-  return accounts.some(account => !isCalendarAccountExpired(account) && !!account.accessToken && (account.calendars || []).some(cal => cal.selected));
-}
-
 async function fetchRecentLogs() {
   const { data, error } = await appState.supabase
     .from('household_logs')
@@ -922,10 +904,6 @@ function renderMobileCalendar() {
   settingsBtn.addEventListener('click', () => settingsButton?.click());
   actions.append(addBtn, pushBtn, pushAllBtn, settingsBtn);
   wrap.append(actions);
-  const headlessNote = document.createElement('div');
-  headlessNote.className = 'muted';
-  headlessNote.textContent = 'Headless mode: a connected device publishes merged calendar snapshots for TVs and other shared displays.';
-  wrap.append(headlessNote);
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
   accounts.append(renderCalendarAccountsClone());
@@ -1034,7 +1012,7 @@ function renderMobileDebug() {
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
-    { title: `Calendar state: ${getCalendarAvailabilityState().isUnavailable ? `${getCalendarUnavailableMessage()} · using shared snapshots when available` : 'Publishing shared snapshots'}`, meta: `Accounts ${getCalendarAvailabilityState().totalAccounts} · Connected ${getCalendarAvailabilityState().hasConnectedLocalAccount ? 'yes' : 'no'}`, pill: 'Calendar' },
+    { title: `Calendar state: ${getCalendarAvailabilityState().isUnavailable ? getCalendarUnavailableMessage() : 'Available'}`, meta: `Accounts ${getCalendarAvailabilityState().totalAccounts} · Connected ${getCalendarAvailabilityState().hasConnectedLocalAccount ? 'yes' : 'no'}`, pill: 'Calendar' },
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -1973,7 +1951,7 @@ async function fetchGoogleCalendarSnapshots() {
   const accounts = appState.calendarAccounts || [];
   const expiredAccounts = accounts.filter(isCalendarAccountExpired);
   const selectedSources = accounts
-    .filter(account => !isCalendarAccountExpired(account) && !!account.accessToken)
+    .filter(account => !isCalendarAccountExpired(account))
     .flatMap(account => (account.calendars || []).filter(cal => cal.selected).map(calendar => ({ account, calendar })));
 
   appState.calendarDiagnostics = {
@@ -1993,37 +1971,33 @@ async function fetchGoogleCalendarSnapshots() {
   let fetchedEvents = 0;
 
   if (!selectedSources.length) {
-    const hadSnapshots = !!(appState.snapshots?.[appState.config.calendarTodaySnapshotType] || appState.snapshots?.[appState.config.calendarTomorrowSnapshotType]);
+    const createdAt = getNowDate().toISOString();
+    appState.snapshots[appState.config.calendarTodaySnapshotType] = {
+      context_type: appState.config.calendarTodaySnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
+      payload: { items: [] },
+      source: 'google-calendar',
+    };
+    appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
+      context_type: appState.config.calendarTomorrowSnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
+      payload: { items: [] },
+      source: 'google-calendar',
+    };
     appState.calendarDiagnostics = {
       ...appState.calendarDiagnostics,
       fetchedEvents: 0,
-      mergedToday: appState.snapshots?.[appState.config.calendarTodaySnapshotType]?.payload?.items?.length || 0,
-      mergedTomorrow: appState.snapshots?.[appState.config.calendarTomorrowSnapshotType]?.payload?.items?.length || 0,
-      lastError: expiredAccounts.length ? 'Selected calendars need reconnect' : 'No calendars selected on this device',
+      mergedToday: 0,
+      mergedTomorrow: 0,
+      lastError: expiredAccounts.length ? 'Selected calendars need reconnect' : 'No calendars selected',
     };
-    pushDevLog('warn', expiredAccounts.length
-      ? 'Calendar publisher unavailable on this device: connected accounts need reconnect. Using shared snapshots if available.'
-      : 'Calendar publisher unavailable on this device: no calendars selected locally. Using shared snapshots if available.');
-    if (!hadSnapshots) {
-      appState.snapshots[appState.config.calendarTodaySnapshotType] = {
-        context_type: appState.config.calendarTodaySnapshotType,
-        created_at: new Date(getNowMs()).toISOString(),
-        valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
-        payload: { items: [] },
-        source: 'headless-calendar-fallback',
-      };
-      appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
-        context_type: appState.config.calendarTomorrowSnapshotType,
-        created_at: new Date(getNowMs()).toISOString(),
-        valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
-        payload: { items: [] },
-        source: 'headless-calendar-fallback',
-      };
-    }
+    pushDevLog('warn', expiredAccounts.length ? 'Calendar events unavailable: connected accounts need reconnect.' : 'Calendar events unavailable: no calendars selected.');
     return;
   }
 
-  pushDevLog('info', `Fetching Google Calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'} for headless snapshots.`);
+  pushDevLog('info', `Fetching Google Calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'}.`);
 
   for (const source of selectedSources) {
     try {
@@ -2057,33 +2031,20 @@ async function fetchGoogleCalendarSnapshots() {
   todayItems.sort(sortByStart);
   tomorrowItems.sort(sortByStart);
   const createdAt = getNowDate().toISOString();
-
-  const todaySnapshot = {
+  appState.snapshots[appState.config.calendarTodaySnapshotType] = {
     context_type: appState.config.calendarTodaySnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: todayItems },
-    source: 'headless-google-calendar',
+    source: 'google-calendar',
   };
-  const tomorrowSnapshot = {
+  appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
     context_type: appState.config.calendarTomorrowSnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: tomorrowItems },
-    source: 'headless-google-calendar',
+    source: 'google-calendar',
   };
-
-  appState.snapshots[appState.config.calendarTodaySnapshotType] = todaySnapshot;
-  appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
-
-  try {
-    await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
-    await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
-    pushDevLog('info', 'Published headless calendar snapshots to household.');
-  } catch (error) {
-    pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
-  }
-
   appState.calendarDiagnostics = {
     ...appState.calendarDiagnostics,
     fetchedEvents,
