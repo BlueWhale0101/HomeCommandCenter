@@ -246,3 +246,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - Devices now show when Google Calendar needs reconnect locally.
 - Added reconnect help in Mobile → Calendar.
 - Corrected icon references to use the `icons/` folder path.
+
+
+## v1.2.8-dev
+- Headless calendar mode: connected devices publish merged calendar snapshots to `context_snapshots`.
+- Unconnected TVs now consume shared snapshots instead of blanking or overwriting them.
+- Added `context_snapshots_headless_setup.sql` for anon insert/select policies and realtime.
