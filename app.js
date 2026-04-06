@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.3-dev';
+const APP_VERSION = 'v1.2.4-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -771,7 +771,7 @@ function mobileTabSubtitle(tab, context) {
   if (tab === 'status') return 'Whole-house summary';
   if (tab === 'logs') return 'Recent actions and links';
   if (tab === 'calendar') return `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`;
-  if (tab === 'weather') return shortLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery) || 'Weather configuration';
+  if (tab === 'weather') return appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration';
   if (tab === 'debug') return appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls';
   return '';
 }
@@ -912,7 +912,7 @@ function renderMobileWeather() {
   actions.append(refresh, push, openSettings);
   wrap.append(actions);
   const weather = getSnapshot(appState.config.weatherSnapshotType);
-  wrap.append(buildCard('Current Weather', shortLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery) || 'No location configured', renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -1312,7 +1312,7 @@ function renderContextStack() {
   if (weather?.payload?.summary) {
     items.push({
       title: formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }),
-      meta: [shortLocationName(weather.payload.locationName), snapshotMetaLabel('Weather', weather)].filter(Boolean).join(' · '),
+      meta: [cleanLocationName(weather.payload.locationName), snapshotMetaLabel('Weather', weather)].filter(Boolean).join(' · '),
       pill: snapshotFreshnessPill(weather),
       pillClass: snapshotFreshnessClass(weather),
     });
@@ -1392,15 +1392,16 @@ function applySharedConfigRows(rows) {
   const weather = map[SHARED_CONFIG_KEYS.weather];
   if (weather && typeof weather === 'object') {
     appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
-    appState.config.weatherLocationName = shortLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
+    appState.config.weatherLocationName = cleanLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
     appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
     appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
     appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
   }
   const sharedAccounts = map[SHARED_CONFIG_KEYS.calendarAccounts];
   if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
-    appState.calendarAccounts = sharedAccounts;
-    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(sharedAccounts)); } catch {}
+    const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
+    appState.calendarAccounts = mergedAccounts;
+    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(mergedAccounts)); } catch {}
   }
   saveConfig(appState.config);
   try { fillSettingsForm(); } catch {}
@@ -1442,7 +1443,6 @@ function saveCalendarAccounts(accounts, options = {}) {
     localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(appState.calendarAccounts));
   } catch {}
   renderCalendarAccounts();
-  try { window.refreshCalendarAuthIndicators && window.refreshCalendarAuthIndicators(); } catch {}
   renderDevConsole();
 }
 
@@ -1497,7 +1497,6 @@ async function refreshExpiredCalendarTokens() {
         expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
       });
       saveCalendarAccounts(nextAccounts);
-      try { window.refreshCalendarAuthIndicators && window.refreshCalendarAuthIndicators(); } catch {}
       changed = true;
       pushDevLog('info', `Refreshed Google token for ${account.email}.`);
     } catch (error) {
@@ -1570,9 +1569,9 @@ async function connectGoogleCalendarAccount() {
             const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
             nextAccounts.push(accountRecord);
             saveCalendarAccounts(nextAccounts);
-            try { window.refreshCalendarAuthIndicators && window.refreshCalendarAuthIndicators(); } catch {}
-            showToast(`Connected ${accountRecord.email}`, 'success');
-            pushDevLog('info', `Connected Google Calendar account ${accountRecord.email}`);
+            const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
+            showToast(`Connected ${connectedLabel}`, 'success');
+            pushDevLog('info', `Connected Google Calendar account ${connectedLabel}`);
             await refreshAll();
             resolve();
           } catch (error) {
@@ -1588,12 +1587,6 @@ async function connectGoogleCalendarAccount() {
   }
 }
 
-
-function shortLocationName(name) {
-  const raw = String(name || '').trim();
-  if (!raw) return '';
-  return raw.split(',')[0].trim();
-}
 
 function weatherCodeLabel(code) {
   const groups = {
@@ -1674,7 +1667,7 @@ function formatWeatherSummary(payload, options = {}) {
     if (payload.tomorrowWeatherLabel) tomorrowBits.push(payload.tomorrowWeatherLabel);
     bits.push(tomorrowBits.join(' · '));
   }
-  return bits.filter(Boolean).join(' · ') || (shortLocationName(payload.locationName) || 'Weather unavailable');
+  return bits.filter(Boolean).join(' · ') || (payload.locationName || 'Weather unavailable');
 }
 
 async function fetchWeatherSnapshot() {
@@ -1689,7 +1682,7 @@ async function fetchWeatherSnapshot() {
     latitude = geo.latitude;
     longitude = geo.longitude;
     timezone = geo.timezone;
-    locationName = geo.name;
+    locationName = cleanLocationName(geo.name);
     appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName };
     saveConfig(appState.config);
     try { fillSettingsForm(); } catch {}
@@ -1715,7 +1708,7 @@ async function fetchWeatherSnapshot() {
     const tomorrowCode = Number(data.daily?.weather_code?.[1]);
     const createdAt = getNowDate().toISOString();
     const payload = {
-        locationName: shortLocationName(locationName || query),
+        locationName: cleanLocationName(locationName || query),
         currentTemp,
         high,
         low,
@@ -1735,7 +1728,7 @@ async function fetchWeatherSnapshot() {
       payload,
       source: 'live-weather',
     };
-    pushDevLog('info', `Weather refreshed for ${shortLocationName(payload.locationName)}.`);
+    pushDevLog('info', `Weather refreshed for ${payload.locationName}.`);
   } catch (error) {
     if (existingSnapshot?.payload) {
       appState.snapshots[appState.config.weatherSnapshotType] = {
@@ -1820,7 +1813,7 @@ function normalizeCalendarEvent(event, account, calendar) {
     id: event.id,
     title: event.summary || '(Untitled event)',
     time: formatCalendarEventTime(event),
-    sourceLabel: account.name || 'Calendar',
+    sourceLabel: getCalendarSourceLabel(account, calendar),
     start: event.start?.dateTime || event.start?.date || '',
   };
 }
@@ -2972,6 +2965,47 @@ function escapeHtml(value) {
 }
 
 
+function cleanLocationName(name) {
+  return String(name || '').split(',')[0].trim();
+}
+
+function stripEmailLikeText(value) {
+  return String(value || '').replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '').replace(/\s+—\s*$/, '').trim();
+}
+
+function getCalendarSourceLabel(account, calendar) {
+  const preferred = stripEmailLikeText(account?.name || account?.displayName || '');
+  const calendarLabel = stripEmailLikeText(calendar?.summary || calendar?.id || 'Calendar');
+  return preferred || calendarLabel || 'Calendar';
+}
+
+function mergeSharedCalendarSelections(localCalendars, sharedCalendars) {
+  const localMap = new Map((localCalendars || []).map(cal => [cal.id, cal]));
+  return (sharedCalendars || []).map(sharedCal => {
+    const local = localMap.get(sharedCal.id) || {};
+    return { ...local, ...sharedCal, selected: !!sharedCal.selected };
+  });
+}
+
+function mergeSharedCalendarAccounts(sharedAccounts, localAccounts) {
+  const localMap = new Map((localAccounts || []).map(account => [account.email, account]));
+  const merged = (sharedAccounts || []).map(shared => {
+    const local = localMap.get(shared.email);
+    if (!local) return { ...shared };
+    return {
+      ...shared,
+      ...local,
+      name: local.name || shared.name || shared.email,
+      calendars: mergeSharedCalendarSelections(local.calendars, shared.calendars),
+    };
+  });
+  for (const local of (localAccounts || [])) {
+    if (!merged.find(account => account.email === local.email)) merged.push(local);
+  }
+  return merged;
+}
+
+
 function resetAutoRefreshTimer() {
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
   const refreshSeconds = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
@@ -3011,7 +3045,7 @@ if (document.readyState === 'loading') {
 
 
 
-/* v1.2.3-dev calendar auth status helpers */
+/* v1.2.4-dev calendar auth status helpers */
 (function () {
   const originalInit = window.initCalendarDiagnostics;
   const originalRenderMobileStatus = window.renderMobileStatus;
