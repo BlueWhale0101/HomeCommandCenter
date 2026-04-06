@@ -1216,3 +1216,43 @@ body.mobile-mode .topbar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+
+
+/* v1.2.3-dev calendar auth status */
+.calendar-auth-banner-slot {
+  margin: 12px 16px 0 16px;
+}
+.auth-banner {
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.auth-banner-warn {
+  background: rgba(255, 191, 71, 0.14);
+  border: 1px solid rgba(255, 191, 71, 0.35);
+  color: #f6df9a;
+}
+.auth-inline {
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.auth-inline.ok {
+  background: rgba(72, 201, 176, 0.12);
+  border: 1px solid rgba(72, 201, 176, 0.28);
+  color: #baf3e5;
+}
+.auth-inline.warn {
+  background: rgba(255, 191, 71, 0.14);
+  border: 1px solid rgba(255, 191, 71, 0.35);
+  color: #f6df9a;
+}
+.calendar-auth-actions {
+  margin-top: 8px;
+}
+.calendar-auth-card {
+  margin-bottom: 12px;
+}

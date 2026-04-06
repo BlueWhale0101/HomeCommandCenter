@@ -236,6 +236,13 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - Weather refresh now runs after shared snapshots load, preventing race conditions that caused weather to flicker on TVs.
 
 
-## v1.2.2-dev
+## v1.2.3-dev
 - Calendar reliability pass: adds diagnostics, silent token refresh attempts for expired Google accounts, and unified event merge logging.
 - Updated HTML header and manifest to use padded root-level icon files (icon-180x180.png, icon-192x192.png, icon-512x512.png).
+
+
+## v1.2.3-dev
+- Added explicit per-device calendar connection status.
+- Devices now show when Google Calendar needs reconnect locally.
+- Added reconnect help in Mobile → Calendar.
+- Corrected icon references to use the `icons/` folder path.
