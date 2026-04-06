@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.1-dev';
+const APP_VERSION = 'v1.2.2-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -78,6 +78,7 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
+  calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
 };
 
 const screenEl = document.getElementById('screen');
@@ -934,6 +935,7 @@ function renderMobileDebug() {
     { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
+    { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -1458,6 +1460,51 @@ async function waitForGoogleIdentity(timeoutMs = 6000) {
   throw new Error('Google Identity Services unavailable');
 }
 
+
+async function requestGoogleAccessToken(loginHint, prompt = '') {
+  if (!appState.config.googleClientId) throw new Error('Google client ID missing');
+  const oauth2 = await waitForGoogleIdentity();
+  return await new Promise((resolve, reject) => {
+    const tokenClient = oauth2.initTokenClient({
+      client_id: appState.config.googleClientId,
+      scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+      login_hint: loginHint || undefined,
+      prompt,
+      callback: (response) => {
+        if (!response || response.error) {
+          reject(new Error(response?.error || 'Google authorization failed'));
+          return;
+        }
+        resolve(response);
+      },
+    });
+    tokenClient.requestAccessToken();
+  });
+}
+
+async function refreshExpiredCalendarTokens() {
+  const expired = appState.calendarAccounts.filter(isCalendarAccountExpired);
+  if (!expired.length || !appState.config.googleClientId) return;
+  pushDevLog('info', `Attempting silent refresh for ${expired.length} calendar account${expired.length === 1 ? '' : 's'}.`);
+  let changed = false;
+  for (const account of expired) {
+    try {
+      const response = await requestGoogleAccessToken(account.email, '');
+      const nextAccounts = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
+        ...item,
+        accessToken: response.access_token,
+        expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
+      });
+      saveCalendarAccounts(nextAccounts);
+      changed = true;
+      pushDevLog('info', `Refreshed Google token for ${account.email}.`);
+    } catch (error) {
+      pushDevLog('warn', `Could not silently refresh Google token for ${account.email}: ${error?.message || error}`);
+    }
+  }
+  if (changed) renderCalendarAccounts();
+}
+
 async function googleApiFetch(url, accessToken) {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!response.ok) {
@@ -1770,11 +1817,19 @@ function normalizeCalendarEvent(event, account, calendar) {
 }
 
 async function fetchGoogleCalendarSnapshots() {
-  const selectedSources = appState.calendarAccounts
+  await refreshExpiredCalendarTokens();
+  const accounts = appState.calendarAccounts || [];
+  const expiredAccounts = accounts.filter(isCalendarAccountExpired);
+  const selectedSources = accounts
     .filter(account => !isCalendarAccountExpired(account))
     .flatMap(account => (account.calendars || []).filter(cal => cal.selected).map(calendar => ({ account, calendar })));
 
-  if (!selectedSources.length) return;
+  appState.calendarDiagnostics = {
+    ...appState.calendarDiagnostics,
+    selectedSources: selectedSources.length,
+    expiredAccounts: expiredAccounts.length,
+    lastError: '',
+  };
 
   const now = getNowDate();
   const todayStart = startOfDay(now);
@@ -1783,6 +1838,36 @@ async function fetchGoogleCalendarSnapshots() {
 
   const todayItems = [];
   const tomorrowItems = [];
+  let fetchedEvents = 0;
+
+  if (!selectedSources.length) {
+    const createdAt = getNowDate().toISOString();
+    appState.snapshots[appState.config.calendarTodaySnapshotType] = {
+      context_type: appState.config.calendarTodaySnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
+      payload: { items: [] },
+      source: 'google-calendar',
+    };
+    appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
+      context_type: appState.config.calendarTomorrowSnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
+      payload: { items: [] },
+      source: 'google-calendar',
+    };
+    appState.calendarDiagnostics = {
+      ...appState.calendarDiagnostics,
+      fetchedEvents: 0,
+      mergedToday: 0,
+      mergedTomorrow: 0,
+      lastError: expiredAccounts.length ? 'Selected calendars need reconnect' : 'No calendars selected',
+    };
+    pushDevLog('warn', expiredAccounts.length ? 'Calendar events unavailable: connected accounts need reconnect.' : 'Calendar events unavailable: no calendars selected.');
+    return;
+  }
+
+  pushDevLog('info', `Fetching Google Calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'}.`);
 
   for (const source of selectedSources) {
     try {
@@ -1791,8 +1876,13 @@ async function fetchGoogleCalendarSnapshots() {
       url.searchParams.set('orderBy', 'startTime');
       url.searchParams.set('timeMin', todayStart.toISOString());
       url.searchParams.set('timeMax', dayAfterStart.toISOString());
+      url.searchParams.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+      url.searchParams.set('maxResults', '25');
       const data = await googleApiFetch(url.toString(), source.account.accessToken);
-      for (const event of Array.isArray(data.items) ? data.items : []) {
+      const items = Array.isArray(data.items) ? data.items : [];
+      fetchedEvents += items.length;
+      pushDevLog('info', `Fetched ${items.length} event${items.length === 1 ? '' : 's'} from ${source.calendar.summary || source.calendar.id}.`);
+      for (const event of items) {
         const normalized = normalizeCalendarEvent(event, source.account, source.calendar);
         const starts = event.start?.dateTime ? new Date(event.start.dateTime) : event.start?.date ? new Date(`${event.start.date}T00:00:00`) : null;
         if (!starts || !Number.isFinite(starts.getTime())) continue;
@@ -1800,6 +1890,9 @@ async function fetchGoogleCalendarSnapshots() {
         else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
       }
     } catch (error) {
+      const msg = error?.message || String(error);
+      appState.calendarDiagnostics.lastError = msg;
+      pushDevLog('warn', `Calendar fetch failed for ${(source.calendar.summary || source.calendar.id)}: ${msg}`);
       console.warn(`Calendar fetch failed for ${source.account.email} / ${source.calendar.summary}`, error);
     }
   }
@@ -1813,13 +1906,24 @@ async function fetchGoogleCalendarSnapshots() {
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: todayItems },
+    source: 'google-calendar',
   };
   appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
     context_type: appState.config.calendarTomorrowSnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: tomorrowItems },
+    source: 'google-calendar',
   };
+  appState.calendarDiagnostics = {
+    ...appState.calendarDiagnostics,
+    fetchedEvents,
+    mergedToday: todayItems.length,
+    mergedTomorrow: tomorrowItems.length,
+    lastSuccessAt: createdAt,
+    lastError: appState.calendarDiagnostics.lastError || '',
+  };
+  pushDevLog('info', `Merged ${todayItems.length} today event${todayItems.length === 1 ? '' : 's'} and ${tomorrowItems.length} tomorrow event${tomorrowItems.length === 1 ? '' : 's'}.`);
 }
 function buildKitchenTodayCard(context) {
   const wrap = document.createElement('div');
@@ -2546,7 +2650,8 @@ async function runConnectionTest() {
 function renderDevConsole() {
   const timeMeta = appState.testTimeOverride ? ` · test time ${new Date(appState.testTimeOverride).toLocaleString()}` : '';
   const activeCalendarCount = appState.calendarAccounts.reduce((sum, account) => sum + (account.calendars || []).filter(cal => cal.selected).length, 0);
-  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length} · calendars ${activeCalendarCount}${timeMeta}`;
+  const eventCount = (appState.calendarDiagnostics.mergedToday || 0) + (appState.calendarDiagnostics.mergedTomorrow || 0);
+  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length} · calendars ${activeCalendarCount} · events ${eventCount}${timeMeta}`;
   devConsoleLogEl.replaceChildren();
   if (!devConsoleEntries.length) {
     const empty = document.createElement('div');
