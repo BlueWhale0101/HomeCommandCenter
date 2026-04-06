@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.6-dev';
+const APP_VERSION = 'v1.2.5-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -33,7 +33,6 @@ const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
-const SHARED_CONFIG_META_STORAGE = 'household-command-center-shared-config-meta';
 const SHARED_CONFIG_TABLE = 'household_config';
 const SHARED_CONFIG_KEYS = {
   googleClientId: 'google_client_id',
@@ -79,7 +78,6 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
-  sharedConfigMeta: loadSharedConfigMeta(),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
 };
 
@@ -667,14 +665,6 @@ function buildWidgetContext(digest) {
   };
 }
 
-function getTvLayoutVariant() {
-  const width = window.innerWidth || 0;
-  const height = window.innerHeight || 0;
-  const aspect = height ? width / height : 0;
-  if (height <= 820 || aspect >= 1.95) return 'wide';
-  return 'tall';
-}
-
 function renderModeLayout(mode, context) {
   const layout = MODE_LAYOUTS[mode] || MODE_LAYOUTS.kitchen;
   screenEl.className = layout.screenClass;
@@ -682,10 +672,7 @@ function renderModeLayout(mode, context) {
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
-    const tvVariant = getTvLayoutVariant();
-    document.body.classList.toggle('tv-layout-wide', tvVariant === 'wide');
-    document.body.classList.toggle('tv-layout-tall', tvVariant !== 'wide');
-    tvWrap.className = `tv-layout tv-layout-${tvVariant}`;
+    tvWrap.className = 'tv-layout';
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
@@ -798,44 +785,6 @@ function renderMobileTabContent(tab, context) {
   return document.createTextNode('');
 }
 
-
-function renderHouseholdSyncCard() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-
-  const metaItems = [
-    {
-      title: appState.sharedConfigMeta?.lastPushedAt ? `Last pushed ${relativeTime(appState.sharedConfigMeta.lastPushedAt)}` : 'Nothing pushed yet',
-      meta: appState.sharedConfigMeta?.lastPushedAt ? new Date(appState.sharedConfigMeta.lastPushedAt).toLocaleString() : 'Use mobile to push household config to other devices.',
-      pill: 'Push',
-    },
-    {
-      title: appState.sharedConfigMeta?.lastReceivedAt ? `Last received ${relativeTime(appState.sharedConfigMeta.lastReceivedAt)}` : 'Nothing received yet',
-      meta: appState.sharedConfigMeta?.lastReceivedAt ? new Date(appState.sharedConfigMeta.lastReceivedAt).toLocaleString() : 'Devices will update from household config when available.',
-      pill: 'Sync',
-    },
-  ];
-  wrap.append(renderTaskList(metaItems, 'No sync state yet.', { showPills: true }));
-
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const pushAll = document.createElement('button');
-  pushAll.className = 'secondary-button';
-  pushAll.textContent = 'Push all household config';
-  pushAll.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
-  actions.append(pushAll);
-  wrap.append(actions);
-  return wrap;
-}
-
 function renderMobileStatus(context) {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
@@ -845,7 +794,6 @@ function renderMobileStatus(context) {
   wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
   wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
-  wrap.append(buildCard('Household Sync', 'Push config to every device', renderHouseholdSyncCard(), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -886,23 +834,11 @@ function renderMobileCalendar() {
       showToast('Could not push calendar config', 'error');
     }
   });
-  const pushAllBtn = document.createElement('button');
-  pushAllBtn.className = 'secondary-button';
-  pushAllBtn.textContent = 'Push all';
-  pushAllBtn.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
   const settingsBtn = document.createElement('button');
   settingsBtn.className = 'secondary-button';
   settingsBtn.textContent = 'Open Settings';
   settingsBtn.addEventListener('click', () => settingsButton?.click());
-  actions.append(addBtn, pushBtn, pushAllBtn, settingsBtn);
+  actions.append(addBtn, pushBtn, settingsBtn);
   wrap.append(actions);
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
@@ -969,23 +905,11 @@ function renderMobileWeather() {
       showToast('Could not push weather config', 'error');
     }
   });
-  const pushAllBtn = document.createElement('button');
-  pushAllBtn.className = 'secondary-button';
-  pushAllBtn.textContent = 'Push all';
-  pushAllBtn.addEventListener('click', async () => {
-    try {
-      await pushAllSharedConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Push all household config failed', error);
-      showToast('Could not push all household config', 'error');
-    }
-  });
   const openSettings = document.createElement('button');
   openSettings.className = 'secondary-button';
   openSettings.textContent = 'Edit weather settings';
   openSettings.addEventListener('click', () => settingsButton?.click());
-  actions.append(refresh, push, pushAllBtn, openSettings);
+  actions.append(refresh, push, openSettings);
   wrap.append(actions);
   const weather = getSnapshot(appState.config.weatherSnapshotType);
   wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
@@ -1452,7 +1376,6 @@ async function fetchHouseholdConfig() {
     if (error) throw error;
     const rows = Array.isArray(data) ? data : [];
     applySharedConfigRows(rows);
-    markSharedConfigReceived();
     pushDevLog('info', `Loaded ${rows.length} household config entr${rows.length === 1 ? 'y' : 'ies'}.`);
   } catch (error) {
     pushDevLog('warn', `Household config unavailable: ${error?.message || error}`);
@@ -1482,7 +1405,6 @@ function applySharedConfigRows(rows) {
   }
   saveConfig(appState.config);
   try { fillSettingsForm(); } catch {}
-  try { renderMode(); } catch {}
 }
 
 async function upsertSharedConfigEntry(key, value) {
@@ -1502,7 +1424,6 @@ async function pushSharedWeatherConfig() {
   };
   await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.weather, payload);
   appState.sharedConfig[SHARED_CONFIG_KEYS.weather] = payload;
-  markSharedConfigPushed();
   showToast('Pushed weather config to household', 'success');
   pushDevLog('info', 'Pushed weather config to household.');
 }
@@ -1513,16 +1434,8 @@ async function pushSharedCalendarConfig() {
   await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.calendarAccounts, sharedAccounts);
   appState.sharedConfig[SHARED_CONFIG_KEYS.googleClientId] = appState.config.googleClientId || '';
   appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] = sharedAccounts;
-  markSharedConfigPushed();
   showToast('Pushed calendar config to household', 'success');
   pushDevLog('info', 'Pushed calendar config to household.');
-}
-
-async function pushAllSharedConfig() {
-  await pushSharedCalendarConfig();
-  await pushSharedWeatherConfig();
-  showToast('Pushed all household config', 'success');
-  pushDevLog('info', 'Pushed all household config.');
 }
 
 function saveCalendarAccounts(accounts, options = {}) {
@@ -3328,15 +3241,3 @@ if (document.readyState === 'loading') {
     try { window.renderMobileCalendar && window.renderMobileCalendar(); } catch (e) {}
   };
 })();
-
-
-
-let resizeRenderTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeRenderTimer);
-  resizeRenderTimer = window.setTimeout(() => {
-    try {
-      if ((appState.config.mode || 'tv') === 'tv') renderMode();
-    } catch {}
-  }, 120);
-});
