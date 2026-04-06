@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.0-dev';
+const APP_VERSION = 'v1.2.1-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -370,10 +370,20 @@ async function refreshAll() {
       fetchSignals(),
       fetchLoads(),
       fetchSnapshots(),
-      fetchGoogleCalendarSnapshots(),
-      fetchWeatherSnapshot(),
       fetchRecentLogs(),
     ]);
+
+    const followup = await Promise.allSettled([
+      fetchGoogleCalendarSnapshots(),
+      fetchWeatherSnapshot(),
+    ]);
+
+    for (const result of followup) {
+      if (result.status === 'rejected') {
+        console.warn('Follow-up refresh issue', result.reason);
+      }
+    }
+
     renderMode();
     renderDevConsole();
     setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
@@ -537,12 +547,20 @@ async function fetchSnapshots() {
     .order('created_at', { ascending: false });
   if (error) {
     console.warn('Snapshot fetch issue', error);
-    appState.snapshots = {};
     return;
   }
-  const snapshots = {};
+  const snapshots = { ...appState.snapshots };
   for (const item of data || []) {
-    if (!snapshots[item.context_type]) snapshots[item.context_type] = item;
+    if (!snapshots[item.context_type]) {
+      snapshots[item.context_type] = item;
+      continue;
+    }
+    const existing = snapshots[item.context_type];
+    const existingTime = new Date(existing.created_at || 0).getTime();
+    const incomingTime = new Date(item.created_at || 0).getTime();
+    if (!Number.isFinite(existingTime) || incomingTime >= existingTime) {
+      snapshots[item.context_type] = item;
+    }
   }
   appState.snapshots = snapshots;
 }
@@ -1607,6 +1625,8 @@ async function fetchWeatherSnapshot() {
   const query = (appState.config.weatherLocationQuery || '').trim();
   if (!query) return;
 
+  const existingSnapshot = appState.snapshots[appState.config.weatherSnapshotType] || null;
+
   let { weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName } = appState.config;
   if (!latitude || !longitude) {
     const geo = await geocodeWeatherLocation(query);
@@ -1619,44 +1639,59 @@ async function fetchWeatherSnapshot() {
     try { fillSettingsForm(); } catch {}
   }
 
-  const url = new URL('https://api.open-meteo.com/v1/forecast');
-  url.searchParams.set('latitude', latitude);
-  url.searchParams.set('longitude', longitude);
-  url.searchParams.set('current', 'temperature_2m,weather_code,apparent_temperature');
-  url.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min');
-  url.searchParams.set('forecast_days', '2');
-  url.searchParams.set('timezone', timezone || 'auto');
-  const response = await fetch(url.toString(), { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`);
-  const data = await response.json();
-  const currentTemp = Math.round(Number(data.current?.temperature_2m));
-  const high = Math.round(Number(data.daily?.temperature_2m_max?.[0]));
-  const low = Math.round(Number(data.daily?.temperature_2m_min?.[0]));
-  const code = Number(data.current?.weather_code ?? data.daily?.weather_code?.[0]);
-  const tomorrowHigh = Math.round(Number(data.daily?.temperature_2m_max?.[1]));
-  const tomorrowLow = Math.round(Number(data.daily?.temperature_2m_min?.[1]));
-  const tomorrowCode = Number(data.daily?.weather_code?.[1]);
-  const createdAt = getNowDate().toISOString();
-  const payload = {
-      locationName: locationName || query,
-      currentTemp,
-      high,
-      low,
-      weatherCode: code,
-      weatherLabel: weatherCodeLabel(code),
-      tomorrowHigh,
-      tomorrowLow,
-      tomorrowWeatherCode: tomorrowCode,
-      tomorrowWeatherLabel: weatherCodeLabel(tomorrowCode),
-  };
-  payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
-  payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
-  appState.snapshots[appState.config.weatherSnapshotType] = {
-    context_type: appState.config.weatherSnapshotType,
-    created_at: createdAt,
-    valid_until: new Date(getNowMs() + 30 * 60 * 1000).toISOString(),
-    payload,
-  };
+  try {
+    const url = new URL('https://api.open-meteo.com/v1/forecast');
+    url.searchParams.set('latitude', latitude);
+    url.searchParams.set('longitude', longitude);
+    url.searchParams.set('current', 'temperature_2m,weather_code,apparent_temperature');
+    url.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min');
+    url.searchParams.set('forecast_days', '2');
+    url.searchParams.set('timezone', timezone || 'auto');
+    const response = await fetch(url.toString(), { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`);
+    const data = await response.json();
+    const currentTemp = Math.round(Number(data.current?.temperature_2m));
+    const high = Math.round(Number(data.daily?.temperature_2m_max?.[0]));
+    const low = Math.round(Number(data.daily?.temperature_2m_min?.[0]));
+    const code = Number(data.current?.weather_code ?? data.daily?.weather_code?.[0]);
+    const tomorrowHigh = Math.round(Number(data.daily?.temperature_2m_max?.[1]));
+    const tomorrowLow = Math.round(Number(data.daily?.temperature_2m_min?.[1]));
+    const tomorrowCode = Number(data.daily?.weather_code?.[1]);
+    const createdAt = getNowDate().toISOString();
+    const payload = {
+        locationName: locationName || query,
+        currentTemp,
+        high,
+        low,
+        weatherCode: code,
+        weatherLabel: weatherCodeLabel(code),
+        tomorrowHigh,
+        tomorrowLow,
+        tomorrowWeatherCode: tomorrowCode,
+        tomorrowWeatherLabel: weatherCodeLabel(tomorrowCode),
+    };
+    payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
+    payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
+    appState.snapshots[appState.config.weatherSnapshotType] = {
+      context_type: appState.config.weatherSnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 30 * 60 * 1000).toISOString(),
+      payload,
+      source: 'live-weather',
+    };
+    pushDevLog('info', `Weather refreshed for ${payload.locationName}.`);
+  } catch (error) {
+    if (existingSnapshot?.payload) {
+      appState.snapshots[appState.config.weatherSnapshotType] = {
+        ...existingSnapshot,
+        stale: true,
+        stale_reason: error?.message || 'Weather refresh failed',
+      };
+      pushDevLog('warn', `Weather refresh failed, keeping last good weather: ${error?.message || error}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 function renderCalendarAccounts() {

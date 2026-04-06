@@ -228,3 +228,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 
 ### Notes
 - Google access tokens are synced in this first pass so shared displays can read calendar events. Because browser access tokens expire, reconnecting on mobile may occasionally be needed.
+
+
+## v1.2.1-dev
+- Fixed weather sync reliability across devices using shared weather config.
+- Devices now keep the last good weather snapshot if refresh fails instead of blanking the UI.
+- Weather refresh now runs after shared snapshots load, preventing race conditions that caused weather to flicker on TVs.
