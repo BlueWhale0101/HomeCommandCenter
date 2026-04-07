@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.4';
+const APP_VERSION = 'v2.0.5';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -213,6 +213,8 @@ function normalizeCustomSignalRule(input = {}) {
   const clearMode = String(input.clearMode || 'schedule_window');
   const startHour = clampHour(input.startHour, 17);
   const escalateToWarning = !!input.escalateToWarning;
+  const rawEndHour = input.endHour === '' || input.endHour === null || input.endHour === undefined ? null : Number(input.endHour);
+  const endHour = Number.isFinite(rawEndHour) ? Math.max(0, Math.min(23, rawEndHour)) : null;
   const escalateHour = clampHour(input.escalateHour, Math.max(startHour, 20));
   return {
     id: String(input.id || createRuleId()),
@@ -221,6 +223,7 @@ function normalizeCustomSignalRule(input = {}) {
     scheduleType: scheduleType === 'daily' ? 'daily' : 'weekly',
     dayOfWeek: Number.isFinite(Number(input.dayOfWeek)) ? Math.max(0, Math.min(6, Number(input.dayOfWeek))) : 3,
     startHour,
+    endHour,
     clearMode: clearMode === 'log_event_today' ? 'log_event_today' : 'schedule_window',
     ackEventType: String(input.ackEventType || '').trim(),
     escalateToWarning,
@@ -231,9 +234,12 @@ function normalizeCustomSignalRule(input = {}) {
 
 function summarizeCustomSignalRule(rule) {
   const normalized = normalizeCustomSignalRule(rule);
+  const timeWindowLabel = normalized.endHour !== null
+    ? `${formatHourLabel(normalized.startHour)}–${formatHourLabel(normalized.endHour)}`
+    : `from ${formatHourLabel(normalized.startHour)}`;
   const scheduleLabel = normalized.scheduleType === 'daily'
-    ? `Daily from ${formatHourLabel(normalized.startHour)}`
-    : `${DAY_OPTIONS.find(([value]) => Number(value) === normalized.dayOfWeek)?.[1] || 'Weekly'} from ${formatHourLabel(normalized.startHour)}`;
+    ? `Daily ${timeWindowLabel}`
+    : `${DAY_OPTIONS.find(([value]) => Number(value) === normalized.dayOfWeek)?.[1] || 'Weekly'} ${timeWindowLabel}`;
   const clearLabel = normalized.clearMode === 'log_event_today'
     ? `clears on log${normalized.ackEventType ? `: ${normalized.ackEventType}` : ''}`
     : 'hides outside schedule';
@@ -1316,6 +1322,7 @@ function renderMobileSignals() {
         ruleCard.append(makeSelectField('Day', DAY_OPTIONS, String(rule.dayOfWeek), (value) => updateRule({ dayOfWeek: Number(value) })));
       }
       ruleCard.append(makeHourField('Start showing', rule.startHour, (value) => updateRule({ startHour: Number(value), escalateHour: Math.max(Number(value), rule.escalateHour) })));
+      ruleCard.append(makeOptionalHourField('End showing (optional)', rule.endHour, (value) => updateRule({ endHour: value === '' ? null : Number(value) })));
       ruleCard.append(makeSelectField('Clear / acknowledge', CUSTOM_SIGNAL_CLEAR_OPTIONS, rule.clearMode, (value) => updateRule({ clearMode: value })));
       if (rule.clearMode === 'log_event_today') {
         ruleCard.append(makeTextField(
@@ -1419,6 +1426,11 @@ function makeSelectField(label, options, value, onChange) {
 function makeHourField(label, value, onChange) {
   const options = Array.from({ length: 24 }, (_, hour) => [String(hour), formatHourLabel(hour)]);
   return makeSelectField(label, options, String(value), onChange);
+}
+
+function makeOptionalHourField(label, value, onChange) {
+  const options = [['', 'No end time'], ...Array.from({ length: 24 }, (_, hour) => [String(hour), formatHourLabel(hour)])];
+  return makeSelectField(label, options, value === null || value === undefined ? '' : String(value), onChange);
 }
 
 function renderMobileDebug() {
@@ -2811,17 +2823,19 @@ function buildSyntheticCustomSignals(rules = getEffectiveSignalRules()) {
 
   for (const rule of normalizedRules.custom) {
     if (!rule.enabled || !rule.name) continue;
-    const inSchedule = rule.scheduleType === 'daily'
-      ? hour >= rule.startHour
-      : day === rule.dayOfWeek && hour >= rule.startHour;
+    const scheduleDayMatch = rule.scheduleType === 'daily' ? true : day === rule.dayOfWeek;
+    const afterStart = hour >= rule.startHour;
+    const beforeEnd = rule.endHour === null || hour <= rule.endHour;
+    const inSchedule = scheduleDayMatch && afterStart && beforeEnd;
     if (!inSchedule) continue;
     if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType)) continue;
     const isWarning = rule.escalateToWarning && hour >= rule.escalateHour;
     const descriptionParts = [];
+    const timeWindowLabel = rule.endHour === null ? `from ${formatHourLabel(rule.startHour)}` : `${formatHourLabel(rule.startHour)}–${formatHourLabel(rule.endHour)}`;
     if (rule.scheduleType === 'weekly') {
-      descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly'} from ${formatHourLabel(rule.startHour)}`);
+      descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly'} ${timeWindowLabel}`);
     } else {
-      descriptionParts.push(`Daily from ${formatHourLabel(rule.startHour)}`);
+      descriptionParts.push(`Daily ${timeWindowLabel}`);
     }
     if (rule.clearMode === 'log_event_today' && rule.ackEventType) {
       descriptionParts.push(`ack with ${rule.ackEventType}`);
