@@ -26,6 +26,7 @@ const DEFAULT_CONFIG = {
   weatherLatitude: '',
   weatherLongitude: '',
   weatherTimezone: '',
+  signalRulesDraft: null,
 };
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
@@ -38,6 +39,7 @@ const SHARED_CONFIG_KEYS = {
   googleClientId: 'google_client_id',
   weather: 'weather_config',
   calendarAccounts: 'google_calendar_accounts',
+  signalRules: 'signal_rules',
 };
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
@@ -53,6 +55,33 @@ const QUICK_LOGS = [
 ];
 const LOAD_STATUS_ORDER = ['washing', 'drying', 'ready', 'done'];
 
+const DAY_OPTIONS = [
+  ['0', 'Sunday'],
+  ['1', 'Monday'],
+  ['2', 'Tuesday'],
+  ['3', 'Wednesday'],
+  ['4', 'Thursday'],
+  ['5', 'Friday'],
+  ['6', 'Saturday'],
+];
+const DEFAULT_SIGNAL_RULES = {
+  bins: {
+    enabled: true,
+    dayOfWeek: 3,
+    startHour: 12,
+    escalateHour: 17,
+    location: 'outside',
+  },
+  laundry: {
+    enabled: true,
+  },
+  tomorrowEvent: {
+    enabled: true,
+    startHour: 17,
+    minEvents: 1,
+  },
+};
+
 let autoRefreshTimer = null;
 
 const DEFAULT_CONNECTION_STATUS = {
@@ -62,8 +91,10 @@ const DEFAULT_CONNECTION_STATUS = {
   realtime: { level: 'unknown', text: 'Not tested' },
 };
 
+const INITIAL_CONFIG = loadConfig();
+
 let appState = {
-  config: loadConfig(),
+  config: INITIAL_CONFIG,
   supabase: null,
   deviceKey: getOrCreateDeviceKey(),
   deviceProfile: null,
@@ -78,6 +109,7 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
+  signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
 };
 
@@ -105,6 +137,58 @@ const connectGoogleAccountButton = document.getElementById('connect-google-accou
 const googleCalendarAccountsEl = document.getElementById('google-calendar-accounts');
 
 let bootstrapPromise = null;
+
+
+function clampHour(value, fallback = 0) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(0, Math.min(23, Math.round(num)));
+}
+
+function normalizeSignalRules(input) {
+  const raw = input && typeof input === 'object' ? input : {};
+  return {
+    bins: {
+      enabled: raw?.bins?.enabled !== undefined ? !!raw.bins.enabled : DEFAULT_SIGNAL_RULES.bins.enabled,
+      dayOfWeek: Number.isFinite(Number(raw?.bins?.dayOfWeek)) ? Math.max(0, Math.min(6, Number(raw.bins.dayOfWeek))) : DEFAULT_SIGNAL_RULES.bins.dayOfWeek,
+      startHour: clampHour(raw?.bins?.startHour, DEFAULT_SIGNAL_RULES.bins.startHour),
+      escalateHour: clampHour(raw?.bins?.escalateHour, DEFAULT_SIGNAL_RULES.bins.escalateHour),
+      location: String(raw?.bins?.location || DEFAULT_SIGNAL_RULES.bins.location || 'outside').trim() || 'outside',
+    },
+    laundry: {
+      enabled: raw?.laundry?.enabled !== undefined ? !!raw.laundry.enabled : DEFAULT_SIGNAL_RULES.laundry.enabled,
+    },
+    tomorrowEvent: {
+      enabled: raw?.tomorrowEvent?.enabled !== undefined ? !!raw.tomorrowEvent.enabled : DEFAULT_SIGNAL_RULES.tomorrowEvent.enabled,
+      startHour: clampHour(raw?.tomorrowEvent?.startHour, DEFAULT_SIGNAL_RULES.tomorrowEvent.startHour),
+      minEvents: Math.max(1, Number(raw?.tomorrowEvent?.minEvents) || DEFAULT_SIGNAL_RULES.tomorrowEvent.minEvents),
+    },
+  };
+}
+
+function getEffectiveSignalRules() {
+  const shared = appState?.sharedConfig?.[SHARED_CONFIG_KEYS.signalRules];
+  if (shared && typeof shared === 'object') return normalizeSignalRules(shared);
+  if (appState?.signalRulesDraft) return normalizeSignalRules(appState.signalRulesDraft);
+  return normalizeSignalRules(DEFAULT_SIGNAL_RULES);
+}
+
+function persistSignalRulesDraft() {
+  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
+  saveConfig(appState.config);
+}
+
+function setSignalRulesDraft(nextRules) {
+  appState.signalRulesDraft = normalizeSignalRules(nextRules);
+  persistSignalRulesDraft();
+}
+
+function formatHourLabel(hour) {
+  const normalized = clampHour(hour, 0);
+  const suffix = normalized >= 12 ? 'PM' : 'AM';
+  const display = normalized % 12 || 12;
+  return `${display}:00 ${suffix}`;
+}
 
 
 function getNowDate() {
@@ -669,7 +753,7 @@ const MODE_LAYOUTS = {
   },
   tv: {
     screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvTodayColumn', 'tvTomorrowColumn', 'tvAttentionBand'],
+    widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
   },
   laundry: {
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
@@ -718,7 +802,7 @@ function renderModeLayout(mode, context) {
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
-    tvWrap.className = `tv-layout tv-layout-v2 ${getTvViewportClass()}`.trim();
+    tvWrap.className = 'tv-layout';
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
@@ -753,9 +837,9 @@ const WIDGETS = {
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvTodayColumn: (context) => buildTvColumnCard('Today', buildTvTodayColumnData(context), 'Nothing major on the board.'),
-  tvTomorrowColumn: (context) => buildTvColumnCard('Tomorrow', buildTvTomorrowColumnData(context), 'Tomorrow is still open.'),
-  tvAttentionBand: (context) => buildTvAttentionBand(context),
+  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
+  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
+  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
@@ -775,6 +859,7 @@ function renderMobileControlPanel(context) {
     ['logs', 'Logs'],
     ['calendar', 'Calendar'],
     ['weather', 'Weather'],
+    ['signals', 'Signals'],
     ['debug', 'Debug'],
   ];
 
@@ -818,6 +903,7 @@ function mobileTabSubtitle(tab, context) {
   if (tab === 'logs') return 'Recent actions and links';
   if (tab === 'calendar') return `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`;
   if (tab === 'weather') return appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration';
+  if (tab === 'signals') return 'Household reminder rules and previews';
   if (tab === 'debug') return appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls';
   return '';
 }
@@ -827,6 +913,7 @@ function renderMobileTabContent(tab, context) {
   if (tab === 'logs') return renderMobileLogs();
   if (tab === 'calendar') return renderMobileCalendar();
   if (tab === 'weather') return renderMobileWeather();
+  if (tab === 'signals') return renderMobileSignals();
   if (tab === 'debug') return renderMobileDebug();
   return document.createTextNode('');
 }
@@ -934,57 +1021,6 @@ function renderCalendarAccountsClone() {
   return host;
 }
 
-const TEST_WEATHER_PRESETS = {
-  clear: { label: 'Clear and mild', currentTemp: 22, high: 25, low: 14, weatherCode: 1, tomorrowHigh: 26, tomorrowLow: 15, tomorrowWeatherCode: 1 },
-  hot: { label: 'Hot day', currentTemp: 34, high: 39, low: 24, weatherCode: 0, tomorrowHigh: 37, tomorrowLow: 23, tomorrowWeatherCode: 1 },
-  cloudy: { label: 'Cloudy', currentTemp: 18, high: 20, low: 12, weatherCode: 3, tomorrowHigh: 19, tomorrowLow: 11, tomorrowWeatherCode: 2 },
-  rain: { label: 'Rain', currentTemp: 13, high: 16, low: 10, weatherCode: 63, tomorrowHigh: 17, tomorrowLow: 11, tomorrowWeatherCode: 61 },
-  storm: { label: 'Thunderstorm', currentTemp: 21, high: 27, low: 18, weatherCode: 95, tomorrowHigh: 24, tomorrowLow: 16, tomorrowWeatherCode: 80 },
-  cold: { label: 'Cold snap', currentTemp: 7, high: 11, low: 3, weatherCode: 45, tomorrowHigh: 12, tomorrowLow: 4, tomorrowWeatherCode: 2 },
-};
-
-function buildTestWeatherSnapshot(presetKey) {
-  const preset = TEST_WEATHER_PRESETS[presetKey] || TEST_WEATHER_PRESETS.clear;
-  const createdAt = getNowDate().toISOString();
-  const payload = {
-    locationName: cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Test location'),
-    currentTemp: preset.currentTemp,
-    high: preset.high,
-    low: preset.low,
-    weatherCode: preset.weatherCode,
-    weatherLabel: weatherCodeLabel(preset.weatherCode),
-    tomorrowHigh: preset.tomorrowHigh,
-    tomorrowLow: preset.tomorrowLow,
-    tomorrowWeatherCode: preset.tomorrowWeatherCode,
-    tomorrowWeatherLabel: weatherCodeLabel(preset.tomorrowWeatherCode),
-  };
-  payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
-  payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
-  return {
-    context_type: appState.config.weatherSnapshotType,
-    created_at: createdAt,
-    valid_until: new Date(getNowMs() + 6 * 60 * 60 * 1000).toISOString(),
-    payload,
-    source: `test-weather:${presetKey}`,
-  };
-}
-
-function applyTestWeatherPreset(presetKey) {
-  appState.snapshots[appState.config.weatherSnapshotType] = buildTestWeatherSnapshot(presetKey);
-  pushDevLog('info', `Applied test weather preset ${presetKey}.`);
-  renderScreen();
-  renderDevConsole();
-}
-
-async function restoreLiveWeatherSnapshot() {
-  try {
-    await refreshWeatherOnly();
-  } catch (error) {
-    handleRuntimeActionError('Could not restore live weather', error);
-    showToast('Could not restore live weather', 'error');
-  }
-}
-
 function renderMobileWeather() {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
@@ -1013,32 +1049,180 @@ function renderMobileWeather() {
   openSettings.addEventListener('click', () => settingsButton?.click());
   actions.append(refresh, push, openSettings);
   wrap.append(actions);
-
-  const testControls = document.createElement('div');
-  testControls.className = 'mobile-inline-actions';
-  const presetSelect = document.createElement('select');
-  presetSelect.className = 'secondary-button';
-  Object.entries(TEST_WEATHER_PRESETS).forEach(([key, preset]) => {
-    const option = document.createElement('option');
-    option.value = key;
-    option.textContent = preset.label;
-    presetSelect.append(option);
-  });
-  const applyTest = document.createElement('button');
-  applyTest.className = 'secondary-button';
-  applyTest.textContent = 'Apply test weather';
-  applyTest.addEventListener('click', () => applyTestWeatherPreset(presetSelect.value));
-  const restoreLive = document.createElement('button');
-  restoreLive.className = 'secondary-button';
-  restoreLive.textContent = 'Use live weather';
-  restoreLive.addEventListener('click', () => restoreLiveWeatherSnapshot());
-  testControls.append(presetSelect, applyTest, restoreLive);
-  wrap.append(buildCard('Weather Preview', 'Try different weather states locally on this device', testControls, 'mobile-compact-card'));
-
   const weather = getSnapshot(appState.config.weatherSnapshotType);
-  const weatherMeta = [snapshotMetaLabel('Weather', weather), weather?.source?.startsWith('test-weather:') ? 'Preview mode' : 'Live mode'].filter(Boolean).join(' · ');
-  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: weatherMeta, pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
+}
+
+
+function renderSignalRuleEditorCard(title, subtitle, buildBody) {
+  const card = document.createElement('section');
+  card.className = 'card mobile-compact-card';
+  const header = document.createElement('div');
+  header.className = 'card-header';
+  const h2 = document.createElement('h2');
+  h2.textContent = title;
+  const sub = document.createElement('span');
+  sub.className = 'card-subtitle';
+  sub.textContent = subtitle;
+  header.append(h2, sub);
+  const body = document.createElement('div');
+  body.className = 'mobile-stack signal-config-card-body';
+  buildBody(body);
+  card.append(header, body);
+  return card;
+}
+
+function renderSignalRulesPreview(rules) {
+  const previewItems = [
+    ...buildSyntheticLaundrySignals(rules),
+    ...buildSyntheticRuleSignals(rules),
+  ].slice(0, 6).map(signalToItem);
+  return renderTaskList(previewItems, 'No synthetic signals would be visible right now for these settings.', { showPills: true });
+}
+
+function renderMobileSignals() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+
+  const pushBtn = document.createElement('button');
+  pushBtn.className = 'secondary-button';
+  pushBtn.textContent = 'Push signal config';
+  pushBtn.addEventListener('click', async () => {
+    try {
+      await pushSharedSignalConfig();
+      await fetchHouseholdConfig();
+      renderMode();
+    } catch (error) {
+      handleRuntimeActionError('Signal config push failed', error);
+      showToast('Could not push signal config', 'error');
+    }
+  });
+
+  const loadSharedBtn = document.createElement('button');
+  loadSharedBtn.className = 'secondary-button';
+  loadSharedBtn.textContent = 'Use household config';
+  loadSharedBtn.addEventListener('click', () => {
+    setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
+    showToast('Loaded household signal config', 'success');
+    renderMode();
+  });
+
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'secondary-button';
+  resetBtn.textContent = 'Reset defaults';
+  resetBtn.addEventListener('click', () => {
+    setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
+    showToast('Reset local signal draft', 'success');
+    renderMode();
+  });
+
+  actions.append(pushBtn, loadSharedBtn, resetBtn);
+  wrap.append(actions);
+
+  const note = document.createElement('div');
+  note.className = 'muted';
+  note.textContent = 'These controls drive synthetic household signals like bins reminders, laundry attention, and tomorrow-event prompts.';
+  wrap.append(note);
+
+  const rules = normalizeSignalRules(appState.signalRulesDraft || appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
+
+  const binsCard = renderSignalRuleEditorCard('Bins reminder', 'Configurable weekly rule for shared displays', (body) => {
+    body.append(makeCheckboxRow('Enable bins reminder', rules.bins.enabled, (checked) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.bins.enabled = checked;
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+    body.append(makeSelectField('Reminder day', DAY_OPTIONS, String(rules.bins.dayOfWeek), (value) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.bins.dayOfWeek = Number(value);
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+    body.append(makeHourField('Start showing', rules.bins.startHour, (value) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.bins.startHour = Number(value);
+      if (next.bins.escalateHour < next.bins.startHour) next.bins.escalateHour = next.bins.startHour;
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+    body.append(makeHourField('Escalate to warning', rules.bins.escalateHour, (value) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.bins.escalateHour = Number(value);
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+  });
+  wrap.append(binsCard);
+
+  const tomorrowCard = renderSignalRuleEditorCard('Tomorrow event signal', 'Boost tomorrow awareness in the evening', (body) => {
+    body.append(makeCheckboxRow('Enable big event tomorrow signal', rules.tomorrowEvent.enabled, (checked) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.tomorrowEvent.enabled = checked;
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+    body.append(makeHourField('Start showing after', rules.tomorrowEvent.startHour, (value) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.tomorrowEvent.startHour = Number(value);
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+  });
+  wrap.append(tomorrowCard);
+
+  const laundryCard = renderSignalRuleEditorCard('Laundry attention', 'Surface laundry activity as a household signal', (body) => {
+    body.append(makeCheckboxRow('Enable laundry attention signal', rules.laundry.enabled, (checked) => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.laundry.enabled = checked;
+      setSignalRulesDraft(next);
+      renderMode();
+    }));
+  });
+  wrap.append(laundryCard);
+
+  wrap.append(buildCard('Signal preview', 'Uses the current local draft and current time override', renderSignalRulesPreview(rules), 'mobile-compact-card'));
+  return wrap;
+}
+
+function makeCheckboxRow(label, checked, onChange) {
+  const row = document.createElement('label');
+  row.className = 'checkbox-row mobile-checkbox-row';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = !!checked;
+  input.addEventListener('change', () => onChange(!!input.checked));
+  const text = document.createElement('span');
+  text.textContent = label;
+  row.append(input, text);
+  return row;
+}
+
+function makeSelectField(label, options, value, onChange) {
+  const wrap = document.createElement('label');
+  wrap.className = 'mobile-field-stack';
+  const title = document.createElement('span');
+  title.className = 'muted';
+  title.textContent = label;
+  const select = document.createElement('select');
+  for (const [optionValue, optionLabel] of options) {
+    const option = document.createElement('option');
+    option.value = optionValue;
+    option.textContent = optionLabel;
+    if (String(optionValue) === String(value)) option.selected = true;
+    select.append(option);
+  }
+  select.addEventListener('change', () => onChange(select.value));
+  wrap.append(title, select);
+  return wrap;
+}
+
+function makeHourField(label, value, onChange) {
+  const options = Array.from({ length: 24 }, (_, hour) => [String(hour), formatHourLabel(hour)]);
+  return makeSelectField(label, options, String(value), onChange);
 }
 
 function renderMobileDebug() {
@@ -1065,226 +1249,12 @@ function renderMobileDebug() {
   return wrap;
 }
 
-
-function getTvViewportClass() {
-  const width = window.innerWidth || 0;
-  const height = window.innerHeight || 0;
-  if (width && height && (height <= 820 || width / Math.max(height, 1) >= 2)) return 'tv-compact';
-  if (height >= 980) return 'tv-tall';
-  return 'tv-standard';
-}
-
-function weatherCodeGlyph(code) {
-  const group = Number(code);
-  if ([0, 1].includes(group)) return '☀';
-  if ([2, 3].includes(group)) return '⛅';
-  if ([45, 48].includes(group)) return '🌫';
-  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(group)) return '🌧';
-  if ([71, 73, 75, 77, 85, 86].includes(group)) return '❄';
-  if ([95, 96, 99].includes(group)) return '⛈';
-  return '◦';
-}
-
-function formatTvFreshnessLabel(prefix, snapshot) {
-  if (!snapshot) return null;
-  const updated = snapshot.created_at || snapshot.updated_at || snapshot.valid_until;
-  if (!updated) return prefix;
-  return `${prefix} ${relativeTime(updated)}`;
-}
-
-function createTvDisplayItem({ glyph = '◦', title = '', meta = '', metaInline = '', emphasis = '', kind = '' }) {
-  return { glyph, title, meta, metaInline, emphasis, kind };
-}
-
-function mapCalendarSnapshotItems(items, glyph = '◦') {
-  return (Array.isArray(items) ? items : []).map((item) => createTvDisplayItem({
-    glyph,
-    title: item.title,
-    metaInline: item.time || '',
-    meta: [item.time, item.sourceLabel].filter(Boolean).join(' · '),
-    kind: 'calendar',
-  }));
-}
-
-function mapTaskItemsForTv(items, glyph = '▸', emphasis = '') {
-  return (Array.isArray(items) ? items : []).map((item) => createTvDisplayItem({
-    glyph,
-    title: item.title,
-    metaInline: item.meta || '',
-    meta: item.meta || '',
-    emphasis,
-    kind: 'task',
-  }));
-}
-
-function buildTvTodayColumnData(context) {
-  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const todayTasks = mapTaskItemsForTv(context.digest.todayTasks, '▸');
-  const todayEvents = mapCalendarSnapshotItems(todaySnapshot?.items, '◦');
-  const overdue = mapTaskItemsForTv(context.digest.overdueTasks.slice(0, 2), '⚠', 'overdue');
-
-  const visible = [];
-  const maxRows = 4;
-  const maxLen = Math.max(todayTasks.length, todayEvents.length);
-  for (let i = 0; i < maxLen && visible.length < maxRows; i += 1) {
-    if (todayTasks[i]) visible.push(todayTasks[i]);
-    if (visible.length >= maxRows) break;
-    if (todayEvents[i]) visible.push(todayEvents[i]);
-  }
-  for (const item of overdue) {
-    if (visible.length >= maxRows) break;
-    visible.push(item);
-  }
-
-  const total = todayTasks.length + todayEvents.length + overdue.length;
-  return { items: visible.slice(0, maxRows), totalCount: total };
-}
-
-function buildTvTomorrowColumnData(context) {
-  const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const tomorrowEvents = mapCalendarSnapshotItems((tomorrowSnapshot?.items || []).slice(0, 4), '◦');
-  const tomorrowTasks = mapTaskItemsForTv(context.tomorrowItems.filter((item) => item.pill !== 'Calendar'), '▸');
-  const maxRows = 4;
-  const items = [];
-
-  const eventLead = context.isEvening ? 3 : 2;
-  items.push(...tomorrowEvents.slice(0, eventLead));
-  items.push(...tomorrowTasks.slice(0, maxRows - items.length));
-  if (items.length < maxRows) {
-    items.push(...tomorrowEvents.slice(eventLead, eventLead + (maxRows - items.length)));
-  }
-
-  const total = tomorrowEvents.length + tomorrowTasks.length;
-  return { items: items.slice(0, maxRows), totalCount: total };
-}
-
-function buildTvColumnCard(title, data, emptyText) {
-  const template = document.getElementById('card-template');
-  const node = template.content.firstElementChild.cloneNode(true);
-  node.classList.add('tv-card', 'tv-column-card');
-  node.querySelector('h2').textContent = title;
-  node.querySelector('.card-subtitle').textContent = '';
-  node.querySelector('.card-body').append(renderTvCompactRows(data.items || [], emptyText, { moreCount: Math.max(0, (data.totalCount || 0) - ((data.items || []).length || 0)) }));
-  return node;
-}
-
-function renderTvCompactRows(items, emptyText, options = {}) {
-  const body = document.createElement('div');
-  body.className = 'tv-compact-list';
-  if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state tv-empty-state';
-    empty.textContent = emptyText;
-    body.append(empty);
-  } else {
-    for (const item of items) {
-      const row = document.createElement('div');
-      row.className = `tv-compact-row ${item.emphasis ? `is-${item.emphasis}` : ''}`.trim();
-      const glyph = document.createElement('span');
-      glyph.className = 'tv-row-glyph';
-      glyph.textContent = item.glyph || '◦';
-      const copy = document.createElement('div');
-      copy.className = 'tv-row-copy';
-      const titleLine = document.createElement('div');
-      titleLine.className = 'tv-row-line';
-      const title = document.createElement('span');
-      title.className = 'tv-row-title';
-      title.textContent = item.title || '';
-      titleLine.append(title);
-      if (item.metaInline) {
-        const metaInline = document.createElement('span');
-        metaInline.className = 'tv-row-meta-inline';
-        metaInline.textContent = item.metaInline;
-        titleLine.append(metaInline);
-      }
-      copy.append(titleLine);
-      if (item.meta && item.meta !== item.metaInline) {
-        const meta = document.createElement('div');
-        meta.className = 'tv-row-meta';
-        meta.textContent = item.meta;
-        copy.append(meta);
-      }
-      row.append(glyph, copy);
-      body.append(row);
-    }
-  }
-  if (options.moreCount > 0) {
-    const more = document.createElement('div');
-    more.className = 'tv-more-line';
-    more.textContent = `+${options.moreCount} more`;
-    body.append(more);
-  }
-  return body;
-}
-
-function buildTvAttentionBand(context) {
-  const template = document.getElementById('card-template');
-  const node = template.content.firstElementChild.cloneNode(true);
-  node.classList.add('tv-card', 'tv-attention-card');
-  node.querySelector('h2').textContent = 'Attention';
-  node.querySelector('.card-subtitle').textContent = '';
-  node.querySelector('.card-body').append(renderTvAttentionTiles(buildTvAttentionItems(context), 'House is in a good place.'));
-  return node;
-}
-
-function buildTvAttentionItems(context) {
-  const items = context.signals.slice(0, 4).map((signal) => ({
-    title: signal.title,
-    meta: signal.description || signal.location || '',
-    severity: signal.severity || 'info',
-    glyph: signal.severity === 'warning' ? '⚠' : '•',
-  }));
-
-  if (context.isEvening) {
-    const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-    const bigEvent = Array.isArray(tomorrowSnapshot?.items) ? tomorrowSnapshot.items[0] : null;
-    if (bigEvent && items.length < 4) {
-      items.push({
-        title: 'Big event tomorrow',
-        meta: [bigEvent.title, bigEvent.time].filter(Boolean).join(' · '),
-        severity: 'notice',
-        glyph: '⚠',
-      });
-    }
-  }
-  return items.slice(0, 4);
-}
-
-function renderTvAttentionTiles(items, emptyText) {
-  const wrap = document.createElement('div');
-  wrap.className = 'tv-attention-grid';
-  if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state tv-empty-state';
-    empty.textContent = emptyText;
-    wrap.append(empty);
-    return wrap;
-  }
-  for (const item of items) {
-    const tile = document.createElement('div');
-    tile.className = `tv-attention-tile is-${item.severity || 'info'}`.trim();
-    const title = document.createElement('div');
-    title.className = 'tv-attention-title';
-    title.textContent = `${item.glyph || '•'} ${item.title}`;
-    tile.append(title);
-    if (item.meta) {
-      const meta = document.createElement('div');
-      meta.className = 'tv-attention-meta';
-      meta.textContent = item.meta;
-      tile.append(meta);
-    }
-    wrap.append(tile);
-  }
-  return wrap;
-}
-
 function buildTvHero() {
   const section = document.createElement('section');
   section.className = 'card tv-card tv-hero';
   const weather = getSnapshot(appState.config.weatherSnapshotType);
   const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
   const nextEvent = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
-  const weatherGlyph = weather?.payload ? weatherCodeGlyph(weather.payload.weatherCode) : '◦';
 
   const topRow = document.createElement('div');
   topRow.className = 'tv-hero-top';
@@ -1304,19 +1274,19 @@ function buildTvHero() {
 
   const weatherEl = document.createElement('div');
   weatherEl.className = 'tv-weather';
-  weatherEl.textContent = weather?.payload ? `${weatherGlyph} ${formatWeatherSummary(weather.payload, { includeTomorrow: false })}` : '◦ Weather snapshot not loaded yet';
+  weatherEl.textContent = weather?.payload ? formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }) : 'Weather snapshot not loaded yet';
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
-  nextEl.textContent = nextEvent ? `${nextEvent.title}${nextEvent.time ? ` — ${nextEvent.time}` : ''}` : 'Nothing urgent on the calendar';
+  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
 
   contextRow.append(weatherEl, nextEl);
 
   const freshnessEl = document.createElement('div');
   freshnessEl.className = 'muted tv-freshness';
   freshnessEl.textContent = [
-    formatTvFreshnessLabel('Weather', weather),
-    formatTvFreshnessLabel('Calendar', todayCal),
+    weather ? snapshotMetaLabel('Weather', weather) : null,
+    todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
   ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
 
   section.append(topRow, contextRow, freshnessEl);
@@ -1756,6 +1726,9 @@ function applySharedConfigRows(rows) {
     appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
     appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
   }
+  const sharedSignalRules = map[SHARED_CONFIG_KEYS.signalRules];
+  appState.signalRulesDraft = normalizeSignalRules(sharedSignalRules || appState.config.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
   const sharedAccounts = map[SHARED_CONFIG_KEYS.calendarAccounts];
   if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
     const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
@@ -1785,6 +1758,17 @@ async function pushSharedWeatherConfig() {
   appState.sharedConfig[SHARED_CONFIG_KEYS.weather] = payload;
   showToast('Pushed weather config to household', 'success');
   pushDevLog('info', 'Pushed weather config to household.');
+}
+
+async function pushSharedSignalConfig() {
+  const payload = normalizeSignalRules(appState.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  await upsertSharedConfigEntry(SHARED_CONFIG_KEYS.signalRules, payload);
+  appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] = payload;
+  appState.signalRulesDraft = normalizeSignalRules(payload);
+  appState.config.signalRulesDraft = normalizeSignalRules(payload);
+  saveConfig(appState.config);
+  showToast('Pushed signal config to household', 'success');
+  pushDevLog('info', 'Pushed signal config to household.');
 }
 
 async function pushSharedCalendarConfig() {
@@ -2556,6 +2540,29 @@ function buildKitchenHeadline(digest) {
   return parts.join(' · ');
 }
 
+
+function buildTomorrowEventSignal(rules = getEffectiveSignalRules()) {
+  const tomorrowRules = normalizeSignalRules(rules).tomorrowEvent;
+  if (!tomorrowRules.enabled) return null;
+  const now = getNowDate();
+  if (now.getHours() < tomorrowRules.startHour) return null;
+  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  if (items.length < tomorrowRules.minEvents) return null;
+  const lead = items[0] || {};
+  const title = items.length > 1 ? 'Big event tomorrow' : 'Event tomorrow';
+  const description = [lead.title, lead.time].filter(Boolean).join(' · ') || `${items.length} event${items.length === 1 ? '' : 's'} tomorrow`;
+  return {
+    id: 'synthetic-big-event-tomorrow',
+    signal_type: 'big_event_tomorrow',
+    title,
+    description,
+    severity: items.length > 1 ? 'warning' : 'notice',
+    location: 'calendar',
+    metadata: { synthetic: true, rule: 'tomorrow_event_preview', visible_in: ['tv', 'bedroom', 'kitchen'] },
+  };
+}
+
 function activeDbSignals() {
   return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > getNowDate());
 }
@@ -2569,32 +2576,40 @@ function didLogEventToday(eventType) {
   });
 }
 
-function buildSyntheticRuleSignals() {
+function buildSyntheticRuleSignals(rules = getEffectiveSignalRules()) {
   const items = [];
+  const normalizedRules = normalizeSignalRules(rules);
   const now = getNowDate();
-  const day = now.getDay(); // 0=Sun, 3=Wed
+  const day = now.getDay();
   const hour = now.getHours();
 
-  const isWednesdayReminderWindow = day === 3 && hour >= 12;
+  const bins = normalizedRules.bins;
+  const binsReminderWindow = bins.enabled && day === bins.dayOfWeek && hour >= bins.startHour;
   const binsDoneToday = didLogEventToday('bins_out');
 
-  if (isWednesdayReminderWindow && !binsDoneToday) {
+  if (binsReminderWindow && !binsDoneToday) {
+    const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === bins.dayOfWeek)?.[1] || 'Reminder';
     items.push({
-      id: 'synthetic-bins-wednesday',
-      signal_type: 'bins_wednesday',
+      id: `synthetic-bins-${bins.dayOfWeek}`,
+      signal_type: 'bins_weekly',
       title: 'Put bins out tonight',
-      description: hour >= 19 ? 'Wednesday night reminder · bins still need to go to the street.' : hour >= 17 ? 'Wednesday evening reminder · bins need to go to the street tonight.' : 'Wednesday afternoon reminder · bins need to go to the street tonight.',
-      severity: hour >= 17 ? 'warning' : 'notice',
-      location: 'outside',
-      metadata: { synthetic: true, rule: 'weekly_bins_wednesday', visible_in: ['tv', 'bedroom', 'kitchen'] },
+      description: hour >= bins.escalateHour ? `${dayLabel} night reminder · bins still need to go to the street.` : `${dayLabel} reminder · bins need to go to the street tonight.`,
+      severity: hour >= bins.escalateHour ? 'warning' : 'notice',
+      location: bins.location || 'outside',
+      metadata: { synthetic: true, rule: 'weekly_bins', visible_in: ['tv', 'bedroom', 'kitchen'] },
     });
   }
+
+  const tomorrowEventSignal = buildTomorrowEventSignal(normalizedRules);
+  if (tomorrowEventSignal) items.push(tomorrowEventSignal);
 
   return items;
 }
 
-function buildSyntheticLaundrySignals() {
+function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
   const items = [];
+  const normalizedRules = normalizeSignalRules(rules);
+  if (!normalizedRules.laundry.enabled) return items;
   const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
   if (activeLoads.length) {
     const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
@@ -2617,8 +2632,8 @@ function buildSyntheticLaundrySignals() {
   return items;
 }
 
-function activeSignals() {
-  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(), ...buildSyntheticRuleSignals()];
+function activeSignals(rules = getEffectiveSignalRules()) {
+  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(rules), ...buildSyntheticRuleSignals(rules)];
 }
 
 function buildForgetItems() {

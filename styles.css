@@ -1363,3 +1363,30 @@ body.mobile-mode .topbar {
     padding: 0.18rem 0.45rem;
   }
 }
+
+
+/* v2.0.1 signal config controls */
+.mobile-field-stack {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mobile-field-stack select,
+.mobile-field-stack input {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #0d1b13;
+  color: var(--text);
+  padding: 0.8rem 0.9rem;
+}
+
+.mobile-checkbox-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.signal-config-card-body {
+  gap: 0.7rem;
+}
