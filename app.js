@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.8c-dev';
+const APP_VERSION = 'v2.0.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -669,7 +669,7 @@ const MODE_LAYOUTS = {
   },
   tv: {
     screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
+    widgets: ['tvHero', 'tvTodayColumn', 'tvTomorrowColumn', 'tvAttentionBand'],
   },
   laundry: {
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
@@ -718,7 +718,7 @@ function renderModeLayout(mode, context) {
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
-    tvWrap.className = 'tv-layout';
+    tvWrap.className = `tv-layout tv-layout-v2 ${getTvViewportClass()}`.trim();
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
@@ -753,9 +753,9 @@ const WIDGETS = {
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
-  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
-  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
+  tvTodayColumn: (context) => buildTvColumnCard('Today', buildTvTodayColumnData(context), 'Nothing major on the board.'),
+  tvTomorrowColumn: (context) => buildTvColumnCard('Tomorrow', buildTvTomorrowColumnData(context), 'Tomorrow is still open.'),
+  tvAttentionBand: (context) => buildTvAttentionBand(context),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
@@ -934,6 +934,57 @@ function renderCalendarAccountsClone() {
   return host;
 }
 
+const TEST_WEATHER_PRESETS = {
+  clear: { label: 'Clear and mild', currentTemp: 22, high: 25, low: 14, weatherCode: 1, tomorrowHigh: 26, tomorrowLow: 15, tomorrowWeatherCode: 1 },
+  hot: { label: 'Hot day', currentTemp: 34, high: 39, low: 24, weatherCode: 0, tomorrowHigh: 37, tomorrowLow: 23, tomorrowWeatherCode: 1 },
+  cloudy: { label: 'Cloudy', currentTemp: 18, high: 20, low: 12, weatherCode: 3, tomorrowHigh: 19, tomorrowLow: 11, tomorrowWeatherCode: 2 },
+  rain: { label: 'Rain', currentTemp: 13, high: 16, low: 10, weatherCode: 63, tomorrowHigh: 17, tomorrowLow: 11, tomorrowWeatherCode: 61 },
+  storm: { label: 'Thunderstorm', currentTemp: 21, high: 27, low: 18, weatherCode: 95, tomorrowHigh: 24, tomorrowLow: 16, tomorrowWeatherCode: 80 },
+  cold: { label: 'Cold snap', currentTemp: 7, high: 11, low: 3, weatherCode: 45, tomorrowHigh: 12, tomorrowLow: 4, tomorrowWeatherCode: 2 },
+};
+
+function buildTestWeatherSnapshot(presetKey) {
+  const preset = TEST_WEATHER_PRESETS[presetKey] || TEST_WEATHER_PRESETS.clear;
+  const createdAt = getNowDate().toISOString();
+  const payload = {
+    locationName: cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Test location'),
+    currentTemp: preset.currentTemp,
+    high: preset.high,
+    low: preset.low,
+    weatherCode: preset.weatherCode,
+    weatherLabel: weatherCodeLabel(preset.weatherCode),
+    tomorrowHigh: preset.tomorrowHigh,
+    tomorrowLow: preset.tomorrowLow,
+    tomorrowWeatherCode: preset.tomorrowWeatherCode,
+    tomorrowWeatherLabel: weatherCodeLabel(preset.tomorrowWeatherCode),
+  };
+  payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
+  payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
+  return {
+    context_type: appState.config.weatherSnapshotType,
+    created_at: createdAt,
+    valid_until: new Date(getNowMs() + 6 * 60 * 60 * 1000).toISOString(),
+    payload,
+    source: `test-weather:${presetKey}`,
+  };
+}
+
+function applyTestWeatherPreset(presetKey) {
+  appState.snapshots[appState.config.weatherSnapshotType] = buildTestWeatherSnapshot(presetKey);
+  pushDevLog('info', `Applied test weather preset ${presetKey}.`);
+  renderScreen();
+  renderDevConsole();
+}
+
+async function restoreLiveWeatherSnapshot() {
+  try {
+    await refreshWeatherOnly();
+  } catch (error) {
+    handleRuntimeActionError('Could not restore live weather', error);
+    showToast('Could not restore live weather', 'error');
+  }
+}
+
 function renderMobileWeather() {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
@@ -962,8 +1013,31 @@ function renderMobileWeather() {
   openSettings.addEventListener('click', () => settingsButton?.click());
   actions.append(refresh, push, openSettings);
   wrap.append(actions);
+
+  const testControls = document.createElement('div');
+  testControls.className = 'mobile-inline-actions';
+  const presetSelect = document.createElement('select');
+  presetSelect.className = 'secondary-button';
+  Object.entries(TEST_WEATHER_PRESETS).forEach(([key, preset]) => {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = preset.label;
+    presetSelect.append(option);
+  });
+  const applyTest = document.createElement('button');
+  applyTest.className = 'secondary-button';
+  applyTest.textContent = 'Apply test weather';
+  applyTest.addEventListener('click', () => applyTestWeatherPreset(presetSelect.value));
+  const restoreLive = document.createElement('button');
+  restoreLive.className = 'secondary-button';
+  restoreLive.textContent = 'Use live weather';
+  restoreLive.addEventListener('click', () => restoreLiveWeatherSnapshot());
+  testControls.append(presetSelect, applyTest, restoreLive);
+  wrap.append(buildCard('Weather Preview', 'Try different weather states locally on this device', testControls, 'mobile-compact-card'));
+
   const weather = getSnapshot(appState.config.weatherSnapshotType);
-  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  const weatherMeta = [snapshotMetaLabel('Weather', weather), weather?.source?.startsWith('test-weather:') ? 'Preview mode' : 'Live mode'].filter(Boolean).join(' · ');
+  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: weatherMeta, pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -991,12 +1065,226 @@ function renderMobileDebug() {
   return wrap;
 }
 
+
+function getTvViewportClass() {
+  const width = window.innerWidth || 0;
+  const height = window.innerHeight || 0;
+  if (width && height && (height <= 820 || width / Math.max(height, 1) >= 2)) return 'tv-compact';
+  if (height >= 980) return 'tv-tall';
+  return 'tv-standard';
+}
+
+function weatherCodeGlyph(code) {
+  const group = Number(code);
+  if ([0, 1].includes(group)) return '☀';
+  if ([2, 3].includes(group)) return '⛅';
+  if ([45, 48].includes(group)) return '🌫';
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(group)) return '🌧';
+  if ([71, 73, 75, 77, 85, 86].includes(group)) return '❄';
+  if ([95, 96, 99].includes(group)) return '⛈';
+  return '◦';
+}
+
+function formatTvFreshnessLabel(prefix, snapshot) {
+  if (!snapshot) return null;
+  const updated = snapshot.created_at || snapshot.updated_at || snapshot.valid_until;
+  if (!updated) return prefix;
+  return `${prefix} ${relativeTime(updated)}`;
+}
+
+function createTvDisplayItem({ glyph = '◦', title = '', meta = '', metaInline = '', emphasis = '', kind = '' }) {
+  return { glyph, title, meta, metaInline, emphasis, kind };
+}
+
+function mapCalendarSnapshotItems(items, glyph = '◦') {
+  return (Array.isArray(items) ? items : []).map((item) => createTvDisplayItem({
+    glyph,
+    title: item.title,
+    metaInline: item.time || '',
+    meta: [item.time, item.sourceLabel].filter(Boolean).join(' · '),
+    kind: 'calendar',
+  }));
+}
+
+function mapTaskItemsForTv(items, glyph = '▸', emphasis = '') {
+  return (Array.isArray(items) ? items : []).map((item) => createTvDisplayItem({
+    glyph,
+    title: item.title,
+    metaInline: item.meta || '',
+    meta: item.meta || '',
+    emphasis,
+    kind: 'task',
+  }));
+}
+
+function buildTvTodayColumnData(context) {
+  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
+  const todayTasks = mapTaskItemsForTv(context.digest.todayTasks, '▸');
+  const todayEvents = mapCalendarSnapshotItems(todaySnapshot?.items, '◦');
+  const overdue = mapTaskItemsForTv(context.digest.overdueTasks.slice(0, 2), '⚠', 'overdue');
+
+  const visible = [];
+  const maxRows = 4;
+  const maxLen = Math.max(todayTasks.length, todayEvents.length);
+  for (let i = 0; i < maxLen && visible.length < maxRows; i += 1) {
+    if (todayTasks[i]) visible.push(todayTasks[i]);
+    if (visible.length >= maxRows) break;
+    if (todayEvents[i]) visible.push(todayEvents[i]);
+  }
+  for (const item of overdue) {
+    if (visible.length >= maxRows) break;
+    visible.push(item);
+  }
+
+  const total = todayTasks.length + todayEvents.length + overdue.length;
+  return { items: visible.slice(0, maxRows), totalCount: total };
+}
+
+function buildTvTomorrowColumnData(context) {
+  const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const tomorrowEvents = mapCalendarSnapshotItems((tomorrowSnapshot?.items || []).slice(0, 4), '◦');
+  const tomorrowTasks = mapTaskItemsForTv(context.tomorrowItems.filter((item) => item.pill !== 'Calendar'), '▸');
+  const maxRows = 4;
+  const items = [];
+
+  const eventLead = context.isEvening ? 3 : 2;
+  items.push(...tomorrowEvents.slice(0, eventLead));
+  items.push(...tomorrowTasks.slice(0, maxRows - items.length));
+  if (items.length < maxRows) {
+    items.push(...tomorrowEvents.slice(eventLead, eventLead + (maxRows - items.length)));
+  }
+
+  const total = tomorrowEvents.length + tomorrowTasks.length;
+  return { items: items.slice(0, maxRows), totalCount: total };
+}
+
+function buildTvColumnCard(title, data, emptyText) {
+  const template = document.getElementById('card-template');
+  const node = template.content.firstElementChild.cloneNode(true);
+  node.classList.add('tv-card', 'tv-column-card');
+  node.querySelector('h2').textContent = title;
+  node.querySelector('.card-subtitle').textContent = '';
+  node.querySelector('.card-body').append(renderTvCompactRows(data.items || [], emptyText, { moreCount: Math.max(0, (data.totalCount || 0) - ((data.items || []).length || 0)) }));
+  return node;
+}
+
+function renderTvCompactRows(items, emptyText, options = {}) {
+  const body = document.createElement('div');
+  body.className = 'tv-compact-list';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state tv-empty-state';
+    empty.textContent = emptyText;
+    body.append(empty);
+  } else {
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = `tv-compact-row ${item.emphasis ? `is-${item.emphasis}` : ''}`.trim();
+      const glyph = document.createElement('span');
+      glyph.className = 'tv-row-glyph';
+      glyph.textContent = item.glyph || '◦';
+      const copy = document.createElement('div');
+      copy.className = 'tv-row-copy';
+      const titleLine = document.createElement('div');
+      titleLine.className = 'tv-row-line';
+      const title = document.createElement('span');
+      title.className = 'tv-row-title';
+      title.textContent = item.title || '';
+      titleLine.append(title);
+      if (item.metaInline) {
+        const metaInline = document.createElement('span');
+        metaInline.className = 'tv-row-meta-inline';
+        metaInline.textContent = item.metaInline;
+        titleLine.append(metaInline);
+      }
+      copy.append(titleLine);
+      if (item.meta && item.meta !== item.metaInline) {
+        const meta = document.createElement('div');
+        meta.className = 'tv-row-meta';
+        meta.textContent = item.meta;
+        copy.append(meta);
+      }
+      row.append(glyph, copy);
+      body.append(row);
+    }
+  }
+  if (options.moreCount > 0) {
+    const more = document.createElement('div');
+    more.className = 'tv-more-line';
+    more.textContent = `+${options.moreCount} more`;
+    body.append(more);
+  }
+  return body;
+}
+
+function buildTvAttentionBand(context) {
+  const template = document.getElementById('card-template');
+  const node = template.content.firstElementChild.cloneNode(true);
+  node.classList.add('tv-card', 'tv-attention-card');
+  node.querySelector('h2').textContent = 'Attention';
+  node.querySelector('.card-subtitle').textContent = '';
+  node.querySelector('.card-body').append(renderTvAttentionTiles(buildTvAttentionItems(context), 'House is in a good place.'));
+  return node;
+}
+
+function buildTvAttentionItems(context) {
+  const items = context.signals.slice(0, 4).map((signal) => ({
+    title: signal.title,
+    meta: signal.description || signal.location || '',
+    severity: signal.severity || 'info',
+    glyph: signal.severity === 'warning' ? '⚠' : '•',
+  }));
+
+  if (context.isEvening) {
+    const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+    const bigEvent = Array.isArray(tomorrowSnapshot?.items) ? tomorrowSnapshot.items[0] : null;
+    if (bigEvent && items.length < 4) {
+      items.push({
+        title: 'Big event tomorrow',
+        meta: [bigEvent.title, bigEvent.time].filter(Boolean).join(' · '),
+        severity: 'notice',
+        glyph: '⚠',
+      });
+    }
+  }
+  return items.slice(0, 4);
+}
+
+function renderTvAttentionTiles(items, emptyText) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tv-attention-grid';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state tv-empty-state';
+    empty.textContent = emptyText;
+    wrap.append(empty);
+    return wrap;
+  }
+  for (const item of items) {
+    const tile = document.createElement('div');
+    tile.className = `tv-attention-tile is-${item.severity || 'info'}`.trim();
+    const title = document.createElement('div');
+    title.className = 'tv-attention-title';
+    title.textContent = `${item.glyph || '•'} ${item.title}`;
+    tile.append(title);
+    if (item.meta) {
+      const meta = document.createElement('div');
+      meta.className = 'tv-attention-meta';
+      meta.textContent = item.meta;
+      tile.append(meta);
+    }
+    wrap.append(tile);
+  }
+  return wrap;
+}
+
 function buildTvHero() {
   const section = document.createElement('section');
   section.className = 'card tv-card tv-hero';
   const weather = getSnapshot(appState.config.weatherSnapshotType);
   const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
   const nextEvent = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
+  const weatherGlyph = weather?.payload ? weatherCodeGlyph(weather.payload.weatherCode) : '◦';
 
   const topRow = document.createElement('div');
   topRow.className = 'tv-hero-top';
@@ -1016,19 +1304,19 @@ function buildTvHero() {
 
   const weatherEl = document.createElement('div');
   weatherEl.className = 'tv-weather';
-  weatherEl.textContent = weather?.payload ? formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }) : 'Weather snapshot not loaded yet';
+  weatherEl.textContent = weather?.payload ? `${weatherGlyph} ${formatWeatherSummary(weather.payload, { includeTomorrow: false })}` : '◦ Weather snapshot not loaded yet';
 
   const nextEl = document.createElement('div');
   nextEl.className = 'tv-next';
-  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
+  nextEl.textContent = nextEvent ? `${nextEvent.title}${nextEvent.time ? ` — ${nextEvent.time}` : ''}` : 'Nothing urgent on the calendar';
 
   contextRow.append(weatherEl, nextEl);
 
   const freshnessEl = document.createElement('div');
   freshnessEl.className = 'muted tv-freshness';
   freshnessEl.textContent = [
-    weather ? snapshotMetaLabel('Weather', weather) : null,
-    todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
+    formatTvFreshnessLabel('Weather', weather),
+    formatTvFreshnessLabel('Calendar', todayCal),
   ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
 
   section.append(topRow, contextRow, freshnessEl);
