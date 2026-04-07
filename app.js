@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.8a-dev';
+const APP_VERSION = 'v1.2.8b-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -579,6 +579,19 @@ async function fetchSnapshots() {
   appState.snapshots = snapshots;
 }
 
+
+async function refreshFromSnapshotUpdate() {
+  try {
+    await fetchSnapshots();
+    renderMode();
+    renderDevConsole();
+    pushDevLog('info', 'Applied snapshot update without full refresh.');
+  } catch (error) {
+    console.warn('Snapshot-only refresh issue', error);
+    pushDevLog('warn', `Snapshot-only refresh failed: ${error?.message || error}`);
+  }
+}
+
 async function fetchRecentLogs() {
   const { data, error } = await appState.supabase
     .from('household_logs')
@@ -601,8 +614,14 @@ function bindRealtime() {
     { table: 'household_logs', event: '*', handler: refreshAll },
     { table: 'household_signals', event: '*', handler: refreshAll },
     { table: 'laundry_loads', event: '*', handler: refreshAll },
-    { table: 'context_snapshots', event: '*', handler: refreshAll },
-    { table: SHARED_CONFIG_TABLE, event: '*', handler: async () => { await fetchHouseholdConfig(); await refreshAll(); } },
+    { table: 'context_snapshots', event: '*', handler: refreshFromSnapshotUpdate },
+    { table: SHARED_CONFIG_TABLE, event: '*', handler: async () => {
+        await fetchHouseholdConfig();
+        await fetchSnapshots();
+        renderMode();
+        renderDevConsole();
+        pushDevLog('info', 'Applied shared config update without full refresh.');
+      } },
   ];
 
   appState.subscriptions = channels.map(({ table, event, handler }) => {
@@ -1865,6 +1884,23 @@ function normalizeCalendarEvent(event, account, calendar) {
   };
 }
 
+function snapshotItemsSignature(items) {
+  return JSON.stringify((items || []).map(item => ({
+    id: item.id || '',
+    title: item.title || '',
+    start: item.start || '',
+    time: item.time || '',
+    sourceLabel: item.sourceLabel || '',
+  })));
+}
+
+function shouldPublishCalendarSnapshots(todayItems, tomorrowItems) {
+  const currentToday = getSnapshotPayload(appState.config.calendarTodaySnapshotType)?.items || [];
+  const currentTomorrow = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType)?.items || [];
+  return snapshotItemsSignature(todayItems) !== snapshotItemsSignature(currentToday)
+    || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow);
+}
+
 async function fetchGoogleCalendarSnapshots() {
   const canPublish = hasPublisherCalendarAccounts();
 
@@ -1968,9 +2004,13 @@ async function fetchGoogleCalendarSnapshots() {
   appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
 
   try {
-    await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
-    await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
-    pushDevLog('info', 'Published headless calendar snapshots to household.');
+    if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
+      await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
+      await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
+      pushDevLog('info', 'Published headless calendar snapshots to household.');
+    } else {
+      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
+    }
   } catch (error) {
     pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
   }
