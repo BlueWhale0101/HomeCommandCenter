@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.3';
+const APP_VERSION = 'v2.0.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1284,11 +1284,11 @@ function renderMobileSignals() {
       ruleHeader.append(heading, summary);
       ruleCard.append(ruleHeader);
 
-      const updateRule = (patch) => {
+      const updateRule = (patch, options = {}) => {
         const next = normalizeSignalRules(appState.signalRulesDraft);
         next.custom = next.custom.map((item) => item.id === rule.id ? normalizeCustomSignalRule({ ...item, ...patch }) : item);
         setSignalRulesDraft(next);
-        renderMode();
+        if (options.render !== false) renderMode();
       };
 
       const removeBtn = document.createElement('button');
@@ -1304,7 +1304,13 @@ function renderMobileSignals() {
       ruleCard.append(removeBtn);
 
       ruleCard.append(makeCheckboxRow('Enabled', rule.enabled, (checked) => updateRule({ enabled: checked })));
-      ruleCard.append(makeTextField('Signal name', rule.name, (value) => updateRule({ name: value }), 'Bins out tonight'));
+      ruleCard.append(makeTextField(
+        'Signal name',
+        rule.name,
+        (value) => updateRule({ name: value }, { render: false }),
+        'Bins out tonight',
+        (value) => updateRule({ name: value })
+      ));
       ruleCard.append(makeSelectField('Schedule rule', CUSTOM_SIGNAL_SCHEDULE_OPTIONS, rule.scheduleType, (value) => updateRule({ scheduleType: value })));
       if (rule.scheduleType === 'weekly') {
         ruleCard.append(makeSelectField('Day', DAY_OPTIONS, String(rule.dayOfWeek), (value) => updateRule({ dayOfWeek: Number(value) })));
@@ -1312,13 +1318,25 @@ function renderMobileSignals() {
       ruleCard.append(makeHourField('Start showing', rule.startHour, (value) => updateRule({ startHour: Number(value), escalateHour: Math.max(Number(value), rule.escalateHour) })));
       ruleCard.append(makeSelectField('Clear / acknowledge', CUSTOM_SIGNAL_CLEAR_OPTIONS, rule.clearMode, (value) => updateRule({ clearMode: value })));
       if (rule.clearMode === 'log_event_today') {
-        ruleCard.append(makeTextField('Household log event key', rule.ackEventType, (value) => updateRule({ ackEventType: value }), 'bins_out'));
+        ruleCard.append(makeTextField(
+          'Household log event key',
+          rule.ackEventType,
+          (value) => updateRule({ ackEventType: value }, { render: false }),
+          'bins_out',
+          (value) => updateRule({ ackEventType: value })
+        ));
       }
       ruleCard.append(makeCheckboxRow('Escalate to warning later', rule.escalateToWarning, (checked) => updateRule({ escalateToWarning: checked })));
       if (rule.escalateToWarning) {
         ruleCard.append(makeHourField('Escalate to warning at', rule.escalateHour, (value) => updateRule({ escalateHour: Number(value) })));
       }
-      ruleCard.append(makeTextField('Location label (optional)', rule.location || '', (value) => updateRule({ location: value }), 'outside'));
+      ruleCard.append(makeTextField(
+        'Location label (optional)',
+        rule.location || '',
+        (value) => updateRule({ location: value }, { render: false }),
+        'outside',
+        (value) => updateRule({ location: value })
+      ));
       body.append(ruleCard);
     });
   });
@@ -1341,7 +1359,7 @@ function makeCheckboxRow(label, checked, onChange) {
   return row;
 }
 
-function makeTextField(label, value, onChange, placeholder = '') {
+function makeTextField(label, value, onChange, placeholder = '', onCommit = null) {
   const wrap = document.createElement('label');
   wrap.className = 'mobile-field-stack';
   const title = document.createElement('span');
@@ -1352,6 +1370,9 @@ function makeTextField(label, value, onChange, placeholder = '') {
   input.value = value || '';
   input.placeholder = placeholder;
   input.addEventListener('input', () => onChange(input.value));
+  input.addEventListener('blur', () => {
+    if (typeof onCommit === 'function') onCommit(input.value);
+  });
   wrap.append(title, input);
   return wrap;
 }
