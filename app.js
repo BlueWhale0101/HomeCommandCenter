@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.5';
+const APP_VERSION = 'v2.0.6';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -118,6 +118,7 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
+  sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
 };
@@ -985,6 +986,8 @@ function renderMobileStatus(context) {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
   wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
+  wrap.append(buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
   wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
@@ -1038,7 +1041,10 @@ function renderMobileCalendar() {
   wrap.append(actions);
   const headlessNote = document.createElement('div');
   headlessNote.className = 'muted';
-  headlessNote.textContent = 'Headless mode: a connected device publishes merged calendar snapshots for shared displays.';
+  const currentPublisher = describeSnapshotPublisher(getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType));
+  headlessNote.textContent = currentPublisher
+    ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${currentPublisher}.`
+    : 'Headless mode: a connected device publishes merged calendar snapshots for shared displays.';
   wrap.append(headlessNote);
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
@@ -1492,9 +1498,11 @@ function buildTvHero() {
 
   const freshnessEl = document.createElement('div');
   freshnessEl.className = 'muted tv-freshness';
+  const publisher = describeSnapshotPublisher(todayCal);
   freshnessEl.textContent = [
     weather ? snapshotMetaLabel('Weather', weather) : null,
     todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
+    publisher ? `Publisher · ${publisher}` : null,
   ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
 
   section.append(topRow, contextRow, freshnessEl);
@@ -1921,8 +1929,13 @@ function hasAnyCalendarSnapshots() {
 
 function applySharedConfigRows(rows) {
   const map = {};
-  for (const row of rows || []) map[row.key] = row.value;
+  const meta = {};
+  for (const row of rows || []) {
+    map[row.key] = row.value;
+    meta[row.key] = { updated_at: row.updated_at || null };
+  }
   appState.sharedConfig = map;
+  appState.sharedConfigMeta = meta;
   if (typeof map[SHARED_CONFIG_KEYS.googleClientId] === 'string' && map[SHARED_CONFIG_KEYS.googleClientId].trim()) {
     appState.config.googleClientId = map[SHARED_CONFIG_KEYS.googleClientId].trim();
   }
@@ -2502,19 +2515,20 @@ async function fetchGoogleCalendarSnapshots() {
   tomorrowItems.sort(sortByStart);
   const createdAt = getNowDate().toISOString();
 
+  const snapshotSource = buildCalendarSnapshotSource();
   const todaySnapshot = {
     context_type: appState.config.calendarTodaySnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: todayItems },
-    source: 'headless-google-calendar',
+    source: snapshotSource,
   };
   const tomorrowSnapshot = {
     context_type: appState.config.calendarTomorrowSnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
     payload: { items: tomorrowItems },
-    source: 'headless-google-calendar',
+    source: snapshotSource,
   };
 
   appState.snapshots[appState.config.calendarTodaySnapshotType] = todaySnapshot;
@@ -3549,24 +3563,96 @@ function describeDateContext(context = null) {
   return weather ? formatWeatherSummary(weather, { includeTomorrow: !!context?.isEvening }) : getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+function getSharedConfigUpdatedAt(key) {
+  return appState.sharedConfigMeta?.[key]?.updated_at || null;
+}
+
+function buildCalendarSnapshotSource() {
+  const label = String(appState.config.deviceName || appState.deviceKey || 'unknown-device').trim();
+  return `calendar-publisher:${label}`;
+}
+
+function describeSnapshotPublisher(snapshot) {
+  const source = String(snapshot?.source || '').trim();
+  if (!source) return '';
+  if (source.startsWith('calendar-publisher:')) return source.slice('calendar-publisher:'.length) || 'Unknown device';
+  if (source === 'headless-google-calendar') return 'Legacy calendar publisher';
+  if (source === 'live-weather') return 'This device';
+  return source.replace(/[-_]+/g, ' ');
+}
+
+function snapshotStatusLevel(snapshot) {
+  if (!snapshot) return 'warning';
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'warning';
+  const ageMinutes = snapshot.created_at ? Math.max(0, Math.round((getNowMs() - new Date(snapshot.created_at).getTime()) / 60000)) : 0;
+  if (ageMinutes >= 30) return 'warning';
+  if (ageMinutes >= 10) return 'notice';
+  return 'info';
+}
+
+function snapshotFreshnessPill(snapshot, fallback = 'Live') {
+  if (!snapshot) return fallback;
+  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'Stale';
+  const level = snapshotStatusLevel(snapshot);
+  if (level === 'warning') return 'Aging';
+  if (level === 'notice') return 'Recent';
+  return fallback;
+}
+
+function snapshotFreshnessClass(snapshot) {
+  if (!snapshot) return '';
+  const level = snapshotStatusLevel(snapshot);
+  if (level === 'warning') return 'warning';
+  if (level === 'notice') return 'notice';
+  return '';
+}
+
+function buildSnapshotStatusItems() {
+  const snapshotEntries = [
+    ['Weather', getSnapshot(appState.config.weatherSnapshotType)],
+    ['Calendar Today', getSnapshot(appState.config.calendarTodaySnapshotType)],
+    ['Calendar Tomorrow', getSnapshot(appState.config.calendarTomorrowSnapshotType)],
+  ];
+  return snapshotEntries.map(([label, snapshot]) => {
+    if (!snapshot) {
+      return { title: label, meta: 'Not published yet', pill: 'Missing', pillClass: 'warning' };
+    }
+    const publisher = describeSnapshotPublisher(snapshot);
+    const metaBits = [snapshotMetaLabel(label, snapshot)];
+    if (publisher && label.startsWith('Calendar')) metaBits.push(`Publisher ${publisher}`);
+    return {
+      title: label,
+      meta: metaBits.filter(Boolean).join(' · '),
+      pill: snapshotFreshnessPill(snapshot),
+      pillClass: snapshotFreshnessClass(snapshot),
+    };
+  });
+}
+
+function buildSharedSyncItems() {
+  const entries = [
+    ['Weather config', SHARED_CONFIG_KEYS.weather],
+    ['Calendar config', SHARED_CONFIG_KEYS.calendarAccounts],
+    ['Signal rules', SHARED_CONFIG_KEYS.signalRules],
+  ];
+  return entries.map(([label, key]) => {
+    const updatedAt = getSharedConfigUpdatedAt(key);
+    const hasValue = appState.sharedConfig && Object.prototype.hasOwnProperty.call(appState.sharedConfig, key);
+    return {
+      title: label,
+      meta: updatedAt ? `Updated ${relativeTime(updatedAt)}` : 'Not pushed yet',
+      pill: updatedAt ? 'Shared' : (hasValue ? 'Local' : 'Missing'),
+      pillClass: updatedAt ? '' : 'warning',
+    };
+  });
+}
+
 function getSnapshot(type) {
   return appState.snapshots[type] || null;
 }
 
 function getSnapshotPayload(type) {
   return getSnapshot(type)?.payload || null;
-}
-
-function snapshotFreshnessPill(snapshot, fallback = 'Live') {
-  if (!snapshot) return fallback;
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'Stale';
-  return fallback;
-}
-
-function snapshotFreshnessClass(snapshot) {
-  if (!snapshot) return '';
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'warning';
-  return '';
 }
 
 function snapshotMetaLabel(prefix, snapshot) {

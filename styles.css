@@ -330,6 +330,10 @@ body, button, .version-tag, .version-tag * {
   color: var(--warning);
 }
 
+.notice {
+  color: #cde7ff;
+}
+
 .danger {
   color: var(--danger);
 }
@@ -465,6 +469,8 @@ body, button, .version-tag, .version-tag * {
 
 .tv-freshness {
   font-size: 0.82rem;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 
