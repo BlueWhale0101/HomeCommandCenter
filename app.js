@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.2';
+const APP_VERSION = 'v2.0.3';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -943,7 +943,13 @@ function renderMobileControlPanel(context) {
   title.append(h2, sub);
   panel.append(title);
 
-  const content = renderMobileTabContent(appState.mobileTab, context);
+  let content;
+  try {
+    content = renderMobileTabContent(appState.mobileTab, context);
+  } catch (error) {
+    handleRuntimeActionError(`Could not render ${appState.mobileTab} tab`, error);
+    content = renderInlineErrorCard(`The ${appState.mobileTab} tab hit an error.`, error);
+  }
   body.append(content);
   panel.append(body);
   screenEl.append(panel);
@@ -1333,6 +1339,41 @@ function makeCheckboxRow(label, checked, onChange) {
   text.textContent = label;
   row.append(input, text);
   return row;
+}
+
+function makeTextField(label, value, onChange, placeholder = '') {
+  const wrap = document.createElement('label');
+  wrap.className = 'mobile-field-stack';
+  const title = document.createElement('span');
+  title.className = 'muted';
+  title.textContent = label;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = value || '';
+  input.placeholder = placeholder;
+  input.addEventListener('input', () => onChange(input.value));
+  wrap.append(title, input);
+  return wrap;
+}
+
+function renderInlineErrorCard(message, error) {
+  const card = document.createElement('section');
+  card.className = 'inline-error-card';
+
+  const title = document.createElement('div');
+  title.className = 'inline-error-title';
+  title.textContent = message;
+
+  const detail = document.createElement('div');
+  detail.className = 'inline-error-detail';
+  detail.textContent = error?.message || String(error || 'Unknown error');
+
+  const hint = document.createElement('div');
+  hint.className = 'muted';
+  hint.textContent = 'The rest of the app is still running. Open the dev console for details or refresh after updating the patch.';
+
+  card.append(title, detail, hint);
+  return card;
 }
 
 function makeSelectField(label, options, value, onChange) {
