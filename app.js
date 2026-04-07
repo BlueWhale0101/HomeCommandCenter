@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.8-dev';
+const APP_VERSION = 'v1.2.8a-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -374,6 +374,10 @@ async function refreshAll() {
       fetchRecentLogs(),
     ]);
 
+    // Render immediately from shared/base data so headless displays never block on optional enrichments.
+    renderMode();
+    renderDevConsole();
+
     const followup = await Promise.allSettled([
       fetchGoogleCalendarSnapshots(),
       fetchWeatherSnapshot(),
@@ -551,7 +555,16 @@ async function fetchSnapshots() {
     return;
   }
   const snapshots = { ...appState.snapshots };
-  for (const item of data || []) {
+  for (const rawItem of data || []) {
+    const item = { ...rawItem };
+    if (typeof item.payload === 'string') {
+      try {
+        item.payload = JSON.parse(item.payload);
+      } catch (e) {
+        pushDevLog('warn', `Could not parse snapshot payload for ${item.context_type}.`);
+        item.payload = { items: [] };
+      }
+    }
     if (!snapshots[item.context_type]) {
       snapshots[item.context_type] = item;
       continue;
@@ -1477,6 +1490,14 @@ function isCalendarAccountExpired(account) {
   return Date.now() > Number(account.expiresAt) - 60 * 1000;
 }
 
+function hasPublisherCalendarAccounts() {
+  return (appState.calendarAccounts || []).some(account =>
+    !!account?.accessToken &&
+    !isCalendarAccountExpired(account) &&
+    (account.calendars || []).some(cal => cal.selected)
+  );
+}
+
 async function waitForGoogleIdentity(timeoutMs = 6000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -1845,6 +1866,26 @@ function normalizeCalendarEvent(event, account, calendar) {
 }
 
 async function fetchGoogleCalendarSnapshots() {
+  const canPublish = hasPublisherCalendarAccounts();
+
+  if (!canPublish) {
+    const existingToday = appState.snapshots[appState.config.calendarTodaySnapshotType];
+    const existingTomorrow = appState.snapshots[appState.config.calendarTomorrowSnapshotType];
+    appState.calendarDiagnostics = {
+      ...appState.calendarDiagnostics,
+      selectedSources: 0,
+      fetchedEvents: 0,
+      mergedToday: existingToday?.payload?.items?.length || 0,
+      mergedTomorrow: existingTomorrow?.payload?.items?.length || 0,
+      expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
+      lastError: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
+    };
+    pushDevLog('info', existingToday || existingTomorrow
+      ? 'Headless calendar mode: using shared snapshots only on this device.'
+      : 'Headless calendar mode: no shared calendar snapshots available yet.');
+    return;
+  }
+
   await refreshExpiredCalendarTokens();
   const accounts = appState.calendarAccounts || [];
   const expiredAccounts = accounts.filter(isCalendarAccountExpired);
@@ -1869,34 +1910,7 @@ async function fetchGoogleCalendarSnapshots() {
   let fetchedEvents = 0;
 
   if (!selectedSources.length) {
-    const hadSnapshots = hasAnyCalendarSnapshots();
-    appState.calendarDiagnostics = {
-      ...appState.calendarDiagnostics,
-      fetchedEvents: 0,
-      mergedToday: appState.snapshots?.[appState.config.calendarTodaySnapshotType]?.payload?.items?.length || 0,
-      mergedTomorrow: appState.snapshots?.[appState.config.calendarTomorrowSnapshotType]?.payload?.items?.length || 0,
-      lastError: expiredAccounts.length ? 'Selected calendars need reconnect' : 'No calendars selected on this device',
-    };
-    pushDevLog('warn', expiredAccounts.length
-      ? 'Calendar publisher unavailable on this device: connected accounts need reconnect. Using shared snapshots if available.'
-      : 'Calendar publisher unavailable on this device: no calendars selected locally. Using shared snapshots if available.');
-    if (!hadSnapshots) {
-      const createdAt = getNowDate().toISOString();
-      appState.snapshots[appState.config.calendarTodaySnapshotType] = {
-        context_type: appState.config.calendarTodaySnapshotType,
-        created_at: createdAt,
-        valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
-        payload: { items: [] },
-        source: 'headless-calendar-fallback',
-      };
-      appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
-        context_type: appState.config.calendarTomorrowSnapshotType,
-        created_at: createdAt,
-        valid_until: new Date(getNowMs() + 5 * 60 * 1000).toISOString(),
-        payload: { items: [] },
-        source: 'headless-calendar-fallback',
-      };
-    }
+    pushDevLog('warn', 'Calendar publisher has no selected local calendars. Keeping existing shared snapshots.');
     return;
   }
 
@@ -1934,6 +1948,7 @@ async function fetchGoogleCalendarSnapshots() {
   todayItems.sort(sortByStart);
   tomorrowItems.sort(sortByStart);
   const createdAt = getNowDate().toISOString();
+
   const todaySnapshot = {
     context_type: appState.config.calendarTodaySnapshotType,
     created_at: createdAt,
