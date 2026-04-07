@@ -1,4 +1,4 @@
-const APP_VERSION = 'v1.2.8b-dev';
+const APP_VERSION = 'v1.2.8c-dev';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -580,6 +580,20 @@ async function fetchSnapshots() {
 }
 
 
+async function refreshWeatherOnly() {
+  try {
+    pushDevLog('info', 'Starting weather refresh.');
+    await fetchWeatherSnapshot();
+    renderMode();
+    renderDevConsole();
+    showToast('Weather refreshed', 'success');
+  } catch (error) {
+    handleRuntimeActionError('Weather refresh failed', error);
+    renderDevConsole();
+    showToast('Weather refresh failed', 'error');
+  }
+}
+
 async function refreshFromSnapshotUpdate() {
   try {
     await fetchSnapshots();
@@ -928,14 +942,15 @@ function renderMobileWeather() {
   const refresh = document.createElement('button');
   refresh.className = 'secondary-button';
   refresh.textContent = 'Refresh weather';
-  refresh.addEventListener('click', () => refreshAll());
+  refresh.addEventListener('click', () => refreshWeatherOnly());
   const push = document.createElement('button');
   push.className = 'secondary-button';
   push.textContent = 'Push weather config';
   push.addEventListener('click', async () => {
     try {
       await pushSharedWeatherConfig();
-      await refreshAll();
+      await fetchHouseholdConfig();
+      await refreshWeatherOnly();
     } catch (error) {
       handleRuntimeActionError('Weather push failed', error);
       showToast('Could not push weather config', 'error');
@@ -1737,22 +1752,42 @@ function formatWeatherSummary(payload, options = {}) {
 }
 
 async function fetchWeatherSnapshot() {
-  const query = (appState.config.weatherLocationQuery || '').trim();
-  if (!query) return;
-
   const existingSnapshot = appState.snapshots[appState.config.weatherSnapshotType] || null;
 
-  let { weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName } = appState.config;
+  let query = String(appState.config.weatherLocationQuery || '').trim();
+  let latitude = String(appState.config.weatherLatitude || '').trim();
+  let longitude = String(appState.config.weatherLongitude || '').trim();
+  let timezone = String(appState.config.weatherTimezone || '').trim();
+  let locationName = cleanLocationName(String(appState.config.weatherLocationName || '').trim());
+
+  const sharedWeather = appState.sharedConfig?.[SHARED_CONFIG_KEYS.weather];
+  if ((!query && !latitude && !longitude) && sharedWeather && typeof sharedWeather === 'object') {
+    query = String(sharedWeather.weatherLocationQuery || sharedWeather.locationQuery || '').trim();
+    latitude = String(sharedWeather.weatherLatitude || sharedWeather.latitude || '').trim();
+    longitude = String(sharedWeather.weatherLongitude || sharedWeather.longitude || '').trim();
+    timezone = String(sharedWeather.weatherTimezone || sharedWeather.timezone || '').trim();
+    locationName = cleanLocationName(String(sharedWeather.weatherLocationName || sharedWeather.locationName || locationName || '').trim());
+    pushDevLog('info', 'Using shared weather config for refresh.');
+  }
+
+  if (!query && (!latitude || !longitude)) {
+    pushDevLog('warn', 'Weather refresh skipped: no usable weather config found.');
+    throw new Error('No usable weather config found');
+  }
+
   if (!latitude || !longitude) {
+    pushDevLog('info', `Geocoding weather location for ${query}.`);
     const geo = await geocodeWeatherLocation(query);
     latitude = geo.latitude;
     longitude = geo.longitude;
     timezone = geo.timezone;
     locationName = cleanLocationName(geo.name);
-    appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName };
+    appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName, weatherLocationQuery: query };
     saveConfig(appState.config);
     try { fillSettingsForm(); } catch {}
   }
+
+  pushDevLog('info', `Fetching weather forecast for ${locationName || query} (${latitude}, ${longitude}).`);
 
   try {
     const url = new URL('https://api.open-meteo.com/v1/forecast');
@@ -1765,6 +1800,7 @@ async function fetchWeatherSnapshot() {
     const response = await fetch(url.toString(), { cache: 'no-store' });
     if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`);
     const data = await response.json();
+
     const currentTemp = Math.round(Number(data.current?.temperature_2m));
     const high = Math.round(Number(data.daily?.temperature_2m_max?.[0]));
     const low = Math.round(Number(data.daily?.temperature_2m_min?.[0]));
@@ -1774,16 +1810,16 @@ async function fetchWeatherSnapshot() {
     const tomorrowCode = Number(data.daily?.weather_code?.[1]);
     const createdAt = getNowDate().toISOString();
     const payload = {
-        locationName: cleanLocationName(locationName || query),
-        currentTemp,
-        high,
-        low,
-        weatherCode: code,
-        weatherLabel: weatherCodeLabel(code),
-        tomorrowHigh,
-        tomorrowLow,
-        tomorrowWeatherCode: tomorrowCode,
-        tomorrowWeatherLabel: weatherCodeLabel(tomorrowCode),
+      locationName: cleanLocationName(locationName || query),
+      currentTemp,
+      high,
+      low,
+      weatherCode: code,
+      weatherLabel: weatherCodeLabel(code),
+      tomorrowHigh,
+      tomorrowLow,
+      tomorrowWeatherCode: tomorrowCode,
+      tomorrowWeatherLabel: weatherCodeLabel(tomorrowCode),
     };
     payload.summary = formatWeatherSummary(payload, { includeTomorrow: false });
     payload.tomorrowSummary = formatWeatherSummary(payload, { includeTomorrow: true });
@@ -1794,7 +1830,7 @@ async function fetchWeatherSnapshot() {
       payload,
       source: 'live-weather',
     };
-    pushDevLog('info', `Weather refreshed for ${payload.locationName}.`);
+    pushDevLog('info', `Weather refresh succeeded for ${payload.locationName}.`);
   } catch (error) {
     if (existingSnapshot?.payload) {
       appState.snapshots[appState.config.weatherSnapshotType] = {
@@ -1805,6 +1841,7 @@ async function fetchWeatherSnapshot() {
       pushDevLog('warn', `Weather refresh failed, keeping last good weather: ${error?.message || error}`);
       return;
     }
+    pushDevLog('warn', `Weather refresh failed with no fallback: ${error?.message || error}`);
     throw error;
   }
 }
