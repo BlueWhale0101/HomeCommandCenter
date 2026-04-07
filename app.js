@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.1';
+const APP_VERSION = 'v2.0.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -80,7 +80,16 @@ const DEFAULT_SIGNAL_RULES = {
     startHour: 17,
     minEvents: 1,
   },
+  custom: [],
 };
+const CUSTOM_SIGNAL_SCHEDULE_OPTIONS = [
+  ['weekly', 'Weekly on a day'],
+  ['daily', 'Daily'],
+];
+const CUSTOM_SIGNAL_CLEAR_OPTIONS = [
+  ['schedule_window', 'Hide outside the schedule window'],
+  ['log_event_today', 'Clear when a matching household log happens today'],
+];
 
 let autoRefreshTimer = null;
 
@@ -163,6 +172,7 @@ function normalizeSignalRules(input) {
       startHour: clampHour(raw?.tomorrowEvent?.startHour, DEFAULT_SIGNAL_RULES.tomorrowEvent.startHour),
       minEvents: Math.max(1, Number(raw?.tomorrowEvent?.minEvents) || DEFAULT_SIGNAL_RULES.tomorrowEvent.minEvents),
     },
+    custom: Array.isArray(raw?.custom) ? raw.custom.map(normalizeCustomSignalRule).filter((rule) => rule.name) : [],
   };
 }
 
@@ -188,6 +198,47 @@ function formatHourLabel(hour) {
   const suffix = normalized >= 12 ? 'PM' : 'AM';
   const display = normalized % 12 || 12;
   return `${display}:00 ${suffix}`;
+}
+
+function createRuleId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `rule-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+function normalizeCustomSignalRule(input = {}) {
+  const scheduleType = String(input.scheduleType || 'weekly');
+  const clearMode = String(input.clearMode || 'schedule_window');
+  const startHour = clampHour(input.startHour, 17);
+  const escalateToWarning = !!input.escalateToWarning;
+  const escalateHour = clampHour(input.escalateHour, Math.max(startHour, 20));
+  return {
+    id: String(input.id || createRuleId()),
+    enabled: input.enabled !== undefined ? !!input.enabled : true,
+    name: String(input.name || '').trim(),
+    scheduleType: scheduleType === 'daily' ? 'daily' : 'weekly',
+    dayOfWeek: Number.isFinite(Number(input.dayOfWeek)) ? Math.max(0, Math.min(6, Number(input.dayOfWeek))) : 3,
+    startHour,
+    clearMode: clearMode === 'log_event_today' ? 'log_event_today' : 'schedule_window',
+    ackEventType: String(input.ackEventType || '').trim(),
+    escalateToWarning,
+    escalateHour: Math.max(startHour, escalateHour),
+    location: String(input.location || '').trim(),
+  };
+}
+
+function summarizeCustomSignalRule(rule) {
+  const normalized = normalizeCustomSignalRule(rule);
+  const scheduleLabel = normalized.scheduleType === 'daily'
+    ? `Daily from ${formatHourLabel(normalized.startHour)}`
+    : `${DAY_OPTIONS.find(([value]) => Number(value) === normalized.dayOfWeek)?.[1] || 'Weekly'} from ${formatHourLabel(normalized.startHour)}`;
+  const clearLabel = normalized.clearMode === 'log_event_today'
+    ? `clears on log${normalized.ackEventType ? `: ${normalized.ackEventType}` : ''}`
+    : 'hides outside schedule';
+  const warnLabel = normalized.escalateToWarning ? `warns at ${formatHourLabel(normalized.escalateHour)}` : 'no warning escalation';
+  return `${scheduleLabel} · ${clearLabel} · ${warnLabel}`;
 }
 
 
@@ -1077,7 +1128,8 @@ function renderSignalRulesPreview(rules) {
   const previewItems = [
     ...buildSyntheticLaundrySignals(rules),
     ...buildSyntheticRuleSignals(rules),
-  ].slice(0, 6).map(signalToItem);
+    ...buildSyntheticCustomSignals(rules),
+  ].slice(0, 8).map(signalToItem);
   return renderTaskList(previewItems, 'No synthetic signals would be visible right now for these settings.', { showPills: true });
 }
 
@@ -1124,7 +1176,7 @@ function renderMobileSignals() {
 
   const note = document.createElement('div');
   note.className = 'muted';
-  note.textContent = 'These controls drive synthetic household signals like bins reminders, laundry attention, and tomorrow-event prompts.';
+  note.textContent = 'These controls drive synthetic household signals like bins reminders, laundry attention, tomorrow-event prompts, and your own custom reminder rules.';
   wrap.append(note);
 
   const rules = normalizeSignalRules(appState.signalRulesDraft || appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
@@ -1183,6 +1235,88 @@ function renderMobileSignals() {
     }));
   });
   wrap.append(laundryCard);
+
+  const customCard = renderSignalRuleEditorCard('Custom signal rules', `${rules.custom.length} configured`, (body) => {
+    const addBtn = document.createElement('button');
+    addBtn.className = 'secondary-button';
+    addBtn.type = 'button';
+    addBtn.textContent = 'Add signal rule';
+    addBtn.addEventListener('click', () => {
+      const next = normalizeSignalRules(appState.signalRulesDraft);
+      next.custom.push(normalizeCustomSignalRule({
+        name: 'New signal',
+        scheduleType: 'weekly',
+        dayOfWeek: getNowDate().getDay(),
+        startHour: Math.min(23, getNowDate().getHours()),
+        clearMode: 'schedule_window',
+        escalateToWarning: false,
+      }));
+      setSignalRulesDraft(next);
+      renderMode();
+    });
+    body.append(addBtn);
+
+    if (!rules.custom.length) {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.textContent = 'Add a named signal with a schedule, an acknowledge rule, and optional warning escalation.';
+      body.append(empty);
+      return;
+    }
+
+    rules.custom.forEach((rule, index) => {
+      const ruleCard = document.createElement('section');
+      ruleCard.className = 'custom-signal-rule';
+
+      const ruleHeader = document.createElement('div');
+      ruleHeader.className = 'custom-signal-rule-header';
+      const heading = document.createElement('strong');
+      heading.textContent = rule.name || `Custom signal ${index + 1}`;
+      const summary = document.createElement('span');
+      summary.className = 'muted';
+      summary.textContent = summarizeCustomSignalRule(rule);
+      ruleHeader.append(heading, summary);
+      ruleCard.append(ruleHeader);
+
+      const updateRule = (patch) => {
+        const next = normalizeSignalRules(appState.signalRulesDraft);
+        next.custom = next.custom.map((item) => item.id === rule.id ? normalizeCustomSignalRule({ ...item, ...patch }) : item);
+        setSignalRulesDraft(next);
+        renderMode();
+      };
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'secondary-button';
+      removeBtn.type = 'button';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', () => {
+        const next = normalizeSignalRules(appState.signalRulesDraft);
+        next.custom = next.custom.filter((item) => item.id !== rule.id);
+        setSignalRulesDraft(next);
+        renderMode();
+      });
+      ruleCard.append(removeBtn);
+
+      ruleCard.append(makeCheckboxRow('Enabled', rule.enabled, (checked) => updateRule({ enabled: checked })));
+      ruleCard.append(makeTextField('Signal name', rule.name, (value) => updateRule({ name: value }), 'Bins out tonight'));
+      ruleCard.append(makeSelectField('Schedule rule', CUSTOM_SIGNAL_SCHEDULE_OPTIONS, rule.scheduleType, (value) => updateRule({ scheduleType: value })));
+      if (rule.scheduleType === 'weekly') {
+        ruleCard.append(makeSelectField('Day', DAY_OPTIONS, String(rule.dayOfWeek), (value) => updateRule({ dayOfWeek: Number(value) })));
+      }
+      ruleCard.append(makeHourField('Start showing', rule.startHour, (value) => updateRule({ startHour: Number(value), escalateHour: Math.max(Number(value), rule.escalateHour) })));
+      ruleCard.append(makeSelectField('Clear / acknowledge', CUSTOM_SIGNAL_CLEAR_OPTIONS, rule.clearMode, (value) => updateRule({ clearMode: value })));
+      if (rule.clearMode === 'log_event_today') {
+        ruleCard.append(makeTextField('Household log event key', rule.ackEventType, (value) => updateRule({ ackEventType: value }), 'bins_out'));
+      }
+      ruleCard.append(makeCheckboxRow('Escalate to warning later', rule.escalateToWarning, (checked) => updateRule({ escalateToWarning: checked })));
+      if (rule.escalateToWarning) {
+        ruleCard.append(makeHourField('Escalate to warning at', rule.escalateHour, (value) => updateRule({ escalateHour: Number(value) })));
+      }
+      ruleCard.append(makeTextField('Location label (optional)', rule.location || '', (value) => updateRule({ location: value }), 'outside'));
+      body.append(ruleCard);
+    });
+  });
+  wrap.append(customCard);
 
   wrap.append(buildCard('Signal preview', 'Uses the current local draft and current time override', renderSignalRulesPreview(rules), 'mobile-compact-card'));
   return wrap;
@@ -2606,6 +2740,44 @@ function buildSyntheticRuleSignals(rules = getEffectiveSignalRules()) {
   return items;
 }
 
+function buildSyntheticCustomSignals(rules = getEffectiveSignalRules()) {
+  const normalizedRules = normalizeSignalRules(rules);
+  const items = [];
+  const now = getNowDate();
+  const day = now.getDay();
+  const hour = now.getHours();
+
+  for (const rule of normalizedRules.custom) {
+    if (!rule.enabled || !rule.name) continue;
+    const inSchedule = rule.scheduleType === 'daily'
+      ? hour >= rule.startHour
+      : day === rule.dayOfWeek && hour >= rule.startHour;
+    if (!inSchedule) continue;
+    if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType)) continue;
+    const isWarning = rule.escalateToWarning && hour >= rule.escalateHour;
+    const descriptionParts = [];
+    if (rule.scheduleType === 'weekly') {
+      descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly'} from ${formatHourLabel(rule.startHour)}`);
+    } else {
+      descriptionParts.push(`Daily from ${formatHourLabel(rule.startHour)}`);
+    }
+    if (rule.clearMode === 'log_event_today' && rule.ackEventType) {
+      descriptionParts.push(`ack with ${rule.ackEventType}`);
+    }
+    items.push({
+      id: `synthetic-custom-${rule.id}`,
+      signal_type: 'custom_rule',
+      title: rule.name,
+      description: descriptionParts.join(' · '),
+      severity: isWarning ? 'warning' : 'notice',
+      location: rule.location || 'custom',
+      metadata: { synthetic: true, rule: 'custom_signal', customRuleId: rule.id },
+    });
+  }
+
+  return items;
+}
+
 function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
   const items = [];
   const normalizedRules = normalizeSignalRules(rules);
@@ -2633,7 +2805,7 @@ function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
 }
 
 function activeSignals(rules = getEffectiveSignalRules()) {
-  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(rules), ...buildSyntheticRuleSignals(rules)];
+  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(rules), ...buildSyntheticRuleSignals(rules), ...buildSyntheticCustomSignals(rules)];
 }
 
 function buildForgetItems() {
