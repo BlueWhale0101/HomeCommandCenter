@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.0.6';
+const APP_VERSION = 'v2.1.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1520,19 +1520,19 @@ function buildTvTodayItems(context) {
       }))
     : [];
 
-  const taskItems = context.digest.todayTasks.slice(0, 3);
+  const taskItems = context.digest.todayTasks.slice(0, context.isEvening ? 2 : 3);
   const overdueItems = context.digest.overdueTasks.slice(0, 1);
-  const baseItems = blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
+  const baseItems = blendTaskAndEventItems(taskItems, eventItems, overdueItems, context.isEvening ? 4 : 6);
 
   if (!context.isEvening) return baseItems;
 
-  const tomorrowPreview = context.tomorrowItems.slice(0, 2).map((item) => ({
+  const tomorrowPreview = context.digest.tomorrowTasks.slice(0, 2).map((item) => ({
     ...item,
     pill: item.pill || 'Tomorrow',
     meta: item.meta ? `${item.meta}` : 'Tomorrow',
   }));
 
-  return [...baseItems.slice(0, 4), ...tomorrowPreview].slice(0, 6);
+  return [...baseItems, ...tomorrowPreview].slice(0, 6);
 }
 
 function buildBedroomPrimaryItems(context) {
@@ -2614,16 +2614,134 @@ function buildCard(title, subtitle, body, extraClass = '') {
 }
 
 
+
+function normalizeTokenText(value) {
+  return String(value || '').toLowerCase();
+}
+
+function includesAnyToken(text, patterns) {
+  const haystack = normalizeTokenText(text);
+  return patterns.some((pattern) => haystack.includes(pattern));
+}
+
+function tokenizeMeaningfulWords(value) {
+  return normalizeTokenText(value)
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 4 && !['with', 'from', 'that', 'this', 'have', 'will', 'your', 'into', 'need', 'make', 'tomorrow', 'today'].includes(token));
+}
+
+function getTaskDueBucket(task, today = getNowDate()) {
+  if (!task?.dueDate) return 'undated';
+  if (task.dueDate < startOfDay(today)) return 'overdue';
+  if (isSameDay(task.dueDate, today)) return 'today';
+  if (isTomorrow(task.dueDate)) return 'tomorrow';
+  return 'future';
+}
+
+function taskSignalStrength(task, signals) {
+  if (!task || !signals?.length) return 0;
+  const title = normalizeTokenText(task.title);
+  const tag = normalizeTokenText(task.tag);
+  let strength = 0;
+  for (const signal of signals) {
+    const signalTitle = normalizeTokenText(signal.title);
+    const signalDescription = normalizeTokenText(signal.description || '');
+    if (signal.related_task_id && signal.related_task_id === task.id) strength += 24;
+    if (tag && (signalTitle.includes(tag) || signalDescription.includes(tag))) strength += 10;
+    if (title && (signalTitle.includes(title) || signalDescription.includes(title))) strength += 8;
+  }
+  return strength;
+}
+
+function taskTomorrowEventStrength(task, tomorrowSnapshot) {
+  if (!task || !Array.isArray(tomorrowSnapshot?.items) || !tomorrowSnapshot.items.length) return 0;
+  const taskText = [task.title, task.tag, task.description, task.dueText].map(normalizeTokenText).join(' ');
+  if (!taskText) return 0;
+  const tokens = tomorrowSnapshot.items.flatMap((item) => tokenizeMeaningfulWords(item.title));
+  let score = 0;
+  for (const token of tokens) {
+    if (taskText.includes(token)) score += 5;
+  }
+  return Math.min(score, 18);
+}
+
+function hasTomorrowPrepCue(task) {
+  const combined = [task.title, task.tag, task.description, task.dueText].join(' ');
+  return includesAnyToken(combined, ['prep', 'pack', 'set out', 'tonight', 'tomorrow', 'morning', 'school', 'appointment', 'reservation', 'delivery', 'birthday', 'party', 'trip']);
+}
+
+function hasEveningCue(task) {
+  const combined = [task.title, task.tag, task.description, task.dueText].join(' ');
+  return includesAnyToken(combined, ['tonight', 'evening', 'before bed', 'before tomorrow']);
+}
+
+function scoreTaskForWindow(task, options = {}) {
+  const now = options.now || getNowDate();
+  const dueBucket = getTaskDueBucket(task, now);
+  const windowName = options.windowName || 'today';
+  const signals = options.signals || [];
+  const tomorrowSnapshot = options.tomorrowSnapshot || null;
+  const evening = options.evening ?? isEvening();
+  let score = 0;
+
+  if (windowName === 'today') {
+    if (dueBucket === 'overdue') score += 80;
+    if (dueBucket === 'today') score += 58;
+    if (dueBucket === 'tomorrow') score += evening ? 22 : 8;
+    if (dueBucket === 'future') score -= 12;
+    if (dueBucket === 'undated') score -= 18;
+    if (evening && hasEveningCue(task)) score += 16;
+  }
+
+  if (windowName === 'tomorrow') {
+    if (dueBucket === 'tomorrow') score += 62;
+    if (dueBucket === 'today') score += evening ? 18 : 4;
+    if (dueBucket === 'overdue') score += 14;
+    if (dueBucket === 'future') score -= 8;
+    if (dueBucket === 'undated') score -= 18;
+    if (evening && hasTomorrowPrepCue(task)) score += 16;
+    score += taskTomorrowEventStrength(task, tomorrowSnapshot);
+  }
+
+  if (String(task.panel || '').toLowerCase() === 'in motion') score += 12;
+  if (task.recurrence) score += 7;
+  score += taskSignalStrength(task, signals);
+  if (task.isMine) score += 2;
+
+  if (task.dueDate) {
+    const diff = Math.abs(task.dueDate.getTime() - startOfDay(now).getTime());
+    score += Math.max(0, 6 - Math.floor(diff / 86400000));
+  }
+
+  return score;
+}
+
+function rankTasksForWindow(tasks, options = {}) {
+  return [...tasks]
+    .map((task) => ({ ...task, intelligenceScore: scoreTaskForWindow(task, options) }))
+    .sort((a, b) => {
+      if (b.intelligenceScore !== a.intelligenceScore) return b.intelligenceScore - a.intelligenceScore;
+      if (a.sortScore !== b.sortScore) return a.sortScore - b.sortScore;
+      return a.title.localeCompare(b.title);
+    });
+}
+
+
 function buildTaskDigest() {
   const tasks = normalizeTaskRows();
   const today = getNowDate();
-  const todayTasks = tasks.filter((task) => task.dueDate && isSameDay(task.dueDate, today));
-  const overdueTasks = tasks.filter((task) => task.dueDate && task.dueDate < startOfDay(today));
-  const upcomingTasks = tasks.filter((task) => task.dueDate && task.dueDate > endOfDay(today)).slice(0, 8);
-  const undatedTasks = tasks.filter((task) => !task.dueDate);
-
   const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
   const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const signals = activeSignals();
+
+  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', now: today, signals, tomorrowSnapshot, evening: isEvening() });
+  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', now: today, signals, tomorrowSnapshot, evening: isEvening() });
+
+  const overdueTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'overdue');
+  const upcomingTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'future').slice(0, 8);
+  const todayTasks = rankedTodayTasks.filter((task) => ['today', 'overdue'].includes(getTaskDueBucket(task, today)));
+  const undatedTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'undated');
+
   const calendarTodayItems = Array.isArray(todaySnapshot?.items)
     ? todaySnapshot.items.map((item) => ({
         title: item.title,
@@ -2643,9 +2761,13 @@ function buildTaskDigest() {
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
+  const tomorrowTaskItems = toDisplayTaskItems(rankedTomorrowTasks.filter((task) => {
+    const bucket = getTaskDueBucket(task, today);
+    return bucket === 'tomorrow' || (isEvening() && bucket === 'today') || hasTomorrowPrepCue(task);
+  }).slice(0, 8), 'Tomorrow');
   const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
 
-  const spotlightTask = overdueTasks[0] || todayTasks[0] || activeSignals().map(signalToItem)[0] || undatedTasks[0] || null;
+  const spotlightTask = rankedTodayTasks[0] || signals.map(signalToItem)[0] || undatedTasks[0] || null;
 
   return {
     all: tasks,
@@ -2654,6 +2776,9 @@ function buildTaskDigest() {
     todayBlend,
     overdueTasks: overdueTaskItems,
     upcomingTasks: upcomingTaskItems,
+    tomorrowTasks: tomorrowTaskItems,
+    rankedTodayTasks,
+    rankedTomorrowTasks,
     calendarTodayItems,
     calendarTomorrowItems,
     allEventItems: [...calendarTodayItems, ...calendarTomorrowItems],
@@ -2665,6 +2790,7 @@ function buildTaskDigest() {
       upcoming: upcomingTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
+      tomorrow: rankedTomorrowTasks.filter((task) => getTaskDueBucket(task, today) === 'tomorrow').length,
     },
   };
 }
@@ -2726,6 +2852,11 @@ function normalizeTaskRows() {
         title: String(task[titleField] || 'Untitled task'),
         owner,
         dueDate,
+        dueText: task[dateField] || '',
+        tag: task.tag || '',
+        recurrence: task.recurrence || '',
+        description: task.description || '',
+        panel: task.panel || '',
         raw: task,
         kind: 'Task',
         sortScore: dueDate ? dueDate.getTime() : Number.MAX_SAFE_INTEGER,
@@ -2919,16 +3050,13 @@ function buildSoftFocus() {
 
 function buildTomorrowItems() {
   const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const tasks = normalizeTaskRows()
-    .filter((task) => task.dueDate && isTomorrow(task.dueDate))
-    .slice(0, 3);
-
-  const taskItems = toDisplayTaskItems(tasks, 'Tomorrow');
+  const digest = buildTaskDigest();
+  const taskItems = digest.tomorrowTasks.slice(0, 4);
   const events = Array.isArray(snapshot?.items)
     ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '), pill: 'Calendar' }))
     : [];
 
-  return [...events, ...taskItems].slice(0, 5);
+  return blendTaskAndEventItems(taskItems, events, [], 5);
 }
 
 function signalToItem(signal) {
