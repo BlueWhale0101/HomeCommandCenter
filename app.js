@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.1.1';
+const APP_VERSION = 'v2.1.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   weatherLongitude: '',
   weatherTimezone: '',
   signalRulesDraft: null,
+  keepScreenAwake: false,
 };
 
 const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
@@ -118,6 +119,14 @@ let appState = {
   calendarAccounts: loadCalendarAccounts(),
   mobileTab: 'status',
   sharedConfig: {},
+  wakeLockSentinel: null,
+  wakeLockStatus: {
+    supported: typeof navigator !== 'undefined' && !!(navigator.wakeLock && navigator.wakeLock.request),
+    enabled: false,
+    active: false,
+    error: '',
+    note: '',
+  },
   sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
@@ -289,6 +298,7 @@ function initApp() {
     safeInitStep('Developer console', setupDevConsole);
     safeInitStep('Settings UI', setupSettingsUi);
     safeInitStep('Buttons', setupButtons);
+    safeInitStep('Wake lock hooks', setupWakeLockHooks);
     safeInitStep('Service worker', () => { registerServiceWorker(); });
 startBootstrap();
   } catch (error) {
@@ -340,6 +350,7 @@ async function bootstrap() {
   setStatus('Loading household data…');
   await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
   bindRealtime();
+  await syncWakeLock({ force: true });
   window.__hccBootState.phase = 'ready';
   window.__hccBootState.finished = true;
 }
@@ -413,6 +424,7 @@ function normalizeExternalConfig(input) {
     weatherLatitude: String((input.weather && input.weather.latitude) || input.weatherLatitude || DEFAULT_CONFIG.weatherLatitude || '').trim(),
     weatherLongitude: String((input.weather && input.weather.longitude) || input.weatherLongitude || DEFAULT_CONFIG.weatherLongitude || '').trim(),
     weatherTimezone: String((input.weather && input.weather.timezone) || input.weatherTimezone || DEFAULT_CONFIG.weatherTimezone || '').trim(),
+    keepScreenAwake: typeof input.keepScreenAwake === 'boolean' ? input.keepScreenAwake : DEFAULT_CONFIG.keepScreenAwake,
   };
 }
 
@@ -471,6 +483,7 @@ async function loadDeviceProfile() {
       appState.config.deviceName = data.device_name || appState.config.deviceName;
       appState.config.mode = data.mode || appState.config.mode;
       appState.config.location = data.location || appState.config.location;
+      if (typeof data.settings?.keepScreenAwake === 'boolean') appState.config.keepScreenAwake = data.settings.keepScreenAwake;
       saveConfig(appState.config);
       fillSettingsForm();
       setStatus(`Connected as ${appState.config.deviceName} (${appState.config.mode})`);
@@ -482,7 +495,7 @@ async function loadDeviceProfile() {
       device_key: appState.deviceKey,
       mode: appState.config.mode,
       location: appState.config.location,
-      settings: {},
+      settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
       is_active: true,
     };
 
@@ -988,6 +1001,7 @@ function renderMobileStatus(context) {
   wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
   wrap.append(buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
   wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
@@ -3776,6 +3790,7 @@ function fillSettingsForm() {
   document.getElementById('device-name').value = appState.config.deviceName;
   document.getElementById('mode-select').value = appState.config.mode;
   document.getElementById('location-input').value = appState.config.location;
+  document.getElementById('keep-screen-awake').checked = !!appState.config.keepScreenAwake;
   document.getElementById('task-date-field').value = appState.config.taskDateField;
   document.getElementById('task-owner-field').value = appState.config.taskOwnerField;
   document.getElementById('task-title-field').value = appState.config.taskTitleField;
@@ -3797,6 +3812,7 @@ function readSettingsUi() {
     deviceName: document.getElementById('device-name').value.trim() || 'New device',
     mode: document.getElementById('mode-select').value,
     location: document.getElementById('location-input').value.trim(),
+    keepScreenAwake: document.getElementById('keep-screen-awake').checked,
     taskDateField: document.getElementById('task-date-field').value.trim() || DEFAULT_CONFIG.taskDateField,
     taskOwnerField: document.getElementById('task-owner-field').value.trim() || DEFAULT_CONFIG.taskOwnerField,
     taskTitleField: document.getElementById('task-title-field').value.trim() || DEFAULT_CONFIG.taskTitleField,
@@ -3811,6 +3827,109 @@ function readSettingsUi() {
     weatherLongitude: appState.config.weatherLongitude || '',
     weatherTimezone: appState.config.weatherTimezone || '',
   };
+}
+
+function supportsScreenWakeLock() {
+  return typeof navigator !== 'undefined' && !!(navigator.wakeLock && navigator.wakeLock.request);
+}
+
+function wakeLockRecommendedForMode(mode = appState.config.mode) {
+  return ['kitchen', 'laundry', 'bedroom'].includes(mode);
+}
+
+function desiredWakeLockEnabled() {
+  return !!appState.config.keepScreenAwake;
+}
+
+function updateWakeLockStatus(patch = {}) {
+  appState.wakeLockStatus = { ...appState.wakeLockStatus, ...patch, supported: supportsScreenWakeLock(), enabled: desiredWakeLockEnabled() };
+}
+
+async function releaseWakeLock(reason = '') {
+  const sentinel = appState.wakeLockSentinel;
+  appState.wakeLockSentinel = null;
+  if (sentinel) {
+    try { await sentinel.release(); } catch {}
+  }
+  updateWakeLockStatus({ active: false, note: reason || (desiredWakeLockEnabled() ? 'Released' : 'Disabled'), error: '' });
+}
+
+async function syncWakeLock(options = {}) {
+  const enabled = desiredWakeLockEnabled();
+  updateWakeLockStatus({ enabled, supported: supportsScreenWakeLock() });
+
+  if (!enabled) {
+    await releaseWakeLock('Disabled in settings');
+    return false;
+  }
+  if (!supportsScreenWakeLock()) {
+    updateWakeLockStatus({ active: false, error: '', note: 'Not supported on this browser/device' });
+    return false;
+  }
+  if (document.hidden) {
+    await releaseWakeLock('Paused while app is hidden');
+    return false;
+  }
+  if (appState.wakeLockSentinel && !options.force) {
+    updateWakeLockStatus({ active: true, error: '', note: 'Active' });
+    return true;
+  }
+
+  if (appState.wakeLockSentinel && options.force) {
+    try { await appState.wakeLockSentinel.release(); } catch {}
+    appState.wakeLockSentinel = null;
+  }
+
+  try {
+    const sentinel = await navigator.wakeLock.request('screen');
+    appState.wakeLockSentinel = sentinel;
+    sentinel.addEventListener('release', () => {
+      appState.wakeLockSentinel = null;
+      updateWakeLockStatus({ active: false, note: document.hidden ? 'Paused while app is hidden' : 'Released by system' });
+      try { if (appState.config.mode === 'mobile') renderMode(); } catch {}
+    });
+    updateWakeLockStatus({ active: true, error: '', note: 'Active' });
+    return true;
+  } catch (error) {
+    updateWakeLockStatus({ active: false, error: error?.message || String(error), note: 'Request failed' });
+    return false;
+  }
+}
+
+function buildWakeLockStatusItems() {
+  const status = appState.wakeLockStatus || {};
+  const mode = appState.config.mode || 'tv';
+  const items = [];
+  const summaryTitle = status.active ? 'Screen wake lock is active' : (status.enabled ? 'Screen wake lock is enabled' : 'Screen wake lock is off');
+  const summaryMeta = [
+    `Mode ${mode}`,
+    status.note || (status.supported ? 'Ready' : 'Use Guided Access or device settings as fallback'),
+    !status.supported && wakeLockRecommendedForMode(mode) ? 'Best on modern Safari/Chrome PWAs' : '',
+  ].filter(Boolean).join(' · ');
+  items.push({
+    title: summaryTitle,
+    meta: summaryMeta,
+    pill: status.active ? 'Active' : (status.enabled ? (status.supported ? 'Pending' : 'Unavailable') : 'Off'),
+    pillClass: status.active ? '' : ((status.enabled && !status.supported) ? 'warning' : ''),
+  });
+  if (status.error) {
+    items.push({ title: 'Last wake-lock error', meta: status.error, pill: 'Error', pillClass: 'warning' });
+  }
+  if (!status.enabled && wakeLockRecommendedForMode(mode)) {
+    items.push({ title: 'Recommended for this mode', meta: 'Turn on “Keep screen awake” in Settings for a dedicated household display.', pill: 'Tip' });
+  }
+  return items;
+}
+
+function setupWakeLockHooks() {
+  updateWakeLockStatus({});
+  document.addEventListener('visibilitychange', () => { syncWakeLock(); });
+  window.addEventListener('focus', () => { syncWakeLock(); });
+  window.addEventListener('pageshow', () => { syncWakeLock(); });
+  window.addEventListener('beforeunload', () => {
+    try { appState.wakeLockSentinel?.release(); } catch {}
+    appState.wakeLockSentinel = null;
+  });
 }
 
 function setupButtons() {
@@ -3842,6 +3961,7 @@ function setupButtons() {
     }
     saveConfig(appState.config);
     fillSettingsForm();
+    await syncWakeLock({ force: true });
     resetAutoRefreshTimer();
     closeSettingsDialog();
     clearSubscriptions();
@@ -3859,7 +3979,7 @@ async function upsertDeviceProfile() {
     device_key: appState.deviceKey,
     mode: appState.config.mode,
     location: appState.config.location,
-    settings: {},
+    settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
     is_active: true,
   };
   const { data, error } = await appState.supabase
