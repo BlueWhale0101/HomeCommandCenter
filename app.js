@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.1.0';
+const APP_VERSION = 'v2.1.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1151,6 +1151,7 @@ function renderSignalRulesPreview(rules) {
   return renderTaskList(previewItems, 'No synthetic signals would be visible right now for these settings.', { showPills: true });
 }
 
+
 function renderMobileSignals() {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
@@ -1189,174 +1190,440 @@ function renderMobileSignals() {
     renderMode();
   });
 
-  actions.append(pushBtn, loadSharedBtn, resetBtn);
+  const addCustomBtn = document.createElement('button');
+  addCustomBtn.className = 'secondary-button';
+  addCustomBtn.textContent = 'Add custom signal';
+  addCustomBtn.addEventListener('click', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true }));
+
+  actions.append(pushBtn, loadSharedBtn, resetBtn, addCustomBtn);
   wrap.append(actions);
 
   const note = document.createElement('div');
   note.className = 'muted';
-  note.textContent = 'These controls drive synthetic household signals like bins reminders, laundry attention, tomorrow-event prompts, and your own custom reminder rules.';
+  note.textContent = 'Signal rules now use compact cards for browsing. Tap any card to view details or edit it in a modal.';
   wrap.append(note);
 
   const rules = normalizeSignalRules(appState.signalRulesDraft || appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
 
-  const binsCard = renderSignalRuleEditorCard('Bins reminder', 'Configurable weekly rule for shared displays', (body) => {
-    body.append(makeCheckboxRow('Enable bins reminder', rules.bins.enabled, (checked) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.bins.enabled = checked;
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-    body.append(makeSelectField('Reminder day', DAY_OPTIONS, String(rules.bins.dayOfWeek), (value) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.bins.dayOfWeek = Number(value);
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-    body.append(makeHourField('Start showing', rules.bins.startHour, (value) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.bins.startHour = Number(value);
-      if (next.bins.escalateHour < next.bins.startHour) next.bins.escalateHour = next.bins.startHour;
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-    body.append(makeHourField('Escalate to warning', rules.bins.escalateHour, (value) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.bins.escalateHour = Number(value);
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-  });
-  wrap.append(binsCard);
+  wrap.append(buildCard('Core signals', 'Tap a card to view or edit the household defaults', renderSignalRuleSummaryList([
+    buildCoreSignalSummaryItem('bins', rules),
+    buildCoreSignalSummaryItem('tomorrowEvent', rules),
+    buildCoreSignalSummaryItem('laundry', rules),
+  ]), 'mobile-compact-card'));
 
-  const tomorrowCard = renderSignalRuleEditorCard('Tomorrow event signal', 'Boost tomorrow awareness in the evening', (body) => {
-    body.append(makeCheckboxRow('Enable big event tomorrow signal', rules.tomorrowEvent.enabled, (checked) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.tomorrowEvent.enabled = checked;
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-    body.append(makeHourField('Start showing after', rules.tomorrowEvent.startHour, (value) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.tomorrowEvent.startHour = Number(value);
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-  });
-  wrap.append(tomorrowCard);
-
-  const laundryCard = renderSignalRuleEditorCard('Laundry attention', 'Surface laundry activity as a household signal', (body) => {
-    body.append(makeCheckboxRow('Enable laundry attention signal', rules.laundry.enabled, (checked) => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.laundry.enabled = checked;
-      setSignalRulesDraft(next);
-      renderMode();
-    }));
-  });
-  wrap.append(laundryCard);
-
-  const customCard = renderSignalRuleEditorCard('Custom signal rules', `${rules.custom.length} configured`, (body) => {
-    const addBtn = document.createElement('button');
-    addBtn.className = 'secondary-button';
-    addBtn.type = 'button';
-    addBtn.textContent = 'Add signal rule';
-    addBtn.addEventListener('click', () => {
-      const next = normalizeSignalRules(appState.signalRulesDraft);
-      next.custom.push(normalizeCustomSignalRule({
-        name: 'New signal',
-        scheduleType: 'weekly',
-        dayOfWeek: getNowDate().getDay(),
-        startHour: Math.min(23, getNowDate().getHours()),
-        clearMode: 'schedule_window',
-        escalateToWarning: false,
-      }));
-      setSignalRulesDraft(next);
-      renderMode();
-    });
-    body.append(addBtn);
-
-    if (!rules.custom.length) {
-      const empty = document.createElement('div');
-      empty.className = 'muted';
-      empty.textContent = 'Add a named signal with a schedule, an acknowledge rule, and optional warning escalation.';
-      body.append(empty);
-      return;
-    }
-
-    rules.custom.forEach((rule, index) => {
-      const ruleCard = document.createElement('section');
-      ruleCard.className = 'custom-signal-rule';
-
-      const ruleHeader = document.createElement('div');
-      ruleHeader.className = 'custom-signal-rule-header';
-      const heading = document.createElement('strong');
-      heading.textContent = rule.name || `Custom signal ${index + 1}`;
-      const summary = document.createElement('span');
-      summary.className = 'muted';
-      summary.textContent = summarizeCustomSignalRule(rule);
-      ruleHeader.append(heading, summary);
-      ruleCard.append(ruleHeader);
-
-      const updateRule = (patch, options = {}) => {
-        const next = normalizeSignalRules(appState.signalRulesDraft);
-        next.custom = next.custom.map((item) => item.id === rule.id ? normalizeCustomSignalRule({ ...item, ...patch }) : item);
-        setSignalRulesDraft(next);
-        if (options.render !== false) renderMode();
-      };
-
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'secondary-button';
-      removeBtn.type = 'button';
-      removeBtn.textContent = 'Remove';
-      removeBtn.addEventListener('click', () => {
-        const next = normalizeSignalRules(appState.signalRulesDraft);
-        next.custom = next.custom.filter((item) => item.id !== rule.id);
-        setSignalRulesDraft(next);
-        renderMode();
-      });
-      ruleCard.append(removeBtn);
-
-      ruleCard.append(makeCheckboxRow('Enabled', rule.enabled, (checked) => updateRule({ enabled: checked })));
-      ruleCard.append(makeTextField(
-        'Signal name',
-        rule.name,
-        (value) => updateRule({ name: value }, { render: false }),
-        'Bins out tonight',
-        (value) => updateRule({ name: value })
-      ));
-      ruleCard.append(makeSelectField('Schedule rule', CUSTOM_SIGNAL_SCHEDULE_OPTIONS, rule.scheduleType, (value) => updateRule({ scheduleType: value })));
-      if (rule.scheduleType === 'weekly') {
-        ruleCard.append(makeSelectField('Day', DAY_OPTIONS, String(rule.dayOfWeek), (value) => updateRule({ dayOfWeek: Number(value) })));
-      }
-      ruleCard.append(makeHourField('Start showing', rule.startHour, (value) => updateRule({ startHour: Number(value), escalateHour: Math.max(Number(value), rule.escalateHour) })));
-      ruleCard.append(makeOptionalHourField('End showing (optional)', rule.endHour, (value) => updateRule({ endHour: value === '' ? null : Number(value) })));
-      ruleCard.append(makeSelectField('Clear / acknowledge', CUSTOM_SIGNAL_CLEAR_OPTIONS, rule.clearMode, (value) => updateRule({ clearMode: value })));
-      if (rule.clearMode === 'log_event_today') {
-        ruleCard.append(makeTextField(
-          'Household log event key',
-          rule.ackEventType,
-          (value) => updateRule({ ackEventType: value }, { render: false }),
-          'bins_out',
-          (value) => updateRule({ ackEventType: value })
-        ));
-      }
-      ruleCard.append(makeCheckboxRow('Escalate to warning later', rule.escalateToWarning, (checked) => updateRule({ escalateToWarning: checked })));
-      if (rule.escalateToWarning) {
-        ruleCard.append(makeHourField('Escalate to warning at', rule.escalateHour, (value) => updateRule({ escalateHour: Number(value) })));
-      }
-      ruleCard.append(makeTextField(
-        'Location label (optional)',
-        rule.location || '',
-        (value) => updateRule({ location: value }, { render: false }),
-        'outside',
-        (value) => updateRule({ location: value })
-      ));
-      body.append(ruleCard);
-    });
-  });
-  wrap.append(customCard);
+  wrap.append(buildCard('Custom signal rules', `${rules.custom.length} configured`, renderSignalRuleSummaryList(
+    rules.custom.map((rule, index) => buildCustomSignalSummaryItem(rule, index))
+  , 'No custom signal rules yet.'), 'mobile-compact-card'));
 
   wrap.append(buildCard('Signal preview', 'Uses the current local draft and current time override', renderSignalRulesPreview(rules), 'mobile-compact-card'));
   return wrap;
+}
+
+function buildCoreSignalSummaryItem(key, rules) {
+  if (key === 'bins') {
+    return {
+      kind: 'bins',
+      title: 'Bins reminder',
+      summary: summarizeBinsRule(rules.bins),
+      detail: rules.bins.enabled ? 'Shared weekly reminder' : 'Currently disabled',
+      enabled: !!rules.bins.enabled,
+    };
+  }
+  if (key === 'tomorrowEvent') {
+    return {
+      kind: 'tomorrowEvent',
+      title: 'Tomorrow event signal',
+      summary: summarizeTomorrowEventRule(rules.tomorrowEvent),
+      detail: rules.tomorrowEvent.enabled ? 'Calendar-driven evening prompt' : 'Currently disabled',
+      enabled: !!rules.tomorrowEvent.enabled,
+    };
+  }
+  return {
+    kind: 'laundry',
+    title: 'Laundry attention',
+    summary: summarizeLaundryRule(rules.laundry),
+    detail: rules.laundry.enabled ? 'Shows active laundry state as attention' : 'Currently disabled',
+    enabled: !!rules.laundry.enabled,
+  };
+}
+
+function buildCustomSignalSummaryItem(rule, index) {
+  const normalized = normalizeCustomSignalRule(rule);
+  const detailBits = [];
+  if (normalized.clearMode === 'log_event_today' && normalized.ackEventType) detailBits.push(`Clears on ${normalized.ackEventType}`);
+  if (normalized.location) detailBits.push(normalized.location);
+  return {
+    kind: 'custom',
+    id: normalized.id,
+    title: normalized.name || `Custom signal ${index + 1}`,
+    summary: summarizeCustomSignalRule(normalized),
+    detail: detailBits.join(' · ') || (normalized.enabled ? 'Custom household reminder' : 'Currently disabled'),
+    enabled: !!normalized.enabled,
+  };
+}
+
+function summarizeBinsRule(rule) {
+  const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === Number(rule?.dayOfWeek))?.[1] || 'Weekly';
+  const statusLabel = rule?.enabled ? `${dayLabel} · ${formatHourLabel(rule.startHour)} start · warn ${formatHourLabel(rule.escalateHour)}` : 'Disabled';
+  return statusLabel;
+}
+
+function summarizeTomorrowEventRule(rule) {
+  return rule?.enabled ? `After ${formatHourLabel(rule.startHour)} · big event tomorrow` : 'Disabled';
+}
+
+function summarizeLaundryRule(rule) {
+  return rule?.enabled ? 'Active loads surface as attention' : 'Disabled';
+}
+
+function renderSignalRuleSummaryList(items, emptyText = 'No signal rules yet.') {
+  const list = document.createElement('div');
+  list.className = 'signal-rule-summary-list';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = emptyText;
+    list.append(empty);
+    return list;
+  }
+  items.forEach((item) => list.append(renderSignalSummaryCard(item)));
+  return list;
+}
+
+function renderSignalSummaryCard(item) {
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = `signal-summary-card ${item.enabled ? '' : 'is-disabled'}`.trim();
+  card.addEventListener('click', () => openSignalRuleModal(item.kind, { mode: 'view', ruleId: item.id || null }));
+
+  const top = document.createElement('div');
+  top.className = 'signal-summary-top';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'signal-summary-copy';
+  const title = document.createElement('div');
+  title.className = 'signal-summary-title';
+  title.textContent = item.title;
+  const summary = document.createElement('div');
+  summary.className = 'signal-summary-meta';
+  summary.textContent = item.summary || '';
+  titleWrap.append(title, summary);
+
+  const badge = document.createElement('span');
+  badge.className = `pill ${item.enabled ? '' : 'muted-pill'}`.trim();
+  badge.textContent = item.enabled ? 'Enabled' : 'Disabled';
+  top.append(titleWrap, badge);
+
+  const detail = document.createElement('div');
+  detail.className = 'signal-summary-detail';
+  detail.textContent = item.detail || '';
+
+  const actions = document.createElement('div');
+  actions.className = 'signal-summary-actions';
+  const viewBtn = document.createElement('button');
+  viewBtn.type = 'button';
+  viewBtn.className = 'secondary-button small-button';
+  viewBtn.textContent = 'View';
+  viewBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openSignalRuleModal(item.kind, { mode: 'view', ruleId: item.id || null });
+  });
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'secondary-button small-button';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openSignalRuleModal(item.kind, { mode: 'edit', ruleId: item.id || null });
+  });
+  actions.append(viewBtn, editBtn);
+
+  card.append(top, detail, actions);
+  return card;
+}
+
+function openSignalRuleModal(kind, options = {}) {
+  const rules = normalizeSignalRules(appState.signalRulesDraft || appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
+  const modalState = buildSignalModalState(kind, rules, options);
+  if (!modalState) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay signal-modal-overlay';
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+
+  const panel = document.createElement('div');
+  panel.className = 'modal-panel signal-modal-panel';
+  overlay.append(panel);
+  document.body.append(overlay);
+
+  const close = () => overlay.remove();
+  const rerender = () => renderSignalRuleModalPanel(panel, modalState, rerender, close);
+  rerender();
+}
+
+function buildSignalModalState(kind, rules, options = {}) {
+  if (kind === 'custom') {
+    const sourceRule = options.isNew
+      ? normalizeCustomSignalRule({
+          name: '',
+          scheduleType: 'weekly',
+          dayOfWeek: getNowDate().getDay(),
+          startHour: Math.min(23, getNowDate().getHours()),
+          clearMode: 'schedule_window',
+          escalateToWarning: false,
+        })
+      : normalizeCustomSignalRule((rules.custom || []).find((rule) => rule.id === options.ruleId));
+    if (!sourceRule) return null;
+    return {
+      kind,
+      mode: options.mode || 'view',
+      isNew: !!options.isNew,
+      ruleId: sourceRule.id,
+      draft: sourceRule,
+    };
+  }
+  if (kind === 'bins') {
+    return { kind, mode: options.mode || 'view', draft: { ...rules.bins } };
+  }
+  if (kind === 'tomorrowEvent') {
+    return { kind, mode: options.mode || 'view', draft: { ...rules.tomorrowEvent } };
+  }
+  if (kind === 'laundry') {
+    return { kind, mode: options.mode || 'view', draft: { ...rules.laundry } };
+  }
+  return null;
+}
+
+function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
+  panel.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'signal-modal-header';
+  const titleWrap = document.createElement('div');
+  const title = document.createElement('div');
+  title.className = 'signal-modal-title';
+  title.textContent = getSignalModalTitle(modalState);
+  const subtitle = document.createElement('div');
+  subtitle.className = 'signal-modal-subtitle';
+  subtitle.textContent = getSignalModalSubtitle(modalState);
+  titleWrap.append(title, subtitle);
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'secondary-button small-button';
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', close);
+  header.append(titleWrap, closeBtn);
+  panel.append(header);
+
+  const body = document.createElement('div');
+  body.className = 'mobile-stack';
+  if (modalState.mode === 'view') {
+    body.append(renderSignalRuleDetailView(modalState));
+  } else {
+    body.append(renderSignalRuleForm(modalState, rerender));
+  }
+  panel.append(body);
+
+  const footer = document.createElement('div');
+  footer.className = 'signal-modal-footer';
+
+  if (modalState.mode === 'view') {
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'secondary-button';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => {
+      modalState.mode = 'edit';
+      rerender();
+    });
+    footer.append(editBtn);
+  } else {
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'secondary-button';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      if (modalState.isNew) {
+        close();
+      } else {
+        modalState.mode = 'view';
+        rerender();
+      }
+    });
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'secondary-button';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => {
+      if (!saveSignalModalDraft(modalState)) return;
+      close();
+      renderMode();
+      showToast('Saved signal rule', 'success');
+    });
+    footer.append(cancelBtn, saveBtn);
+    if (modalState.kind === 'custom' && !modalState.isNew) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'secondary-button danger-button';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => {
+        deleteCustomSignalRule(modalState.ruleId);
+        close();
+        renderMode();
+        showToast('Deleted custom signal', 'success');
+      });
+      footer.prepend(deleteBtn);
+    }
+  }
+  panel.append(footer);
+}
+
+function getSignalModalTitle(modalState) {
+  if (modalState.kind === 'bins') return 'Bins reminder';
+  if (modalState.kind === 'tomorrowEvent') return 'Tomorrow event signal';
+  if (modalState.kind === 'laundry') return 'Laundry attention';
+  return modalState.draft.name || (modalState.isNew ? 'New custom signal' : 'Custom signal');
+}
+
+function getSignalModalSubtitle(modalState) {
+  if (modalState.kind === 'bins') return summarizeBinsRule(modalState.draft);
+  if (modalState.kind === 'tomorrowEvent') return summarizeTomorrowEventRule(modalState.draft);
+  if (modalState.kind === 'laundry') return summarizeLaundryRule(modalState.draft);
+  return summarizeCustomSignalRule(modalState.draft);
+}
+
+function renderSignalRuleDetailView(modalState) {
+  const rows = [];
+  if (modalState.kind === 'bins') {
+    rows.push(['Status', modalState.draft.enabled ? 'Enabled' : 'Disabled']);
+    rows.push(['Day', DAY_OPTIONS.find(([value]) => Number(value) === Number(modalState.draft.dayOfWeek))?.[1] || 'Weekly']);
+    rows.push(['Starts', formatHourLabel(modalState.draft.startHour)]);
+    rows.push(['Warning', formatHourLabel(modalState.draft.escalateHour)]);
+    rows.push(['Location', modalState.draft.location || 'outside']);
+  } else if (modalState.kind === 'tomorrowEvent') {
+    rows.push(['Status', modalState.draft.enabled ? 'Enabled' : 'Disabled']);
+    rows.push(['Starts after', formatHourLabel(modalState.draft.startHour)]);
+    rows.push(['Minimum events', String(modalState.draft.minEvents || 1)]);
+  } else if (modalState.kind === 'laundry') {
+    rows.push(['Status', modalState.draft.enabled ? 'Enabled' : 'Disabled']);
+    rows.push(['Behavior', 'Surfaces active laundry as an attention signal']);
+  } else {
+    const rule = normalizeCustomSignalRule(modalState.draft);
+    rows.push(['Status', rule.enabled ? 'Enabled' : 'Disabled']);
+    rows.push(['Schedule', rule.scheduleType === 'daily' ? 'Daily' : DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly']);
+    rows.push(['Start', formatHourLabel(rule.startHour)]);
+    rows.push(['End', rule.endHour === null ? 'Until end of day' : formatHourLabel(rule.endHour)]);
+    rows.push(['Clear rule', rule.clearMode === 'log_event_today' ? 'Clear when matching log appears today' : 'Hide outside schedule window']);
+    if (rule.clearMode === 'log_event_today') rows.push(['Log key', rule.ackEventType || '—']);
+    rows.push(['Warning', rule.escalateToWarning ? `At ${formatHourLabel(rule.escalateHour)}` : 'No warning escalation']);
+    rows.push(['Location', rule.location || '—']);
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'signal-detail-list';
+  rows.forEach(([label, value]) => {
+    const row = document.createElement('div');
+    row.className = 'meta-row';
+    const left = document.createElement('div');
+    left.textContent = label;
+    const right = document.createElement('div');
+    right.className = 'signal-detail-value';
+    right.textContent = value;
+    row.append(left, right);
+    wrap.append(row);
+  });
+  return wrap;
+}
+
+function renderSignalRuleForm(modalState, rerender) {
+  const body = document.createElement('div');
+  body.className = 'mobile-stack signal-modal-form';
+
+  if (modalState.kind === 'bins') {
+    body.append(makeCheckboxRow('Enable bins reminder', modalState.draft.enabled, (checked) => { modalState.draft.enabled = checked; }));
+    body.append(makeSelectField('Reminder day', DAY_OPTIONS, String(modalState.draft.dayOfWeek), (value) => { modalState.draft.dayOfWeek = Number(value); rerender(); }));
+    body.append(makeHourField('Start showing', modalState.draft.startHour, (value) => { modalState.draft.startHour = Number(value); modalState.draft.escalateHour = Math.max(modalState.draft.startHour, modalState.draft.escalateHour); rerender(); }));
+    body.append(makeHourField('Escalate to warning', modalState.draft.escalateHour, (value) => { modalState.draft.escalateHour = Number(value); rerender(); }));
+    body.append(makeTextField('Location label', modalState.draft.location || '', (value) => { modalState.draft.location = value; }, 'outside'));
+    return body;
+  }
+
+  if (modalState.kind === 'tomorrowEvent') {
+    body.append(makeCheckboxRow('Enable big event tomorrow signal', modalState.draft.enabled, (checked) => { modalState.draft.enabled = checked; }));
+    body.append(makeHourField('Start showing after', modalState.draft.startHour, (value) => { modalState.draft.startHour = Number(value); rerender(); }));
+    return body;
+  }
+
+  if (modalState.kind === 'laundry') {
+    body.append(makeCheckboxRow('Enable laundry attention signal', modalState.draft.enabled, (checked) => { modalState.draft.enabled = checked; }));
+    return body;
+  }
+
+  body.append(makeCheckboxRow('Enabled', modalState.draft.enabled, (checked) => { modalState.draft.enabled = checked; }));
+  body.append(makeTextField('Signal name', modalState.draft.name, (value) => { modalState.draft.name = value; }, 'Bins out tonight', () => rerender()));
+  body.append(makeSelectField('Schedule rule', CUSTOM_SIGNAL_SCHEDULE_OPTIONS, modalState.draft.scheduleType, (value) => { modalState.draft.scheduleType = value; rerender(); }));
+  if (modalState.draft.scheduleType === 'weekly') {
+    body.append(makeSelectField('Day', DAY_OPTIONS, String(modalState.draft.dayOfWeek), (value) => { modalState.draft.dayOfWeek = Number(value); rerender(); }));
+  }
+  body.append(makeHourField('Start showing', modalState.draft.startHour, (value) => {
+    modalState.draft.startHour = Number(value);
+    modalState.draft.escalateHour = Math.max(modalState.draft.startHour, modalState.draft.escalateHour || modalState.draft.startHour);
+    rerender();
+  }));
+  body.append(makeOptionalHourField('End showing (optional)', modalState.draft.endHour, (value) => { modalState.draft.endHour = value === '' ? null : Number(value); rerender(); }));
+  body.append(makeSelectField('Clear / acknowledge', CUSTOM_SIGNAL_CLEAR_OPTIONS, modalState.draft.clearMode, (value) => { modalState.draft.clearMode = value; rerender(); }));
+  if (modalState.draft.clearMode === 'log_event_today') {
+    body.append(makeTextField('Household log event key', modalState.draft.ackEventType, (value) => { modalState.draft.ackEventType = value; }, 'bins_out'));
+  }
+  body.append(makeCheckboxRow('Escalate to warning later', modalState.draft.escalateToWarning, (checked) => { modalState.draft.escalateToWarning = checked; rerender(); }));
+  if (modalState.draft.escalateToWarning) {
+    body.append(makeHourField('Escalate to warning at', modalState.draft.escalateHour, (value) => { modalState.draft.escalateHour = Number(value); rerender(); }));
+  }
+  body.append(makeTextField('Location label (optional)', modalState.draft.location || '', (value) => { modalState.draft.location = value; }, 'outside'));
+  return body;
+}
+
+function saveSignalModalDraft(modalState) {
+  const next = normalizeSignalRules(appState.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  if (modalState.kind === 'bins') {
+    next.bins = {
+      enabled: !!modalState.draft.enabled,
+      dayOfWeek: Number(modalState.draft.dayOfWeek),
+      startHour: clampHour(modalState.draft.startHour, next.bins.startHour),
+      escalateHour: Math.max(clampHour(modalState.draft.startHour, next.bins.startHour), clampHour(modalState.draft.escalateHour, next.bins.escalateHour)),
+      location: String(modalState.draft.location || 'outside').trim() || 'outside',
+    };
+  } else if (modalState.kind === 'tomorrowEvent') {
+    next.tomorrowEvent = {
+      ...next.tomorrowEvent,
+      enabled: !!modalState.draft.enabled,
+      startHour: clampHour(modalState.draft.startHour, next.tomorrowEvent.startHour),
+    };
+  } else if (modalState.kind === 'laundry') {
+    next.laundry = { enabled: !!modalState.draft.enabled };
+  } else {
+    const normalized = normalizeCustomSignalRule(modalState.draft);
+    if (!normalized.name) {
+      showToast('Signal name is required', 'error');
+      return false;
+    }
+    if (modalState.isNew) {
+      next.custom.push(normalized);
+    } else {
+      next.custom = next.custom.map((item) => item.id === modalState.ruleId ? normalized : item);
+    }
+  }
+  setSignalRulesDraft(next);
+  return true;
+}
+
+function deleteCustomSignalRule(ruleId) {
+  const next = normalizeSignalRules(appState.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  next.custom = next.custom.filter((item) => item.id !== ruleId);
+  setSignalRulesDraft(next);
+  return true;
 }
 
 function makeCheckboxRow(label, checked, onChange) {
