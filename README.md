@@ -324,3 +324,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - preserved behavior while reducing config write/read drift
 
 - v2.2.13: Hardened Realtime setup with shared channel specs, subscription diagnostics, scoped event handling, and clearer Mobile debug visibility.
+
+
+## v2.2.14 cleanup pass
+
+Wake lock/runtime hardening:
+- v2.2.14: Centralized wake-lock lifecycle notes, retry/release diagnostics, startup sync, and added Mobile Debug visibility for wake-lock runtime state.

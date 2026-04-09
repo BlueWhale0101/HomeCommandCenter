@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.13';
+const APP_VERSION = 'v2.2.14';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -144,6 +144,9 @@ let appState = {
     note: '',
     needsInteraction: false,
     lastAttemptAt: '',
+    lastReason: '',
+    retryCount: 0,
+    releasedAt: '',
   },
   sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
@@ -1887,6 +1890,7 @@ function renderMobileDebug() {
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
     { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
+    buildWakeLockDebugSummary(),
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -4048,6 +4052,28 @@ function updateWakeLockStatus(patch = {}) {
   };
 }
 
+function getWakeLockLifecycleNote(reason = '', fallback = '') {
+  if (!reason) return fallback || '';
+  const labels = {
+    'user-interaction': 'Retrying after interaction',
+    lifecycle: 'Refreshing on focus/visibility return',
+    released: 'Re-requesting after system release',
+    'interval-retry': 'Periodic retry',
+    settings: 'Refreshing after settings change',
+    startup: 'Starting keep-awake manager',
+    hidden: 'Paused while app is hidden',
+    disabled: 'Disabled in settings',
+  };
+  return labels[reason] || fallback || reason;
+}
+
+function noteWakeLockLifecycle(reason = '', patch = {}) {
+  updateWakeLockStatus({
+    lastReason: reason || appState.wakeLockStatus?.lastReason || '',
+    ...patch,
+  });
+}
+
 async function releaseWakeLock(reason = '') {
   const sentinel = appState.wakeLockSentinel;
   appState.wakeLockSentinel = null;
@@ -4056,26 +4082,35 @@ async function releaseWakeLock(reason = '') {
   }
   updateWakeLockStatus({
     active: false,
-    note: reason || (desiredWakeLockEnabled() ? 'Released' : 'Disabled'),
+    note: getWakeLockLifecycleNote(reason, reason || (desiredWakeLockEnabled() ? 'Released' : 'Disabled')),
     error: '',
+    releasedAt: new Date().toISOString(),
+    lastReason: reason || appState.wakeLockStatus?.lastReason || '',
   });
 }
 
+function queueWakeLockSync(reason = '') {
+  window.setTimeout(() => {
+    syncWakeLock({ reason, force: true });
+  }, 250);
+}
+
 async function syncWakeLock(options = {}) {
+  const reason = options.reason || '';
   const enabled = desiredWakeLockEnabled();
-  updateWakeLockStatus({ enabled, supported: supportsScreenWakeLock() });
+  noteWakeLockLifecycle(reason, { enabled, supported: supportsScreenWakeLock() });
 
   if (!enabled) {
-    await releaseWakeLock('Disabled in settings');
+    await releaseWakeLock('disabled');
     updateWakeLockStatus({ needsInteraction: false });
     return false;
   }
   if (!supportsScreenWakeLock()) {
-    updateWakeLockStatus({ active: false, error: '', note: 'Not supported on this browser/device', needsInteraction: false });
+    updateWakeLockStatus({ active: false, error: '', note: 'Not supported on this browser/device', needsInteraction: false, retryCount: 0 });
     return false;
   }
   if (document.hidden) {
-    await releaseWakeLock('Paused while app is hidden');
+    await releaseWakeLock('hidden');
     return false;
   }
   if (appState.wakeLockSentinel && !options.force) {
@@ -4096,15 +4131,14 @@ async function syncWakeLock(options = {}) {
       updateWakeLockStatus({
         active: false,
         note: document.hidden ? 'Paused while app is hidden' : 'Released by system',
+        releasedAt: new Date().toISOString(),
       });
       if (!document.hidden && desiredWakeLockEnabled()) {
-        window.setTimeout(() => {
-          syncWakeLock({ reason: 'released', force: true });
-        }, 250);
+        queueWakeLockSync('released');
       }
       try { if (appState.config.mode === 'mobile') renderRuntimeUi({ renderDevConsole: false }); } catch {}
     });
-    updateWakeLockStatus({ active: true, error: '', note: 'Active', needsInteraction: false, lastAttemptAt: new Date().toISOString() });
+    updateWakeLockStatus({ active: true, error: '', note: 'Active', needsInteraction: false, lastAttemptAt: new Date().toISOString(), retryCount: 0 });
     return true;
   } catch (error) {
     const message = error?.message || String(error || 'Wake lock request failed');
@@ -4115,9 +4149,24 @@ async function syncWakeLock(options = {}) {
       note: needsInteraction ? 'Tap once to activate keep-awake' : 'Request failed',
       needsInteraction,
       lastAttemptAt: new Date().toISOString(),
+      retryCount: (appState.wakeLockStatus?.retryCount || 0) + 1,
     });
     return false;
   }
+}
+
+function buildWakeLockDebugSummary() {
+  const status = appState.wakeLockStatus || {};
+  return {
+    title: `Wake lock: ${status.active ? 'active' : (status.enabled ? 'enabled' : 'off')}`,
+    meta: [
+      status.lastReason ? `Last reason ${status.lastReason}` : '',
+      status.lastAttemptAt ? `Attempt ${formatWakeLockAttemptTime(status.lastAttemptAt)}` : '',
+      status.releasedAt ? `Release ${formatWakeLockAttemptTime(status.releasedAt)}` : '',
+      status.retryCount ? `Retries ${status.retryCount}` : '',
+    ].filter(Boolean).join(' · '),
+    pill: 'Wake',
+  };
 }
 
 function buildWakeLockStatusItems() {
@@ -4163,6 +4212,7 @@ function setupWakeLockHooks() {
       syncWakeLock({ reason: 'interval-retry' });
     }
   }, 30000);
+  syncWakeLock({ reason: 'startup' });
   window.addEventListener('beforeunload', () => {
     try { appState.wakeLockSentinel?.release(); } catch {}
     appState.wakeLockSentinel = null;
