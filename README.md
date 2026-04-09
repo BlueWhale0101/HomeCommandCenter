@@ -298,3 +298,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - centralized bins/custom-rule/laundry signal evaluation helpers
 - shared one signal sort path for stored + synthetic signals
 - preserved signal behavior while reducing branching in render-time paths
+
+
+## v2.2.10 cleanup pass
+- normalized task intelligence internals around a shared `buildTaskIntelligenceContext(...)` path
+- reused cached due-bucket state and shared selectors for task digest assembly
+- consolidated snapshot-to-display mapping and tomorrow-window task selection helpers

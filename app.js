@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.9';
+const APP_VERSION = 'v2.2.10';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3028,13 +3028,32 @@ function hasEveningCue(task) {
   return includesAnyToken(combined, ['tonight', 'evening', 'before bed', 'before tomorrow']);
 }
 
-function scoreTaskForWindow(task, options = {}) {
+function buildTaskIntelligenceContext(tasks = normalizeTaskRows(), options = {}) {
   const now = options.now || getNowDate();
-  const dueBucket = getTaskDueBucket(task, now);
-  const windowName = options.windowName || 'today';
-  const signals = options.signals || [];
-  const tomorrowSnapshot = options.tomorrowSnapshot || null;
+  const todaySnapshot = options.todaySnapshot || getSnapshotPayload(appState.config.calendarTodaySnapshotType);
+  const tomorrowSnapshot = options.tomorrowSnapshot || getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const signals = options.signals || activeSignals();
   const evening = options.evening ?? isEvening();
+  const dueBucketById = new Map(tasks.map((task) => [task.id, getTaskDueBucket(task, now)]));
+  return {
+    tasks,
+    now,
+    todaySnapshot,
+    tomorrowSnapshot,
+    signals,
+    evening,
+    dueBucketById,
+  };
+}
+
+function scoreTaskForWindow(task, options = {}) {
+  const intelligenceContext = options.intelligenceContext || null;
+  const now = intelligenceContext?.now || options.now || getNowDate();
+  const dueBucket = intelligenceContext?.dueBucketById?.get(task.id) || getTaskDueBucket(task, now);
+  const windowName = options.windowName || 'today';
+  const signals = intelligenceContext?.signals || options.signals || [];
+  const tomorrowSnapshot = intelligenceContext?.tomorrowSnapshot || options.tomorrowSnapshot || null;
+  const evening = intelligenceContext?.evening ?? options.evening ?? isEvening();
   let score = 0;
 
   if (windowName === 'today') {
@@ -3070,8 +3089,9 @@ function scoreTaskForWindow(task, options = {}) {
 }
 
 function rankTasksForWindow(tasks, options = {}) {
+  const intelligenceContext = options.intelligenceContext || buildTaskIntelligenceContext(tasks, options);
   return [...tasks]
-    .map((task) => ({ ...task, intelligenceScore: scoreTaskForWindow(task, options) }))
+    .map((task) => ({ ...task, intelligenceScore: scoreTaskForWindow(task, { ...options, intelligenceContext }) }))
     .sort((a, b) => {
       if (b.intelligenceScore !== a.intelligenceScore) return b.intelligenceScore - a.intelligenceScore;
       if (a.sortScore !== b.sortScore) return a.sortScore - b.sortScore;
@@ -3079,47 +3099,52 @@ function rankTasksForWindow(tasks, options = {}) {
     });
 }
 
+function mapSnapshotItemsToDisplay(items = [], labelPrefix = '') {
+  return items.map((item) => ({
+    title: item.title,
+    meta: [item.sourceLabel || 'Calendar', labelPrefix && item.time ? `${labelPrefix} · ${item.time}` : labelPrefix || item.time].filter(Boolean).join(' · '),
+    pill: 'Calendar',
+  }));
+}
+
+function selectTasksByDueBucket(tasks, dueBucketById, buckets) {
+  return tasks.filter((task) => buckets.includes(dueBucketById.get(task.id)));
+}
+
+function selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext) {
+  const { dueBucketById, evening } = intelligenceContext;
+  return rankedTomorrowTasks.filter((task) => {
+    const bucket = dueBucketById.get(task.id);
+    return bucket === 'tomorrow' || (evening && bucket === 'today') || hasTomorrowPrepCue(task);
+  }).slice(0, 8);
+}
 
 function buildTaskDigest() {
   const tasks = normalizeTaskRows();
-  const today = getNowDate();
-  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const signals = activeSignals();
-  const evening = isEvening();
-  const dueBucketById = new Map(tasks.map((task) => [task.id, getTaskDueBucket(task, today)]));
+  const intelligenceContext = buildTaskIntelligenceContext(tasks);
+  const { todaySnapshot, tomorrowSnapshot, signals, dueBucketById } = intelligenceContext;
 
-  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', now: today, signals, tomorrowSnapshot, evening });
-  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', now: today, signals, tomorrowSnapshot, evening });
+  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', intelligenceContext });
+  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', intelligenceContext });
 
-  const overdueTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'overdue');
-  const upcomingTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'future').slice(0, 8);
-  const todayTasks = rankedTodayTasks.filter((task) => ['today', 'overdue'].includes(dueBucketById.get(task.id)));
-  const undatedTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'undated');
+  const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
+  const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
+  const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
+  const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
+  const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
   const calendarTodayItems = Array.isArray(todaySnapshot?.items)
-    ? todaySnapshot.items.map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
+    ? mapSnapshotItemsToDisplay(todaySnapshot.items)
     : [];
   const calendarTomorrowItems = Array.isArray(tomorrowSnapshot?.items)
-    ? tomorrowSnapshot.items.map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time ? `Tomorrow · ${item.time}` : 'Tomorrow'].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
+    ? mapSnapshotItemsToDisplay(tomorrowSnapshot.items, 'Tomorrow')
     : [];
 
   const todayTaskItems = toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today');
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
-  const tomorrowWindowTasks = rankedTomorrowTasks.filter((task) => {
-    const bucket = dueBucketById.get(task.id);
-    return bucket === 'tomorrow' || (evening && bucket === 'today') || hasTomorrowPrepCue(task);
-  }).slice(0, 8);
+  const tomorrowWindowTasks = selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext);
   const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
   const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
 
@@ -3146,7 +3171,7 @@ function buildTaskDigest() {
       upcoming: upcomingTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
-      tomorrow: rankedTomorrowTasks.filter((task) => dueBucketById.get(task.id) === 'tomorrow').length,
+      tomorrow: tomorrowOnlyTasks.length,
     },
   };
 }
