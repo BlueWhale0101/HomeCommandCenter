@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.3';
+const APP_VERSION = 'v2.2.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1138,46 +1138,9 @@ function renderMobileCalendar() {
   wrap.append(buildCard('This Device’s Calendar Connection', 'Local Google auth status for publishing', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
-  accounts.append(renderCalendarAccountsClone());
+  accounts.append(renderCalendarAccountsPanel({ editable: false }));
   wrap.append(accounts);
   return wrap;
-}
-
-function renderCalendarAccountsClone() {
-  const host = document.createElement('div');
-  host.className = 'google-calendar-accounts';
-  if (!appState.calendarAccounts.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No Google accounts connected yet.';
-    host.append(empty);
-    return host;
-  }
-  for (const account of appState.calendarAccounts) {
-    const card = document.createElement('div');
-    card.className = 'calendar-account-card';
-    const header = document.createElement('div');
-    header.className = 'calendar-account-header';
-    const title = document.createElement('div');
-    title.className = 'calendar-account-title';
-    title.textContent = account.displayName || account.email || 'Google account';
-    const subtitle = document.createElement('div');
-    subtitle.className = 'muted';
-    subtitle.textContent = `${(account.calendars || []).filter(c => c.selected).length} selected calendar${(account.calendars || []).filter(c => c.selected).length === 1 ? '' : 's'}`;
-    header.append(title, subtitle);
-    card.append(header);
-    const list = document.createElement('div');
-    list.className = 'calendar-list';
-    for (const calendar of account.calendars || []) {
-      const row = document.createElement('div');
-      row.className = 'calendar-list-item';
-      row.innerHTML = `<span>${escapeHtml(calendar.summary || calendar.id)}</span><span class="pill">${calendar.selected ? 'Included' : 'Hidden'}</span>`;
-      list.append(row);
-    }
-    card.append(list);
-    host.append(card);
-  }
-  return host;
 }
 
 function renderMobileWeather() {
@@ -2673,15 +2636,16 @@ async function fetchWeatherSnapshot() {
   }
 }
 
-function renderCalendarAccounts() {
-  if (!googleCalendarAccountsEl) return;
-  googleCalendarAccountsEl.replaceChildren();
+function renderCalendarAccountsPanel(options = {}) {
+  const { editable = false } = options;
+  const host = document.createElement('div');
+  host.className = 'google-calendar-accounts';
   if (!appState.calendarAccounts.length) {
     const empty = document.createElement('div');
-    empty.className = 'empty-state compact-empty';
+    empty.className = `empty-state${editable ? ' compact-empty' : ''}`;
     empty.textContent = 'No Google accounts connected yet.';
-    googleCalendarAccountsEl.append(empty);
-    return;
+    host.append(empty);
+    return host;
   }
 
   for (const account of appState.calendarAccounts) {
@@ -2690,43 +2654,70 @@ function renderCalendarAccounts() {
 
     const header = document.createElement('div');
     header.className = 'calendar-account-header';
-    const left = document.createElement('div');
-    left.innerHTML = `<strong>${escapeHtml(account.name || account.email)}</strong><div class="muted">${escapeHtml(account.email || '')}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}</div>`;
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'secondary-button mini-button';
-    removeButton.textContent = 'Remove';
-    removeButton.addEventListener('click', () => {
-      saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
-      refreshAll().catch((error) => console.error('Refresh after removing calendar account failed', error));
-    });
-    header.append(left, removeButton);
+
+    if (editable) {
+      const left = document.createElement('div');
+      left.innerHTML = `<strong>${escapeHtml(account.name || account.email)}</strong><div class="muted">${escapeHtml(account.email || '')}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}</div>`;
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'secondary-button mini-button';
+      removeButton.textContent = 'Remove';
+      removeButton.addEventListener('click', () => {
+        saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
+        refreshAll().catch((error) => console.error('Refresh after removing calendar account failed', error));
+      });
+      header.append(left, removeButton);
+    } else {
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'calendar-account-title';
+      title.textContent = account.displayName || account.name || account.email || 'Google account';
+      const subtitle = document.createElement('div');
+      subtitle.className = 'muted';
+      const selectedCount = (account.calendars || []).filter((calendar) => calendar.selected).length;
+      subtitle.textContent = `${selectedCount} selected calendar${selectedCount === 1 ? '' : 's'}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}`;
+      titleWrap.append(title, subtitle);
+      header.append(titleWrap);
+    }
     card.append(header);
 
     const calList = document.createElement('div');
     calList.className = 'calendar-list';
     for (const calendar of account.calendars || []) {
-      const row = document.createElement('label');
-      row.className = 'calendar-row';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = !!calendar.selected;
-      checkbox.addEventListener('change', () => {
-        const next = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
-          ...item,
-          calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
+      if (editable) {
+        const row = document.createElement('label');
+        row.className = 'calendar-row';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!calendar.selected;
+        checkbox.addEventListener('change', () => {
+          const next = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
+            ...item,
+            calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
+          });
+          saveCalendarAccounts(next);
+          refreshAll().catch((error) => console.error('Refresh after calendar toggle failed', error));
         });
-        saveCalendarAccounts(next);
-        refreshAll().catch((error) => console.error('Refresh after calendar toggle failed', error));
-      });
-      const labelText = document.createElement('span');
-      labelText.textContent = calendar.summary || calendar.id;
-      row.append(checkbox, labelText);
-      calList.append(row);
+        const labelText = document.createElement('span');
+        labelText.textContent = calendar.summary || calendar.id;
+        row.append(checkbox, labelText);
+        calList.append(row);
+      } else {
+        const row = document.createElement('div');
+        row.className = 'calendar-list-item';
+        row.innerHTML = `<span>${escapeHtml(calendar.summary || calendar.id)}</span><span class="pill">${calendar.selected ? 'Included' : 'Hidden'}</span>`;
+        calList.append(row);
+      }
     }
     card.append(calList);
-    googleCalendarAccountsEl.append(card);
+    host.append(card);
   }
+  return host;
+}
+
+function renderCalendarAccounts() {
+  if (!googleCalendarAccountsEl) return;
+  googleCalendarAccountsEl.replaceChildren(renderCalendarAccountsPanel({ editable: true }));
 }
 
 function formatCalendarEventTime(event) {
@@ -3067,14 +3058,16 @@ function buildTaskDigest() {
   const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
   const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
   const signals = activeSignals();
+  const evening = isEvening();
+  const dueBucketById = new Map(tasks.map((task) => [task.id, getTaskDueBucket(task, today)]));
 
-  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', now: today, signals, tomorrowSnapshot, evening: isEvening() });
-  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', now: today, signals, tomorrowSnapshot, evening: isEvening() });
+  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', now: today, signals, tomorrowSnapshot, evening });
+  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', now: today, signals, tomorrowSnapshot, evening });
 
-  const overdueTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'overdue');
-  const upcomingTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'future').slice(0, 8);
-  const todayTasks = rankedTodayTasks.filter((task) => ['today', 'overdue'].includes(getTaskDueBucket(task, today)));
-  const undatedTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'undated');
+  const overdueTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'overdue');
+  const upcomingTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'future').slice(0, 8);
+  const todayTasks = rankedTodayTasks.filter((task) => ['today', 'overdue'].includes(dueBucketById.get(task.id)));
+  const undatedTasks = rankedTodayTasks.filter((task) => dueBucketById.get(task.id) === 'undated');
 
   const calendarTodayItems = Array.isArray(todaySnapshot?.items)
     ? todaySnapshot.items.map((item) => ({

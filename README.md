@@ -267,3 +267,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - normalized repeated mobile action-row/button construction behind shared helpers
 - removed a few clearly unused helper paths left from earlier patch stacking
 - preserved behavior while reducing duplicated UI wiring in Mobile tabs
+
+
+### v2.2.4 cleanup pass
+- unified Google Calendar account rendering behind a shared internal renderer for editable and read-only mobile views
+- tightened task digest internals to reuse computed evening state and due-bucket results
+- roadmap note added: easy reconnect flow for expired Google Calendar publisher sessions
