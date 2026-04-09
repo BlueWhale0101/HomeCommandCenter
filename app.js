@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.5';
+const APP_VERSION = 'v2.2.6';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -933,22 +933,47 @@ const WIDGETS = {
 };
 
 
+const MOBILE_TABS = {
+  status: { label: 'Status', subtitle: (context) => 'Whole-house summary', render: (context) => renderMobileStatus(context) },
+  logs: { label: 'Logs', subtitle: () => 'Recent actions and links', render: () => renderMobileLogs() },
+  calendar: { label: 'Calendar', subtitle: () => `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`, render: () => renderMobileCalendar() },
+  weather: { label: 'Weather', subtitle: () => appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration', render: () => renderMobileWeather() },
+  signals: { label: 'Signals', subtitle: () => 'Household reminder rules and previews', render: () => renderMobileSignals() },
+  debug: { subtitle: () => appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls', label: 'Debug', render: () => renderMobileDebug() },
+};
+
+function getMobileTabDefinition(tabKey) {
+  return MOBILE_TABS[tabKey] || MOBILE_TABS.status;
+}
+
+function getMobileTabs() {
+  return Object.entries(MOBILE_TABS);
+}
+
+function buildMobileStack() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  return wrap;
+}
+
+function appendCards(container, cards) {
+  for (const card of cards) {
+    if (card) container.append(card);
+  }
+  return container;
+}
+
 function renderMobileControlPanel(context) {
   screenEl.className = 'screen single-column mobile-control-screen';
   screenEl.replaceChildren();
 
-  const tabs = [
-    ['status', 'Status'],
-    ['logs', 'Logs'],
-    ['calendar', 'Calendar'],
-    ['weather', 'Weather'],
-    ['signals', 'Signals'],
-    ['debug', 'Debug'],
-  ];
+  const tabs = getMobileTabs();
+  const activeTab = getMobileTabDefinition(appState.mobileTab);
 
   const nav = document.createElement('div');
   nav.className = 'mobile-tabs';
-  for (const [key, label] of tabs) {
+  for (const [key, def] of tabs) {
+    const label = def.label;
     const btn = document.createElement('button');
     btn.className = `mobile-tab-button ${appState.mobileTab === key ? 'active' : ''}`.trim();
     btn.textContent = label;
@@ -968,16 +993,16 @@ function renderMobileControlPanel(context) {
   const title = document.createElement('div');
   title.className = 'card-header';
   const h2 = document.createElement('h2');
-  h2.textContent = tabs.find(([k]) => k === appState.mobileTab)?.[1] || 'Status';
+  h2.textContent = activeTab.label;
   const sub = document.createElement('span');
   sub.className = 'card-subtitle';
-  sub.textContent = mobileTabSubtitle(appState.mobileTab, context);
+  sub.textContent = activeTab.subtitle(context);
   title.append(h2, sub);
   panel.append(title);
 
   let content;
   try {
-    content = renderMobileTabContent(appState.mobileTab, context);
+    content = activeTab.render(context);
   } catch (error) {
     handleRuntimeActionError(`Could not render ${appState.mobileTab} tab`, error);
     content = renderInlineErrorCard(`The ${appState.mobileTab} tab hit an error.`, error);
@@ -985,26 +1010,6 @@ function renderMobileControlPanel(context) {
   body.append(content);
   panel.append(body);
   screenEl.append(panel);
-}
-
-function mobileTabSubtitle(tab, context) {
-  if (tab === 'status') return 'Whole-house summary';
-  if (tab === 'logs') return 'Recent actions and links';
-  if (tab === 'calendar') return `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`;
-  if (tab === 'weather') return appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration';
-  if (tab === 'signals') return 'Household reminder rules and previews';
-  if (tab === 'debug') return appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls';
-  return '';
-}
-
-function renderMobileTabContent(tab, context) {
-  if (tab === 'status') return renderMobileStatus(context);
-  if (tab === 'logs') return renderMobileLogs();
-  if (tab === 'calendar') return renderMobileCalendar();
-  if (tab === 'weather') return renderMobileWeather();
-  if (tab === 'signals') return renderMobileSignals();
-  if (tab === 'debug') return renderMobileDebug();
-  return document.createTextNode('');
 }
 
 
@@ -1065,20 +1070,18 @@ function updateCalendarAuthBanner() {
 }
 
 function renderMobileStatus(context) {
-
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
-  wrap.append(buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
-  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
-  wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
-  return wrap;
+  return appendCards(buildMobileStack(), [
+    buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
+    buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'),
+    buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'),
+    buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'),
+  ]);
 }
 
 function buildSecondaryButton(label, onClick) {
@@ -1107,8 +1110,7 @@ function buildInlineActions(items) {
 }
 
 function renderMobileLogs() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
+  const wrap = buildMobileStack();
   wrap.append(buildInlineActions([
     buildLinkButton('Open Supabase project', 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj'),
   ]));
@@ -1117,8 +1119,7 @@ function renderMobileLogs() {
 }
 
 function renderMobileCalendar() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
+  const wrap = buildMobileStack();
   wrap.append(buildInlineActions([
     buildSecondaryButton('Add Google account', () => connectGoogleAccountButton?.click()),
     buildSecondaryButton('Push calendar config', async () => {
@@ -1147,33 +1148,21 @@ function renderMobileCalendar() {
 }
 
 function renderMobileWeather() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const refresh = document.createElement('button');
-  refresh.className = 'secondary-button';
-  refresh.textContent = 'Refresh weather';
-  refresh.addEventListener('click', () => refreshWeatherOnly());
-  const push = document.createElement('button');
-  push.className = 'secondary-button';
-  push.textContent = 'Push weather config';
-  push.addEventListener('click', async () => {
-    try {
-      await pushSharedWeatherConfig();
-      await fetchHouseholdConfig();
-      await refreshWeatherOnly();
-    } catch (error) {
-      handleRuntimeActionError('Weather push failed', error);
-      showToast('Could not push weather config', 'error');
-    }
-  });
-  const openSettings = document.createElement('button');
-  openSettings.className = 'secondary-button';
-  openSettings.textContent = 'Edit weather settings';
-  openSettings.addEventListener('click', () => settingsButton?.click());
-  actions.append(refresh, push, openSettings);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Refresh weather', () => refreshWeatherOnly()),
+    buildSecondaryButton('Push weather config', async () => {
+      try {
+        await pushSharedWeatherConfig();
+        await fetchHouseholdConfig();
+        await refreshWeatherOnly();
+      } catch (error) {
+        handleRuntimeActionError('Weather push failed', error);
+        showToast('Could not push weather config', 'error');
+      }
+    }),
+    buildSecondaryButton('Edit weather settings', () => settingsButton?.click()),
+  ]));
   const weather = getSnapshot(appState.config.weatherSnapshotType);
   wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
@@ -1192,50 +1181,30 @@ function renderSignalRulesPreview(rules) {
 
 
 function renderMobileSignals() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-
-  const pushBtn = document.createElement('button');
-  pushBtn.className = 'secondary-button';
-  pushBtn.textContent = 'Push signal config';
-  pushBtn.addEventListener('click', async () => {
-    try {
-      await pushSharedSignalConfig();
-      await fetchHouseholdConfig();
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Push signal config', async () => {
+      try {
+        await pushSharedSignalConfig();
+        await fetchHouseholdConfig();
+        renderMode();
+      } catch (error) {
+        handleRuntimeActionError('Signal config push failed', error);
+        showToast('Could not push signal config', 'error');
+      }
+    }),
+    buildSecondaryButton('Use household config', () => {
+      setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
+      showToast('Loaded household signal config', 'success');
       renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Signal config push failed', error);
-      showToast('Could not push signal config', 'error');
-    }
-  });
-
-  const loadSharedBtn = document.createElement('button');
-  loadSharedBtn.className = 'secondary-button';
-  loadSharedBtn.textContent = 'Use household config';
-  loadSharedBtn.addEventListener('click', () => {
-    setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
-    showToast('Loaded household signal config', 'success');
-    renderMode();
-  });
-
-  const resetBtn = document.createElement('button');
-  resetBtn.className = 'secondary-button';
-  resetBtn.textContent = 'Reset defaults';
-  resetBtn.addEventListener('click', () => {
-    setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
-    showToast('Reset local signal draft', 'success');
-    renderMode();
-  });
-
-  const addCustomBtn = document.createElement('button');
-  addCustomBtn.className = 'secondary-button';
-  addCustomBtn.textContent = 'Add custom signal';
-  addCustomBtn.addEventListener('click', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true }));
-
-  actions.append(pushBtn, loadSharedBtn, resetBtn, addCustomBtn);
-  wrap.append(actions);
+    }),
+    buildSecondaryButton('Reset defaults', () => {
+      setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
+      showToast('Reset local signal draft', 'success');
+      renderMode();
+    }),
+    buildSecondaryButton('Add custom signal', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true })),
+  ]));
 
   const note = document.createElement('div');
   note.className = 'muted';
@@ -1746,20 +1715,11 @@ function makeOptionalHourField(label, value, onChange) {
 }
 
 function renderMobileDebug() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const openConsole = document.createElement('button');
-  openConsole.className = 'secondary-button';
-  openConsole.textContent = 'Open dev console';
-  openConsole.addEventListener('click', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); });
-  const forceRefresh = document.createElement('button');
-  forceRefresh.className = 'secondary-button';
-  forceRefresh.textContent = 'Force refresh';
-  forceRefresh.addEventListener('click', () => refreshAll());
-  actions.append(openConsole, forceRefresh);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Open dev console', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); }),
+    buildSecondaryButton('Force refresh', () => refreshAll()),
+  ]));
   wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
     { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
