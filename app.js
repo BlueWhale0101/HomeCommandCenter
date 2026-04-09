@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.1';
+const APP_VERSION = 'v2.2.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -334,7 +334,12 @@ async function bootstrap() {
   window.__hccBootState.phase = 'connecting-supabase';
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
-  resetAutoRefreshTimer();
+  
+window.appState = appState;
+window.updateCalendarAuthBanner = updateCalendarAuthBanner;
+window.summarizeCalendarConnectionState = summarizeCalendarConnectionState;
+
+resetAutoRefreshTimer();
   if (appState.supabase) {
     window.__hccBootState.phase = 'loading-shared-config';
     setStatus('Loading household config…');
@@ -850,9 +855,11 @@ function renderMode() {
   const widgetContext = buildWidgetContext(digest);
   if (mode === 'mobile') {
     renderMobileControlPanel(widgetContext);
+    updateCalendarAuthBanner();
     return;
   }
   renderModeLayout(mode, widgetContext);
+  updateCalendarAuthBanner();
 }
 
 function buildWidgetContext(digest) {
@@ -997,10 +1004,69 @@ function renderMobileTabContent(tab, context) {
   return document.createTextNode('');
 }
 
+
+function summarizeCalendarConnectionState() {
+  const requirement = getCalendarAuthRequirementState();
+  return {
+    total: requirement.totalRequired,
+    connected: requirement.connected,
+    needsReconnect: requirement.needsReconnect,
+    details: requirement.details.map((item, idx) => ({
+      name: item.name || item.email || `Account ${idx + 1}`,
+      status: item.connected ? 'Connected' : 'Needs reconnect',
+    })),
+    hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
+  };
+}
+
+function buildCalendarConnectionItems() {
+  const summary = summarizeCalendarConnectionState();
+  if (!summary.total) {
+    return [{
+      title: 'No accounts connected on this device',
+      meta: 'Open Mobile → Calendar to connect a Google account for calendar publishing.',
+      pill: 'Setup',
+      pillClass: 'warning',
+    }];
+  }
+  return summary.details.map((detail) => ({
+    title: detail.name,
+    meta: detail.status,
+    pill: detail.status === 'Connected' ? 'Ready' : 'Reconnect',
+    pillClass: detail.status === 'Connected' ? '' : 'warning',
+  }));
+}
+
+function updateCalendarAuthBanner() {
+  const el = document.getElementById('calendar-auth-banner');
+  if (!el) return;
+  const isMobileMode = (appState?.config?.mode || '') === 'mobile';
+  if (!isMobileMode) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const summary = summarizeCalendarConnectionState();
+  if (!summary.total) {
+    el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
+    el.style.display = 'block';
+    return;
+  }
+  if (summary.needsReconnect > 0) {
+    el.innerHTML = `<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ${summary.needsReconnect} account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>`;
+    el.style.display = 'block';
+    return;
+  }
+  el.style.display = 'none';
+  el.innerHTML = '';
+}
+
 function renderMobileStatus(context) {
+
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
   wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
+  wrap.append(buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'));
   wrap.append(buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'));
@@ -1062,6 +1128,7 @@ function renderMobileCalendar() {
     ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${currentPublisher}.`
     : 'Headless mode: a connected device publishes merged calendar snapshots for shared displays.';
   wrap.append(headlessNote);
+  wrap.append(buildCard('This Device’s Calendar Connection', 'Local Google auth status for publishing', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
   accounts.append(renderCalendarAccountsClone());
@@ -4433,156 +4500,3 @@ if (document.readyState === 'loading') {
 } else {
   scheduleInitApp();
 }
-
-
-
-/* v1.2.3-dev calendar auth status helpers */
-(function () {
-  const originalInit = window.initCalendarDiagnostics;
-  const originalRenderMobileStatus = window.renderMobileStatus;
-  const originalRenderMobileCalendar = window.renderMobileCalendar;
-  const originalOpenModalList = window.openModalList;
-
-  function getCalendarAccountsSafe() {
-    const state = window.appState || {};
-    if (Array.isArray(state.googleAccounts)) return state.googleAccounts;
-    if (Array.isArray(state.calendarAccounts)) return state.calendarAccounts;
-    if (Array.isArray(state.googleCalendarAccounts)) return state.googleCalendarAccounts;
-    return [];
-  }
-
-  function summarizeCalendarAuthState() {
-    const requirement = getCalendarAuthRequirementState();
-    return {
-      total: requirement.totalRequired,
-      connected: requirement.connected,
-      expired: requirement.needsReconnect,
-      needsReconnect: requirement.needsReconnect,
-      details: requirement.details.map((item, idx) => ({
-        name: item.name || item.email || `Account ${idx + 1}`,
-        status: item.connected ? 'Connected' : 'Needs reconnect',
-      })),
-      hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
-    };
-  }
-
-  window.summarizeCalendarAuthState = summarizeCalendarAuthState;
-
-  window.renderCalendarAuthBanner = function renderCalendarAuthBanner() {
-    const summary = summarizeCalendarAuthState();
-    const el = document.getElementById('calendar-auth-banner');
-    if (!el) return;
-    const isMobileMode = (appState?.config?.mode || '') === 'mobile';
-    if (!isMobileMode) {
-      el.style.display = 'none';
-      return;
-    }
-    if (!summary.total) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
-      el.style.display = 'block';
-      return;
-    }
-    if (summary.needsReconnect > 0) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ' +
-        summary.needsReconnect + ' account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>';
-      el.style.display = 'block';
-      return;
-    }
-    el.style.display = 'none';
-  };
-
-  window.openCalendarReconnectHelp = function openCalendarReconnectHelp() {
-    const summary = summarizeCalendarAuthState();
-    const items = [];
-    if (!summary.total) {
-      items.push('No Google Calendar accounts connected on this device yet.');
-    } else {
-      summary.details.forEach(d => items.push(`${d.name} — ${d.status}`));
-    }
-    items.push('Reconnect path: Mobile → Calendar → Add Google account / reconnect.');
-    if (typeof window.openModalList === 'function') {
-      window.openModalList('Calendar connection status', items);
-    } else {
-      alert(items.join('\n'));
-    }
-  };
-
-  window.getCalendarEmptyStateMessage = function getCalendarEmptyStateMessage() {
-    const summary = summarizeCalendarAuthState();
-    if (!summary.total) return 'No calendar accounts connected on this device yet.';
-    if (summary.needsReconnect > 0) return 'Calendar needs reconnect on this device.';
-    return 'No events loaded.';
-  };
-
-  document.addEventListener('DOMContentLoaded', function () {
-    try {
-      const app = document.getElementById('app');
-      if (app && !document.getElementById('calendar-auth-banner')) {
-        const banner = document.createElement('div');
-        banner.id = 'calendar-auth-banner';
-        banner.className = 'calendar-auth-banner-slot';
-        app.prepend(banner);
-      }
-    } catch (e) {}
-    setTimeout(() => {
-      try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-    }, 400);
-  });
-
-  if (typeof originalRenderMobileStatus === 'function') {
-    window.renderMobileStatus = function wrappedRenderMobileStatus() {
-      const result = originalRenderMobileStatus.apply(this, arguments);
-      try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-      return result;
-    };
-  }
-
-  if (typeof originalRenderMobileCalendar === 'function') {
-    window.renderMobileCalendar = function wrappedRenderMobileCalendar() {
-      const result = originalRenderMobileCalendar.apply(this, arguments);
-      try {
-        const container = document.querySelector('[data-mobile-tab="calendar"], #mobile-calendar-tab, #calendar-tab');
-        const summary = summarizeCalendarAuthState();
-        if (container && !container.querySelector('.calendar-auth-card')) {
-          const card = document.createElement('div');
-          card.className = 'mobile-card calendar-auth-card';
-          card.innerHTML = `
-            <div class="mobile-card-title">This device’s calendar connection</div>
-            <div class="calendar-auth-summary"></div>
-            <div class="calendar-auth-actions">
-              <button class="secondary-button" id="calendar-reconnect-help-btn">Reconnect help</button>
-            </div>
-          `;
-          container.prepend(card);
-          card.querySelector('#calendar-reconnect-help-btn').addEventListener('click', window.openCalendarReconnectHelp);
-        }
-        const summaryEl = container && container.querySelector('.calendar-auth-summary');
-        if (summaryEl) {
-          if (!summary.total) {
-            summaryEl.innerHTML = '<div class="auth-inline warn">No accounts connected on this device.</div>';
-          } else if (summary.needsReconnect > 0) {
-            summaryEl.innerHTML = `<div class="auth-inline warn">${summary.needsReconnect} account(s) need reconnect on this device.</div>`;
-          } else {
-            summaryEl.innerHTML = `<div class="auth-inline ok">${summary.connected} connected account(s) ready on this device.</div>`;
-          }
-        }
-      } catch (e) {}
-      return result;
-    };
-  }
-
-  // Patch common empty-state text if present in runtime helpers
-  const originalRenderEventsQuickView = window.renderEventsQuickView;
-  if (typeof originalRenderEventsQuickView === 'function') {
-    window.renderEventsQuickView = function wrappedEventsQuickView() {
-      const result = originalRenderEventsQuickView.apply(this, arguments);
-      return result;
-    };
-  }
-
-  // Expose to other renderers
-  window.refreshCalendarAuthIndicators = function () {
-    try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-    try { window.renderMobileCalendar && window.renderMobileCalendar(); } catch (e) {}
-  };
-})();

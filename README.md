@@ -1,6 +1,13 @@
 
 # Household Command Center
 
+## v2.2.2
+- Stabilization baseline pass.
+- Unified shipped version markers across `app.js`, `index.html`, and `sw.js`.
+- Removed legacy calendar-auth wrapper patch and folded calendar connection status into the main mobile render path.
+- Preserved mobile calendar/status visibility with a native connection summary card and banner refresh.
+
+
 A separate PWA for ambient household awareness and low-friction room-based interaction, built against the same Supabase project as the existing task board while preserving backward compatibility.
 
 ## Project status
