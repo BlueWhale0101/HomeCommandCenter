@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.4';
+const APP_VERSION = 'v2.2.5';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -863,13 +863,16 @@ function renderMode() {
 }
 
 function buildWidgetContext(digest) {
+  const signals = activeSignals();
+  const tomorrowItems = buildTomorrowItemsFromDigest(digest);
+  const forgetItems = buildForgetItemsFromSignals(signals, tomorrowItems, digest);
   return {
     mode: appState.config.mode,
     digest,
-    signals: activeSignals(),
-    tomorrowItems: buildTomorrowItems(),
-    forgetItems: buildForgetItems(),
-    focusItem: buildSoftFocus(),
+    signals,
+    tomorrowItems,
+    forgetItems,
+    focusItem: buildSoftFocusFromDigest(digest, signals),
     isEvening: isEvening(),
     presentationPhase: getPresentationPhase(),
   };
@@ -3088,10 +3091,11 @@ function buildTaskDigest() {
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
-  const tomorrowTaskItems = toDisplayTaskItems(rankedTomorrowTasks.filter((task) => {
-    const bucket = getTaskDueBucket(task, today);
-    return bucket === 'tomorrow' || (isEvening() && bucket === 'today') || hasTomorrowPrepCue(task);
-  }).slice(0, 8), 'Tomorrow');
+  const tomorrowWindowTasks = rankedTomorrowTasks.filter((task) => {
+    const bucket = dueBucketById.get(task.id);
+    return bucket === 'tomorrow' || (evening && bucket === 'today') || hasTomorrowPrepCue(task);
+  }).slice(0, 8);
+  const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
   const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
 
   const spotlightTask = rankedTodayTasks[0] || signals.map(signalToItem)[0] || undatedTasks[0] || null;
@@ -3117,7 +3121,7 @@ function buildTaskDigest() {
       upcoming: upcomingTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
-      tomorrow: rankedTomorrowTasks.filter((task) => getTaskDueBucket(task, today) === 'tomorrow').length,
+      tomorrow: rankedTomorrowTasks.filter((task) => dueBucketById.get(task.id) === 'tomorrow').length,
     },
   };
 }
@@ -3357,28 +3361,42 @@ function activeSignals(rules = getEffectiveSignalRules()) {
 }
 
 function buildForgetItems() {
+  const digest = buildTaskDigest();
+  const signals = activeSignals();
+  const tomorrowItems = buildTomorrowItemsFromDigest(digest);
+  return buildForgetItemsFromSignals(signals, tomorrowItems, digest);
+}
+
+function buildForgetItemsFromSignals(signals, tomorrowItems = [], digest = null) {
   const items = [];
-  const topSignals = activeSignals().slice(0, 3);
+  const topSignals = (signals || []).slice(0, 3);
   for (const signal of topSignals) items.push(signalToItem(signal));
-  if (!items.length) {
-    const tomorrow = buildTomorrowItems()[0];
-    if (tomorrow) items.push(tomorrow);
-  }
+  if (!items.length && tomorrowItems[0]) items.push(tomorrowItems[0]);
+  if (!items.length && digest?.overdueTasks?.[0]) items.push(digest.overdueTasks[0]);
   return items.slice(0, 4);
 }
 
 function buildSoftFocus() {
   const digest = buildTaskDigest();
-  if (digest.spotlightTask) return digest.spotlightTask;
-  const topSignal = activeSignals()[0];
+  const signals = activeSignals();
+  return buildSoftFocusFromDigest(digest, signals);
+}
+
+function buildSoftFocusFromDigest(digest, signals = []) {
+  if (digest?.spotlightTask) return digest.spotlightTask;
+  const topSignal = signals[0];
   if (topSignal) return { title: topSignal.title, meta: topSignal.description || 'Gentle attention item' };
   return null;
 }
 
 function buildTomorrowItems() {
-  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
   const digest = buildTaskDigest();
-  const taskItems = digest.tomorrowTasks.slice(0, 4);
+  return buildTomorrowItemsFromDigest(digest);
+}
+
+function buildTomorrowItemsFromDigest(digest) {
+  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const taskItems = digest?.tomorrowTasks?.slice(0, 4) || [];
   const events = Array.isArray(snapshot?.items)
     ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '), pill: 'Calendar' }))
     : [];
