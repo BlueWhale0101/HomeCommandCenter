@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.2';
+const APP_VERSION = 'v2.2.3';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1078,19 +1078,37 @@ function renderMobileStatus(context) {
   return wrap;
 }
 
+function buildSecondaryButton(label, onClick) {
+  const button = document.createElement('button');
+  button.className = 'secondary-button';
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function buildLinkButton(label, href) {
+  const link = document.createElement('a');
+  link.className = 'secondary-button mobile-link-button';
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noreferrer';
+  link.textContent = label;
+  return link;
+}
+
+function buildInlineActions(items) {
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  actions.append(...items);
+  return actions;
+}
+
 function renderMobileLogs() {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const openSupabase = document.createElement('a');
-  openSupabase.className = 'secondary-button mobile-link-button';
-  openSupabase.href = 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj';
-  openSupabase.target = '_blank';
-  openSupabase.rel = 'noreferrer';
-  openSupabase.textContent = 'Open Supabase project';
-  actions.append(openSupabase);
-  wrap.append(actions);
+  wrap.append(buildInlineActions([
+    buildLinkButton('Open Supabase project', 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj'),
+  ]));
   wrap.append(renderList(appState.logs.slice(0, 30).map(logToItem), 'No recent logs yet.'));
   return wrap;
 }
@@ -1098,29 +1116,18 @@ function renderMobileLogs() {
 function renderMobileCalendar() {
   const wrap = document.createElement('div');
   wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const addBtn = document.createElement('button');
-  addBtn.className = 'secondary-button';
-  addBtn.textContent = 'Add Google account';
-  addBtn.addEventListener('click', () => connectGoogleAccountButton?.click());
-  const pushBtn = document.createElement('button');
-  pushBtn.className = 'secondary-button';
-  pushBtn.textContent = 'Push calendar config';
-  pushBtn.addEventListener('click', async () => {
-    try {
-      await pushSharedCalendarConfig();
-    } catch (error) {
-      handleRuntimeActionError('Calendar push failed', error);
-      showToast('Could not push calendar config', 'error');
-    }
-  });
-  const settingsBtn = document.createElement('button');
-  settingsBtn.className = 'secondary-button';
-  settingsBtn.textContent = 'Open Settings';
-  settingsBtn.addEventListener('click', () => settingsButton?.click());
-  actions.append(addBtn, pushBtn, settingsBtn);
-  wrap.append(actions);
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Add Google account', () => connectGoogleAccountButton?.click()),
+    buildSecondaryButton('Push calendar config', async () => {
+      try {
+        await pushSharedCalendarConfig();
+      } catch (error) {
+        handleRuntimeActionError('Calendar push failed', error);
+        showToast('Could not push calendar config', 'error');
+      }
+    }),
+    buildSecondaryButton('Open Settings', () => settingsButton?.click()),
+  ]));
   const headlessNote = document.createElement('div');
   headlessNote.className = 'muted';
   const currentPublisher = describeSnapshotPublisher(getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType));
@@ -1207,23 +1214,6 @@ function renderMobileWeather() {
 }
 
 
-function renderSignalRuleEditorCard(title, subtitle, buildBody) {
-  const card = document.createElement('section');
-  card.className = 'card mobile-compact-card';
-  const header = document.createElement('div');
-  header.className = 'card-header';
-  const h2 = document.createElement('h2');
-  h2.textContent = title;
-  const sub = document.createElement('span');
-  sub.className = 'card-subtitle';
-  sub.textContent = subtitle;
-  header.append(h2, sub);
-  const body = document.createElement('div');
-  body.className = 'mobile-stack signal-config-card-body';
-  buildBody(body);
-  card.append(header, body);
-  return card;
-}
 
 function renderSignalRulesPreview(rules) {
   const previewItems = [
@@ -2270,12 +2260,6 @@ async function publishContextSnapshot(contextType, payload, source = 'headless-g
   if (error) throw error;
 }
 
-function hasAnyCalendarSnapshots() {
-  return !!(
-    appState.snapshots?.[appState.config.calendarTodaySnapshotType] ||
-    appState.snapshots?.[appState.config.calendarTomorrowSnapshotType]
-  );
-}
 
 function applySharedConfigRows(rows) {
   const map = {};
@@ -4331,11 +4315,6 @@ function startOfDay(date) {
   return copy;
 }
 
-function endOfDay(date) {
-  const copy = new Date(date);
-  copy.setHours(23, 59, 59, 999);
-  return copy;
-}
 
 function isSameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();

@@ -259,3 +259,11 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - Headless calendar mode: connected devices publish merged calendar snapshots to `context_snapshots`.
 - Unconnected TVs now consume shared snapshots instead of blanking or overwriting them.
 - Added `context_snapshots_headless_setup.sql` for anon insert/select policies and realtime.
+
+
+## Stabilization notes
+
+### v2.2.3 cleanup pass
+- normalized repeated mobile action-row/button construction behind shared helpers
+- removed a few clearly unused helper paths left from earlier patch stacking
+- preserved behavior while reducing duplicated UI wiring in Mobile tabs
