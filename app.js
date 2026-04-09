@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.15';
+const APP_VERSION = 'v2.2.16';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3600,6 +3600,27 @@ function pulseButton(button) {
   button.classList.add('quick-button-hit');
 }
 
+function upsertLocalLoad(load) {
+  if (!load || !load.id) return;
+  const loads = Array.isArray(appState.loads) ? [...appState.loads] : [];
+  const idx = loads.findIndex((item) => item && item.id === load.id);
+  if (idx >= 0) {
+    loads[idx] = { ...loads[idx], ...load };
+  } else {
+    loads.unshift(load);
+  }
+  appState.loads = sortLoads(loads);
+}
+
+function removeLocalLoad(loadId) {
+  if (!loadId) return;
+  appState.loads = (appState.loads || []).filter((item) => item && item.id !== loadId);
+}
+
+function renderAfterLocalLoadChange() {
+  renderRuntimeUi({ renderDevConsole: false });
+}
+
 async function createQuickLog(item, button) {
   try {
     const actor = guessActor();
@@ -3631,8 +3652,12 @@ async function createLoad(button = null) {
       machine: 'washer',
       metadata: {},
     };
-    const { error } = await appState.supabase.from('laundry_loads').insert(payload);
+    const { data, error } = await appState.supabase.from('laundry_loads').insert(payload).select().single();
     if (error) throw error;
+    if (data) {
+      upsertLocalLoad(data);
+      renderAfterLocalLoadChange();
+    }
     pulseButton(button);
     showToast('Started new laundry load', 'success');
     setStatus('Started a new laundry load.');
@@ -3654,6 +3679,8 @@ async function advanceLoad(load, button = null) {
     };
     const { error } = await appState.supabase.from('laundry_loads').update(payload).eq('id', load.id);
     if (error) throw error;
+    upsertLocalLoad({ ...load, ...payload, id: load.id });
+    renderAfterLocalLoadChange();
     pulseButton(button);
     showToast(`Moved load to ${capitalize(nextStatus)}`, 'success');
     setStatus(`Laundry load moved to ${nextStatus}.`);
