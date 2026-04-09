@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.7';
+const APP_VERSION = 'v2.2.8';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -132,6 +132,12 @@ let appState = {
   sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
+  refreshCoordinator: {
+    inFlight: null,
+    pendingReason: '',
+    lastReason: '',
+    lastCompletedAt: '',
+  },
 };
 
 const screenEl = document.getElementById('screen');
@@ -521,42 +527,99 @@ async function loadDeviceProfile() {
   }
 }
 
-async function refreshAll() {
+function renderRuntimeUi(options = {}) {
+  if (options.renderMode !== false) renderMode();
+  if (options.renderDevConsole !== false) renderDevConsole();
+}
+
+async function refreshBaseState() {
+  await Promise.all([
+    fetchTasks(),
+    fetchSignals(),
+    fetchLoads(),
+    fetchSnapshots(),
+    fetchRecentLogs(),
+  ]);
+}
+
+async function refreshOptionalState() {
+  const followup = await Promise.allSettled([
+    fetchGoogleCalendarSnapshots(),
+    fetchWeatherSnapshot(),
+  ]);
+
+  for (const result of followup) {
+    if (result.status === 'rejected') {
+      console.warn('Follow-up refresh issue', result.reason);
+    }
+  }
+}
+
+async function runFullRefreshCycle(reason = 'manual refresh') {
+  setStatus(`Refreshing ${appState.config.mode} view…`);
+  pushDevLog('info', `Starting full refresh: ${reason}.`);
+  await refreshBaseState();
+
+  // Render immediately from shared/base data so headless displays never block on optional enrichments.
+  renderRuntimeUi();
+
+  await refreshOptionalState();
+
+  renderRuntimeUi();
+  appState.refreshCoordinator.lastReason = reason;
+  appState.refreshCoordinator.lastCompletedAt = new Date().toISOString();
+  setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+}
+
+async function refreshAll(reason = 'manual refresh') {
   if (!appState.supabase) {
     setStatus('Supabase settings needed.');
     return;
   }
-  setStatus(`Refreshing ${appState.config.mode} view…`);
-  try {
-    await Promise.all([
-      fetchTasks(),
-      fetchSignals(),
-      fetchLoads(),
-      fetchSnapshots(),
-      fetchRecentLogs(),
-    ]);
 
-    // Render immediately from shared/base data so headless displays never block on optional enrichments.
-    renderMode();
-    renderDevConsole();
+  const coordinator = appState.refreshCoordinator || (appState.refreshCoordinator = {
+    inFlight: null,
+    pendingReason: '',
+    lastReason: '',
+    lastCompletedAt: '',
+  });
 
-    const followup = await Promise.allSettled([
-      fetchGoogleCalendarSnapshots(),
-      fetchWeatherSnapshot(),
-    ]);
+  if (coordinator.inFlight) {
+    coordinator.pendingReason = coordinator.pendingReason || reason || 'queued refresh';
+    pushDevLog('info', `Refresh already running; queued ${coordinator.pendingReason}.`);
+    return coordinator.inFlight;
+  }
 
-    for (const result of followup) {
-      if (result.status === 'rejected') {
-        console.warn('Follow-up refresh issue', result.reason);
+  coordinator.pendingReason = coordinator.pendingReason || reason || 'manual refresh';
+  coordinator.inFlight = (async () => {
+    while (coordinator.pendingReason) {
+      const nextReason = coordinator.pendingReason;
+      coordinator.pendingReason = '';
+      try {
+        await runFullRefreshCycle(nextReason);
+      } catch (error) {
+        handleRuntimeActionError('Refresh failed', error);
+        renderRuntimeUi({ renderMode: false });
+        throw error;
       }
     }
+  })().finally(() => {
+    coordinator.inFlight = null;
+  });
 
-    renderMode();
-    renderDevConsole();
-    setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  return coordinator.inFlight;
+}
+
+async function runTargetedRefresh(label, refreshWork, options = {}) {
+  const successMessage = options.successMessage || `${label} applied without full refresh.`;
+  try {
+    await refreshWork();
+    renderRuntimeUi(options.renderOptions || {});
+    pushDevLog('info', successMessage);
   } catch (error) {
-    handleRuntimeActionError('Refresh failed', error);
-    renderDevConsole();
+    console.warn(`${label} issue`, error);
+    pushDevLog('warn', `${label} failed: ${error?.message || error}`);
+    if (options.rethrow) throw error;
   }
 }
 
@@ -746,26 +809,19 @@ async function refreshWeatherOnly() {
   try {
     pushDevLog('info', 'Starting weather refresh.');
     await fetchWeatherSnapshot();
-    renderMode();
-    renderDevConsole();
+    renderRuntimeUi();
     showToast('Weather refreshed', 'success');
   } catch (error) {
     handleRuntimeActionError('Weather refresh failed', error);
-    renderDevConsole();
+    renderRuntimeUi({ renderMode: false });
     showToast('Weather refresh failed', 'error');
   }
 }
 
 async function refreshFromSnapshotUpdate() {
-  try {
+  await runTargetedRefresh('Snapshot-only refresh', async () => {
     await fetchSnapshots();
-    renderMode();
-    renderDevConsole();
-    pushDevLog('info', 'Applied snapshot update without full refresh.');
-  } catch (error) {
-    console.warn('Snapshot-only refresh issue', error);
-    pushDevLog('warn', `Snapshot-only refresh failed: ${error?.message || error}`);
-  }
+  });
 }
 
 async function fetchRecentLogs() {
@@ -786,18 +842,15 @@ function bindRealtime() {
   clearSubscriptions();
   if (!appState.supabase) return;
   const channels = [
-    { table: appState.config.taskTable, event: '*', handler: refreshAll },
-    { table: 'household_logs', event: '*', handler: refreshAll },
-    { table: 'household_signals', event: '*', handler: refreshAll },
-    { table: 'laundry_loads', event: '*', handler: refreshAll },
-    { table: 'context_snapshots', event: '*', handler: refreshFromSnapshotUpdate },
-    { table: SHARED_CONFIG_TABLE, event: '*', handler: async () => {
+    { table: appState.config.taskTable, event: '*', handler: () => refreshAll('task realtime update') },
+    { table: 'household_logs', event: '*', handler: () => refreshAll('log realtime update') },
+    { table: 'household_signals', event: '*', handler: () => refreshAll('signal realtime update') },
+    { table: 'laundry_loads', event: '*', handler: () => refreshAll('laundry realtime update') },
+    { table: 'context_snapshots', event: '*', handler: () => refreshFromSnapshotUpdate() },
+    { table: SHARED_CONFIG_TABLE, event: '*', handler: () => runTargetedRefresh('Shared config update', async () => {
         await fetchHouseholdConfig();
         await fetchSnapshots();
-        renderMode();
-        renderDevConsole();
-        pushDevLog('info', 'Applied shared config update without full refresh.');
-      } },
+      }) },
   ];
 
   appState.subscriptions = channels.map(({ table, event, handler }) => {
@@ -1232,7 +1285,7 @@ function renderMobileSignals() {
       try {
         await pushSharedSignalConfig();
         await fetchHouseholdConfig();
-        renderMode();
+        renderRuntimeUi({ renderDevConsole: false });
       } catch (error) {
         handleRuntimeActionError('Signal config push failed', error);
         showToast('Could not push signal config', 'error');
@@ -1241,12 +1294,12 @@ function renderMobileSignals() {
     buildSecondaryButton('Use household config', () => {
       setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
       showToast('Loaded household signal config', 'success');
-      renderMode();
+      renderRuntimeUi({ renderDevConsole: false });
     }),
     buildSecondaryButton('Reset defaults', () => {
       setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
       showToast('Reset local signal draft', 'success');
-      renderMode();
+      renderRuntimeUi({ renderDevConsole: false });
     }),
     buildSecondaryButton('Add custom signal', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true })),
   ]));
@@ -1510,7 +1563,7 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
     saveBtn.addEventListener('click', () => {
       if (!saveSignalModalDraft(modalState)) return;
       close();
-      renderMode();
+      renderRuntimeUi({ renderDevConsole: false });
       showToast('Saved signal rule', 'success');
     });
     footer.append(cancelBtn, saveBtn);
@@ -1522,7 +1575,7 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
       deleteBtn.addEventListener('click', () => {
         deleteCustomSignalRule(modalState.ruleId);
         close();
-        renderMode();
+        renderRuntimeUi({ renderDevConsole: false });
         showToast('Deleted custom signal', 'success');
       });
       footer.prepend(deleteBtn);
@@ -1761,7 +1814,7 @@ function renderMobileDebug() {
   const wrap = buildMobileStack();
   wrap.append(buildInlineActions([
     buildSecondaryButton('Open dev console', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); }),
-    buildSecondaryButton('Force refresh', () => refreshAll()),
+    buildSecondaryButton('Force refresh', () => refreshAll('debug force refresh')),
   ]));
   wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
     { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
@@ -2419,7 +2472,7 @@ async function connectGoogleCalendarAccount() {
             const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
             showToast(`Connected ${connectedLabel}`, 'success');
             pushDevLog('info', `Connected Google Calendar account ${connectedLabel}`);
-            await refreshAll();
+            await refreshAll('calendar account connected');
             resolve();
           } catch (error) {
             reject(error);
@@ -2637,7 +2690,7 @@ function renderCalendarAccountsPanel(options = {}) {
       removeButton.textContent = 'Remove';
       removeButton.addEventListener('click', () => {
         saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
-        refreshAll().catch((error) => console.error('Refresh after removing calendar account failed', error));
+        refreshAll('calendar account removed').catch((error) => console.error('Refresh after removing calendar account failed', error));
       });
       header.append(left, removeButton);
     } else {
@@ -2669,7 +2722,7 @@ function renderCalendarAccountsPanel(options = {}) {
             calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
           });
           saveCalendarAccounts(next);
-          refreshAll().catch((error) => console.error('Refresh after calendar toggle failed', error));
+          refreshAll('calendar selection changed').catch((error) => console.error('Refresh after calendar toggle failed', error));
         });
         const labelText = document.createElement('span');
         labelText.textContent = calendar.summary || calendar.id;
@@ -3621,7 +3674,7 @@ function applyTestTimeOverride() {
   saveTestTimeOverride(appState.testTimeOverride);
   pushDevLog('info', `Set test time override to ${appState.testTimeOverride}`);
   showToast('Test time set', 'success');
-  refreshAll().catch((error) => console.error('Refresh after setting test time failed', error));
+  refreshAll('test time override set').catch((error) => console.error('Refresh after setting test time failed', error));
   renderDevConsole();
 }
 
@@ -3631,7 +3684,7 @@ function clearTestTimeOverride() {
   if (testTimeInput) testTimeInput.value = '';
   pushDevLog('info', 'Cleared test time override.');
   showToast('Returned to real time', 'success');
-  refreshAll().catch((error) => console.error('Refresh after clearing test time failed', error));
+  refreshAll('test time override cleared').catch((error) => console.error('Refresh after clearing test time failed', error));
   renderDevConsole();
 }
 
@@ -3954,7 +4007,7 @@ async function syncWakeLock(options = {}) {
           syncWakeLock({ reason: 'released', force: true });
         }, 250);
       }
-      try { if (appState.config.mode === 'mobile') renderMode(); } catch {}
+      try { if (appState.config.mode === 'mobile') renderRuntimeUi({ renderDevConsole: false }); } catch {}
     });
     updateWakeLockStatus({ active: true, error: '', note: 'Active', needsInteraction: false, lastAttemptAt: new Date().toISOString() });
     return true;
@@ -4026,7 +4079,7 @@ function setupButtons() {
   settingsButton.onclick = openSettingsDialog;
   refreshButton.onclick = async () => {
     try {
-      await refreshAll();
+      await refreshAll('manual refresh button');
     } catch (error) {
       handleRuntimeActionError('Refresh failed', error);
     }
@@ -4056,7 +4109,7 @@ function setupButtons() {
     clearSubscriptions();
     await ensureSupabase();
     await upsertDeviceProfile();
-    await refreshAll();
+    await refreshAll('settings saved');
     bindRealtime();
   };
 }
@@ -4432,7 +4485,7 @@ function resetAutoRefreshTimer() {
   autoRefreshTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
     pushDevLog('info', `Auto refresh fired (${refreshSeconds}s)`);
-    refreshAll();
+    refreshAll('auto refresh').catch((error) => console.error('Auto refresh failed', error));
   }, refreshSeconds * 1000);
 }
 

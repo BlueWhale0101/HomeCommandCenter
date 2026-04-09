@@ -285,3 +285,10 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - normalized shared card/list composition helpers
 - reused shared empty-state and pill builders across task, signal, and calendar admin UI
 - kept behavior stable while reducing render duplication
+
+## v2.2.8 cleanup pass
+
+- normalized refresh paths around shared helpers for full refresh, targeted refresh, and shared UI rerendering
+- added refresh deduping/queueing so overlapping realtime or manual refresh requests reuse a single in-flight cycle
+- unified snapshot/shared-config targeted updates behind one path instead of ad hoc rerender calls
+- added lightweight refresh-state visibility to Mobile → Debug
