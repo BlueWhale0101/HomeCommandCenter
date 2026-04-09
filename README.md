@@ -339,3 +339,13 @@ Surface/runtime normalization:
 Roadmap notes:
 - Add per-device pixel-shift protection for always-on displays as a dedicated-display runtime feature near wake-lock/device-runtime hardening.
 - Investigate headless calendar publisher push behavior during Phase 6 reliability work before implementing reconnect or publisher-flow fixes.
+
+
+## v2.2.17 cleanup14
+- Added headless calendar publisher observability to Mobile → Calendar and Mobile → Debug without changing publisher behavior.
+- Tracks last publish attempt, publish status, skip reason, and publisher source for later reliability work.
+
+
+## v2.2.18
+- Fixes laundry local-update ReferenceError by adding the shared `sortLoads(...)` helper used by optimistic laundry state updates.
+- Routes fetched loads through the same sort helper so local and server-refreshed laundry ordering stay aligned.

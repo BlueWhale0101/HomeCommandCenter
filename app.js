@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.16';
+const APP_VERSION = 'v2.2.18';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -151,6 +151,19 @@ let appState = {
   sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
+  calendarPublisherDiagnostics: {
+    canPublish: false,
+    lastAttemptAt: '',
+    lastAttemptReason: '',
+    lastPublishAt: '',
+    lastPublishStatus: 'idle',
+    lastPublishSource: '',
+    lastSkipReason: '',
+    lastPublishError: '',
+    lastItemsToday: 0,
+    lastItemsTomorrow: 0,
+    lastSelectedSources: 0,
+  },
   refreshCoordinator: {
     inFlight: null,
     pendingReason: '',
@@ -768,6 +781,19 @@ async function fetchSignals() {
   appState.signals = data || [];
 }
 
+
+function sortLoads(loads) {
+  const items = Array.isArray(loads) ? [...loads] : [];
+  return items.sort((a, b) => {
+    const aDone = !!(a && (a.archived_at || a.completed_at || a.status === 'done'));
+    const bDone = !!(b && (b.archived_at || b.completed_at || b.status === 'done'));
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    const aTime = Date.parse((a && (a.created_at || a.last_transition_at || a.updated_at)) || '') || 0;
+    const bTime = Date.parse((b && (b.created_at || b.last_transition_at || b.updated_at)) || '') || 0;
+    return aTime - bTime;
+  });
+}
+
 async function fetchLoads() {
   const { data, error } = await appState.supabase
     .from('laundry_loads')
@@ -779,7 +805,7 @@ async function fetchLoads() {
     appState.loads = [];
     return;
   }
-  appState.loads = data || [];
+  appState.loads = sortLoads(data || []);
 }
 
 async function fetchSnapshots() {
@@ -1911,6 +1937,7 @@ function renderMobileDebug() {
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
+    { title: `Calendar publisher: ${(appState.calendarPublisherDiagnostics || {}).lastPublishStatus || 'idle'}`, meta: `${(appState.calendarPublisherDiagnostics || {}).lastAttemptReason || 'No recent attempt'}${(appState.calendarPublisherDiagnostics || {}).lastSkipReason ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastSkipReason}` : ''}${(appState.calendarPublisherDiagnostics || {}).lastPublishError ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastPublishError}` : ''}`, pill: 'Publisher' },
     { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
     buildWakeLockDebugSummary(),
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
@@ -2857,8 +2884,57 @@ function shouldPublishCalendarSnapshots(todayItems, tomorrowItems) {
     || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow);
 }
 
+function noteCalendarPublisherAttempt(reason, extra = {}) {
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    lastAttemptAt: new Date(getNowMs()).toISOString(),
+    lastAttemptReason: reason || 'publish-cycle',
+    ...extra,
+  };
+}
+
+function noteCalendarPublisherResult(status, extra = {}) {
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    lastPublishStatus: status || 'idle',
+    ...extra,
+  };
+}
+
+function buildCalendarPublisherDebugItems() {
+  const diag = appState.calendarPublisherDiagnostics || {};
+  const publisher = getCalendarServiceState();
+  return [
+    {
+      title: `Publisher ready: ${diag.canPublish ? 'Yes' : 'No'}`,
+      meta: `${diag.lastSelectedSources || 0} selected source${diag.lastSelectedSources === 1 ? '' : 's'}${publisher.publisher ? ` · Active publisher ${publisher.publisher}` : ''}`,
+      pill: diag.canPublish ? 'Ready' : 'Idle',
+      pillClass: diag.canPublish ? '' : 'warning',
+    },
+    {
+      title: `Last publish: ${diag.lastPublishStatus || 'idle'}`,
+      meta: [
+        diag.lastPublishAt ? `At ${new Date(diag.lastPublishAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'No publish yet',
+        diag.lastPublishSource ? `Source ${diag.lastPublishSource}` : '',
+        Number.isFinite(diag.lastItemsToday) || Number.isFinite(diag.lastItemsTomorrow) ? `${diag.lastItemsToday || 0} today · ${diag.lastItemsTomorrow || 0} tomorrow` : '',
+      ].filter(Boolean).join(' · '),
+      pill: diag.lastPublishStatus === 'published' ? 'Published' : (diag.lastPublishStatus === 'skipped' ? 'Skipped' : (diag.lastPublishStatus === 'error' ? 'Error' : 'Idle')),
+      pillClass: diag.lastPublishStatus === 'error' ? 'warning' : '',
+    },
+    {
+      title: `Last attempt: ${diag.lastAttemptReason || 'Not attempted yet'}`,
+      meta: [
+        diag.lastAttemptAt ? `At ${new Date(diag.lastAttemptAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '',
+        diag.lastSkipReason || diag.lastPublishError || '',
+      ].filter(Boolean).join(' · ') || 'No publisher diagnostics yet.',
+      pill: 'Trace',
+    },
+  ];
+}
+
 async function fetchGoogleCalendarSnapshots() {
   const canPublish = hasPublisherCalendarAccounts();
+  noteCalendarPublisherAttempt('calendar-refresh', { canPublish });
 
   if (!canPublish) {
     const existingToday = appState.snapshots[appState.config.calendarTodaySnapshotType];
@@ -2872,6 +2948,11 @@ async function fetchGoogleCalendarSnapshots() {
       expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
       lastError: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
     };
+    noteCalendarPublisherResult(existingToday || existingTomorrow ? 'idle' : 'idle', {
+      canPublish: false,
+      lastSelectedSources: 0,
+      lastSkipReason: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
+    });
     pushDevLog('info', existingToday || existingTomorrow
       ? 'Headless calendar mode: using shared snapshots only on this device.'
       : 'Headless calendar mode: no shared calendar snapshots available yet.');
@@ -2891,6 +2972,13 @@ async function fetchGoogleCalendarSnapshots() {
     expiredAccounts: expiredAccounts.length,
     lastError: '',
   };
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    canPublish: true,
+    lastSelectedSources: selectedSources.length,
+    lastSkipReason: '',
+    lastPublishError: '',
+  };
 
   const now = getNowDate();
   const todayStart = startOfDay(now);
@@ -2902,6 +2990,11 @@ async function fetchGoogleCalendarSnapshots() {
   let fetchedEvents = 0;
 
   if (!selectedSources.length) {
+    noteCalendarPublisherResult('skipped', {
+      canPublish: true,
+      lastSelectedSources: 0,
+      lastSkipReason: 'No selected local calendars on this device',
+    });
     pushDevLog('warn', 'Calendar publisher has no selected local calendars. Keeping existing shared snapshots.');
     return;
   }
@@ -2964,11 +3057,31 @@ async function fetchGoogleCalendarSnapshots() {
     if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
       await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
       await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
+      noteCalendarPublisherResult('published', {
+        lastPublishAt: createdAt,
+        lastPublishSource: snapshotSource,
+        lastItemsToday: todayItems.length,
+        lastItemsTomorrow: tomorrowItems.length,
+        lastSkipReason: '',
+        lastPublishError: '',
+      });
       pushDevLog('info', 'Published headless calendar snapshots to household.');
     } else {
+      noteCalendarPublisherResult('skipped', {
+        lastPublishSource: snapshotSource,
+        lastItemsToday: todayItems.length,
+        lastItemsTomorrow: tomorrowItems.length,
+        lastSkipReason: 'Snapshots unchanged',
+      });
       pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
     }
   } catch (error) {
+    noteCalendarPublisherResult('error', {
+      lastPublishSource: snapshotSource,
+      lastItemsToday: todayItems.length,
+      lastItemsTomorrow: tomorrowItems.length,
+      lastPublishError: error?.message || String(error),
+    });
     pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
   }
 
