@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.11';
+const APP_VERSION = 'v2.2.13';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -42,6 +42,22 @@ const SHARED_CONFIG_KEYS = {
   calendarAccounts: 'google_calendar_accounts',
   signalRules: 'signal_rules',
 };
+const DEVICE_PROFILE_CONFIG_KEYS = ['deviceName', 'mode', 'location', 'keepScreenAwake'];
+const LOCAL_ONLY_CONFIG_KEYS = [
+  'supabaseUrl',
+  'supabaseKey',
+  'taskTable',
+  'taskDateField',
+  'taskOwnerField',
+  'taskTitleField',
+  'taskCompletedField',
+  'taskCompletedValue',
+  'useStringCompleted',
+  'weatherSnapshotType',
+  'calendarTodaySnapshotType',
+  'calendarTomorrowSnapshotType',
+  'uiRefreshSeconds',
+];
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -138,6 +154,15 @@ let appState = {
     lastReason: '',
     lastCompletedAt: '',
   },
+  realtimeDiagnostics: {
+    subscribedAt: '',
+    activeChannels: 0,
+    channelStates: {},
+    lastEventAt: '',
+    lastEventTable: '',
+    lastEventType: '',
+    lastStatus: '',
+  },
 };
 
 const screenEl = document.getElementById('screen');
@@ -203,7 +228,7 @@ function getEffectiveSignalRules() {
 
 function persistSignalRulesDraft() {
   appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
-  saveConfig(appState.config);
+  persistLocalConfig();
 }
 
 function setSignalRulesDraft(nextRules) {
@@ -469,7 +494,7 @@ async function loadHostedSettingsOnce() {
       return false;
     }
     appState.config = normalized;
-    saveConfig(appState.config);
+    persistLocalConfig();
     markHostedSettingsChecked();
     pushDevLog('info', 'Loaded hosted settings from settings.json');
     setStatus('Loaded hosted settings.');
@@ -493,24 +518,14 @@ async function loadDeviceProfile() {
 
     if (data) {
       appState.deviceProfile = data;
-      appState.config.deviceName = data.device_name || appState.config.deviceName;
-      appState.config.mode = data.mode || appState.config.mode;
-      appState.config.location = data.location || appState.config.location;
-      if (typeof data.settings?.keepScreenAwake === 'boolean') appState.config.keepScreenAwake = data.settings.keepScreenAwake;
-      saveConfig(appState.config);
+      applyDeviceProfileToConfig(data);
+      persistLocalConfig();
       fillSettingsForm();
       setStatus(`Connected as ${appState.config.deviceName} (${appState.config.mode})`);
       return;
     }
 
-    const insertPayload = {
-      device_name: appState.config.deviceName,
-      device_key: appState.deviceKey,
-      mode: appState.config.mode,
-      location: appState.config.location,
-      settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
-      is_active: true,
-    };
+    const insertPayload = buildDeviceProfilePayload();
 
     const { data: inserted, error: insertError } = await appState.supabase
       .from('device_profiles')
@@ -646,7 +661,7 @@ function maybeAutoMapTaskFields(tasks) {
   }
   if (Object.keys(updates).length) {
     Object.assign(appState.config, updates);
-    saveConfig(appState.config);
+    persistLocalConfig();
     fillSettingsForm();
     pushDevLog('info', `Auto-mapped task fields: ${Object.entries(updates).map(([k, v]) => `${k}→${v}`).join(', ')}`);
   }
@@ -838,34 +853,100 @@ async function fetchRecentLogs() {
   appState.logs = data || [];
 }
 
-function bindRealtime() {
-  clearSubscriptions();
-  if (!appState.supabase) return;
-  const channels = [
-    { table: appState.config.taskTable, event: '*', handler: () => refreshAll('task realtime update') },
-    { table: 'household_logs', event: '*', handler: () => refreshAll('log realtime update') },
-    { table: 'household_signals', event: '*', handler: () => refreshAll('signal realtime update') },
-    { table: 'laundry_loads', event: '*', handler: () => refreshAll('laundry realtime update') },
-    { table: 'context_snapshots', event: '*', handler: () => refreshFromSnapshotUpdate() },
-    { table: SHARED_CONFIG_TABLE, event: '*', handler: () => runTargetedRefresh('Shared config update', async () => {
+
+function updateRealtimeDiagnostics(patch = {}) {
+  const current = appState.realtimeDiagnostics || {};
+  appState.realtimeDiagnostics = { ...current, ...patch, channelStates: patch.channelStates || current.channelStates || {} };
+}
+
+function getRealtimeStatusText() {
+  const diag = appState.realtimeDiagnostics || {};
+  const activeChannels = Number(diag.activeChannels || 0);
+  const lastEventTable = diag.lastEventTable ? ` · last ${diag.lastEventTable}` : '';
+  if (!appState.supabase) return 'Not configured';
+  if (!activeChannels) return 'No active channels';
+  if (diag.lastStatus === 'SUBSCRIBED') return `${activeChannels} channels active${lastEventTable}`;
+  if (diag.lastStatus) return `${diag.lastStatus}${lastEventTable}`;
+  return `${activeChannels} channels configured${lastEventTable}`;
+}
+
+function setRealtimeConnectionStatus(level = 'unknown', fallbackText = '') {
+  setConnectionStatus('realtime', level, fallbackText || getRealtimeStatusText());
+}
+
+function buildRealtimeChannelSpecs() {
+  return [
+    { table: appState.config.taskTable, event: '*', scope: 'full', reason: 'task realtime update', handler: () => refreshAll('task realtime update') },
+    { table: 'household_logs', event: '*', scope: 'full', reason: 'log realtime update', handler: () => refreshAll('log realtime update') },
+    { table: 'household_signals', event: '*', scope: 'full', reason: 'signal realtime update', handler: () => refreshAll('signal realtime update') },
+    { table: 'laundry_loads', event: '*', scope: 'full', reason: 'laundry realtime update', handler: () => refreshAll('laundry realtime update') },
+    { table: 'context_snapshots', event: '*', scope: 'targeted', reason: 'snapshot realtime update', handler: () => refreshFromSnapshotUpdate() },
+    { table: SHARED_CONFIG_TABLE, event: '*', scope: 'targeted', reason: 'shared config realtime update', handler: () => runTargetedRefresh('Shared config update', async () => {
         await fetchHouseholdConfig();
         await fetchSnapshots();
       }) },
   ];
+}
 
-  appState.subscriptions = channels.map(({ table, event, handler }) => {
+function handleRealtimeEvent(spec, payload) {
+  updateRealtimeDiagnostics({
+    lastEventAt: new Date().toISOString(),
+    lastEventTable: spec.table,
+    lastEventType: payload?.eventType || spec.event || '*',
+  });
+  setRealtimeConnectionStatus('ok');
+  return spec.handler(payload);
+}
+
+function noteRealtimeSubscriptionStatus(table, status) {
+  const channelStates = {
+    ...((appState.realtimeDiagnostics && appState.realtimeDiagnostics.channelStates) || {}),
+    [table]: status,
+  };
+  updateRealtimeDiagnostics({
+    subscribedAt: appState.realtimeDiagnostics?.subscribedAt || new Date().toISOString(),
+    activeChannels: Object.keys(channelStates).length,
+    channelStates,
+    lastStatus: status || '',
+  });
+  const level = status === 'SUBSCRIBED' ? 'ok' : (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' ? 'warn' : 'unknown');
+  setRealtimeConnectionStatus(level);
+  pushDevLog(level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${status}`);
+}
+
+function bindRealtime() {
+  clearSubscriptions();
+  if (!appState.supabase) {
+    setRealtimeConnectionStatus('unknown', 'Not configured');
+    return;
+  }
+  const channels = buildRealtimeChannelSpecs();
+  updateRealtimeDiagnostics({
+    subscribedAt: new Date().toISOString(),
+    activeChannels: channels.length,
+    channelStates: {},
+    lastStatus: 'SUBSCRIBING',
+  });
+  setRealtimeConnectionStatus('unknown', 'Subscribing…');
+
+  appState.subscriptions = channels.map((spec) => {
     const channel = appState.supabase
-      .channel(`realtime-${table}`)
-      .on('postgres_changes', { event, schema: 'public', table }, handler)
-      .subscribe();
-    return channel;
+      .channel(`realtime-${spec.table}`)
+      .on('postgres_changes', { event: spec.event, schema: 'public', table: spec.table }, (payload) => handleRealtimeEvent(spec, payload))
+      .subscribe((status) => noteRealtimeSubscriptionStatus(spec.table, status));
+    return { table: spec.table, channel };
   });
 }
 
 function clearSubscriptions() {
-  if (!appState.subscriptions?.length || !appState.supabase) return;
-  for (const channel of appState.subscriptions) appState.supabase.removeChannel(channel);
+  if (!appState.subscriptions?.length || !appState.supabase) {
+    updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: '' });
+    return;
+  }
+  for (const entry of appState.subscriptions) appState.supabase.removeChannel(entry.channel || entry);
   appState.subscriptions = [];
+  updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
+  setRealtimeConnectionStatus('unknown', 'Channels cleared');
 }
 
 
@@ -1799,11 +1880,13 @@ function renderMobileDebug() {
     buildSecondaryButton('Open dev console', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); }),
     buildSecondaryButton('Force refresh', () => refreshAll('debug force refresh')),
   ]));
+  const realtimeDiag = appState.realtimeDiagnostics || {};
   wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
     { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
+    { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -2245,27 +2328,8 @@ function applySharedConfigRows(rows) {
   }
   appState.sharedConfig = map;
   appState.sharedConfigMeta = meta;
-  if (typeof map[SHARED_CONFIG_KEYS.googleClientId] === 'string' && map[SHARED_CONFIG_KEYS.googleClientId].trim()) {
-    appState.config.googleClientId = map[SHARED_CONFIG_KEYS.googleClientId].trim();
-  }
-  const weather = map[SHARED_CONFIG_KEYS.weather];
-  if (weather && typeof weather === 'object') {
-    appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
-    appState.config.weatherLocationName = cleanLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
-    appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
-    appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
-    appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
-  }
-  const sharedSignalRules = map[SHARED_CONFIG_KEYS.signalRules];
-  appState.signalRulesDraft = normalizeSignalRules(sharedSignalRules || appState.config.signalRulesDraft || DEFAULT_SIGNAL_RULES);
-  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
-  const sharedAccounts = map[SHARED_CONFIG_KEYS.calendarAccounts];
-  if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
-    const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
-    appState.calendarAccounts = mergedAccounts;
-    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(mergedAccounts)); } catch {}
-  }
-  saveConfig(appState.config);
+  applySharedConfigToLocalState(map);
+  persistLocalConfig();
   try { fillSettingsForm(); } catch {}
 }
 
@@ -2296,7 +2360,7 @@ async function pushSharedSignalConfig() {
   appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] = payload;
   appState.signalRulesDraft = normalizeSignalRules(payload);
   appState.config.signalRulesDraft = normalizeSignalRules(payload);
-  saveConfig(appState.config);
+  persistLocalConfig();
   showToast('Pushed signal config to household', 'success');
   pushDevLog('info', 'Pushed signal config to household.');
 }
@@ -2585,7 +2649,7 @@ async function fetchWeatherSnapshot() {
     timezone = geo.timezone;
     locationName = cleanLocationName(geo.name);
     appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName, weatherLocationQuery: query };
-    saveConfig(appState.config);
+    persistLocalConfig();
     try { fillSettingsForm(); } catch {}
   }
 
@@ -3864,7 +3928,7 @@ async function runConnectionTest() {
     }
 
     if (tasksOk) {
-      setConnectionStatus('realtime', 'ok', 'Configured in app');
+      setConnectionStatus('realtime', 'ok', appState.subscriptions?.length ? getRealtimeStatusText() : 'Configured in app');
     } else {
       setConnectionStatus('realtime', 'warn', 'Check task access first');
     }
@@ -4132,7 +4196,7 @@ function setupButtons() {
       appState.config.weatherTimezone = '';
       appState.config.weatherLocationName = '';
     }
-    saveConfig(appState.config);
+    persistLocalConfig();
     fillSettingsForm();
     await syncWakeLock({ force: true });
     resetAutoRefreshTimer();
@@ -4147,14 +4211,7 @@ function setupButtons() {
 
 async function upsertDeviceProfile() {
   if (!appState.supabase) return;
-  const payload = {
-    device_name: appState.config.deviceName,
-    device_key: appState.deviceKey,
-    mode: appState.config.mode,
-    location: appState.config.location,
-    settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
-    is_active: true,
-  };
+  const payload = buildDeviceProfilePayload();
   const { data, error } = await appState.supabase
     .from('device_profiles')
     .upsert(payload, { onConflict: 'device_key' })
@@ -4218,14 +4275,94 @@ function renderEmptyShell(message) {
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE);
-    return raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG };
+    return normalizeLocalConfig(raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG });
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return normalizeLocalConfig({ ...DEFAULT_CONFIG });
   }
 }
 
+function normalizeLocalConfig(config = {}) {
+  const normalized = { ...DEFAULT_CONFIG, ...config };
+  for (const key of DEVICE_PROFILE_CONFIG_KEYS) {
+    if (normalized[key] == null) normalized[key] = DEFAULT_CONFIG[key];
+  }
+  for (const key of LOCAL_ONLY_CONFIG_KEYS) {
+    if (normalized[key] == null) normalized[key] = DEFAULT_CONFIG[key];
+  }
+  normalized.signalRulesDraft = normalizeSignalRules(normalized.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  normalized.googleClientId = String(normalized.googleClientId || '').trim();
+  normalized.weatherLocationQuery = String(normalized.weatherLocationQuery || '').trim();
+  normalized.weatherLocationName = cleanLocationName(String(normalized.weatherLocationName || '').trim());
+  normalized.weatherLatitude = String(normalized.weatherLatitude || '').trim();
+  normalized.weatherLongitude = String(normalized.weatherLongitude || '').trim();
+  normalized.weatherTimezone = String(normalized.weatherTimezone || '').trim();
+  normalized.uiRefreshSeconds = Math.max(15, Number(normalized.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  normalized.keepScreenAwake = !!normalized.keepScreenAwake;
+  return normalized;
+}
+
+function persistLocalConfig() {
+  appState.config = normalizeLocalConfig(appState.config);
+  persistLocalConfig();
+}
+
 function saveConfig(config) {
-  localStorage.setItem(CONFIG_STORAGE, JSON.stringify(config));
+  localStorage.setItem(CONFIG_STORAGE, JSON.stringify(normalizeLocalConfig(config)));
+}
+
+function applyDeviceProfileToConfig(profile) {
+  if (!profile || typeof profile !== 'object') return appState.config;
+  appState.config.deviceName = profile.device_name || appState.config.deviceName;
+  appState.config.mode = profile.mode || appState.config.mode;
+  appState.config.location = profile.location || appState.config.location;
+  if (typeof profile.settings?.keepScreenAwake === 'boolean') appState.config.keepScreenAwake = profile.settings.keepScreenAwake;
+  return appState.config;
+}
+
+function buildDeviceProfilePayload(config = appState.config) {
+  const source = normalizeLocalConfig(config);
+  return {
+    device_name: source.deviceName,
+    device_key: appState.deviceKey,
+    mode: source.mode,
+    location: source.location,
+    settings: { keepScreenAwake: !!source.keepScreenAwake },
+    is_active: true,
+  };
+}
+
+function applySharedWeatherConfig(weather) {
+  if (!weather || typeof weather !== 'object') return;
+  appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
+  appState.config.weatherLocationName = cleanLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
+  appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
+  appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
+  appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
+}
+
+function applySharedCalendarConfig(sharedMap) {
+  if (typeof sharedMap?.[SHARED_CONFIG_KEYS.googleClientId] === 'string' && sharedMap[SHARED_CONFIG_KEYS.googleClientId].trim()) {
+    appState.config.googleClientId = sharedMap[SHARED_CONFIG_KEYS.googleClientId].trim();
+  }
+  const sharedAccounts = sharedMap?.[SHARED_CONFIG_KEYS.calendarAccounts];
+  if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
+    const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
+    appState.calendarAccounts = mergedAccounts;
+    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(mergedAccounts)); } catch {}
+  }
+}
+
+function applySharedSignalRulesConfig(sharedMap) {
+  const sharedSignalRules = sharedMap?.[SHARED_CONFIG_KEYS.signalRules];
+  appState.signalRulesDraft = normalizeSignalRules(sharedSignalRules || appState.config.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
+}
+
+function applySharedConfigToLocalState(sharedMap) {
+  applySharedCalendarConfig(sharedMap);
+  applySharedWeatherConfig(sharedMap?.[SHARED_CONFIG_KEYS.weather]);
+  applySharedSignalRulesConfig(sharedMap);
+  appState.config = normalizeLocalConfig(appState.config);
 }
 
 function getOrCreateDeviceKey() {

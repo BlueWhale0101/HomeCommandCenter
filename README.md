@@ -310,3 +310,17 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - normalized task intelligence internals around a shared `buildTaskIntelligenceContext(...)` path
 - reused cached due-bucket state and shared selectors for task digest assembly
 - consolidated snapshot-to-display mapping and tomorrow-window task selection helpers
+
+
+## v2.2.11 cleanup pass
+- centralized calendar publisher/connection status into shared service helpers
+- normalized weather service state/freshness interpretation behind one shared path
+- reduced drift between mobile status, calendar, and weather trust UI
+
+## v2.2.13 cleanup pass
+- clarified local-vs-shared config ownership behind shared helper paths
+- centralized device profile apply/build logic for load and save flows
+- normalized shared calendar/weather/signal config application into one local-state sync path
+- preserved behavior while reducing config write/read drift
+
+- v2.2.13: Hardened Realtime setup with shared channel specs, subscription diagnostics, scoped event handling, and clearer Mobile debug visibility.
