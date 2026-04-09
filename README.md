@@ -275,7 +275,13 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - roadmap note added: easy reconnect flow for expired Google Calendar publisher sessions
 
 
-### v2.2.6 cleanup pass
+### v2.2.7 cleanup pass
 - normalized mobile tab wiring behind a shared tab registry with label, subtitle, and render definitions
 - reduced repeated mobile stack/card assembly with small internal helpers for shared mobile composition
 - reused the same inline action builders across weather, signals, debug, and log panels to keep mobile admin UI behavior aligned
+
+
+## v2.2.7 cleanup pass
+- normalized shared card/list composition helpers
+- reused shared empty-state and pill builders across task, signal, and calendar admin UI
+- kept behavior stable while reducing render duplication

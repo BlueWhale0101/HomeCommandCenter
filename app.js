@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.6';
+const APP_VERSION = 'v2.2.7';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -956,6 +956,59 @@ function buildMobileStack() {
   return wrap;
 }
 
+function buildEmptyState(message, extraClass = '') {
+  const empty = document.createElement('div');
+  empty.className = `empty-state ${extraClass}`.trim();
+  empty.textContent = message;
+  return empty;
+}
+
+function buildPill(text, extraClass = '') {
+  const pill = document.createElement('span');
+  pill.className = `pill ${extraClass}`.trim();
+  pill.textContent = text;
+  return pill;
+}
+
+function buildListItem(item, options = {}) {
+  const rowTag = options.tagName || 'div';
+  const row = document.createElement(rowTag);
+  row.className = options.rowClassName || 'list-item';
+
+  const left = document.createElement('div');
+  left.className = options.leftClassName || 'list-item-left';
+  const title = document.createElement('div');
+  title.className = options.titleClassName || 'list-item-title';
+  title.textContent = item.title || '';
+  left.append(title);
+
+  const metaText = item.meta || '';
+  if (metaText || options.showMeta !== false) {
+    const meta = document.createElement('div');
+    meta.className = options.metaClassName || 'list-item-meta';
+    meta.textContent = metaText;
+    left.append(meta);
+  }
+
+  row.append(left);
+  if (options.showPills && item.pill) {
+    row.append(buildPill(item.pill, item.pillClass || ''));
+  }
+  return row;
+}
+
+function buildCardSectionHeader(titleText, subtitleText = '') {
+  const wrap = document.createElement('div');
+  wrap.className = 'card-header';
+  const title = document.createElement('h2');
+  title.textContent = titleText;
+  const subtitle = document.createElement('span');
+  subtitle.className = 'card-subtitle';
+  subtitle.textContent = subtitleText || '';
+  wrap.append(title, subtitle);
+  return wrap;
+}
+
 function appendCards(container, cards) {
   for (const card of cards) {
     if (card) container.append(card);
@@ -990,15 +1043,7 @@ function renderMobileControlPanel(context) {
   const body = document.createElement('div');
   body.className = 'card-body';
 
-  const title = document.createElement('div');
-  title.className = 'card-header';
-  const h2 = document.createElement('h2');
-  h2.textContent = activeTab.label;
-  const sub = document.createElement('span');
-  sub.className = 'card-subtitle';
-  sub.textContent = activeTab.subtitle(context);
-  title.append(h2, sub);
-  panel.append(title);
+  panel.append(buildCardSectionHeader(activeTab.label, activeTab.subtitle(context)));
 
   let content;
   try {
@@ -1317,9 +1362,7 @@ function renderSignalSummaryCard(item) {
   summary.textContent = item.summary || '';
   titleWrap.append(title, summary);
 
-  const badge = document.createElement('span');
-  badge.className = `pill ${item.enabled ? '' : 'muted-pill'}`.trim();
-  badge.textContent = item.enabled ? 'Enabled' : 'Disabled';
+  const badge = buildPill(item.enabled ? 'Enabled' : 'Disabled', item.enabled ? '' : 'muted-pill');
   top.append(titleWrap, badge);
 
   const detail = document.createElement('div');
@@ -1982,10 +2025,7 @@ function renderBedroomLaundry() {
     .slice(0, 3);
 
   if (!loads.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No active loads to move right now.';
-    wrapper.append(empty);
+    wrapper.append(buildEmptyState('No active loads to move right now.'));
     return wrapper;
   }
 
@@ -2023,34 +2063,11 @@ function renderTaskList(items, emptyText, options = {}) {
   const wrapper = document.createElement('div');
   wrapper.className = `list ${options.compact ? 'list-compact' : ''}`.trim();
   if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = emptyText;
-    wrapper.append(empty);
+    wrapper.append(buildEmptyState(emptyText));
     return wrapper;
   }
   for (const item of items) {
-    const row = document.createElement('div');
-    row.className = 'list-item';
-
-    const left = document.createElement('div');
-    left.className = 'list-item-left';
-    const title = document.createElement('div');
-    title.className = 'list-item-title';
-    title.textContent = item.title;
-    const meta = document.createElement('div');
-    meta.className = 'list-item-meta';
-    meta.textContent = item.meta || '';
-    left.append(title, meta);
-
-    row.append(left);
-    if (options.showPills && item.pill) {
-      const pill = document.createElement('span');
-      pill.className = `pill ${item.pillClass || ''}`.trim();
-      pill.textContent = item.pill;
-      row.append(pill);
-    }
-    wrapper.append(row);
+    wrapper.append(buildListItem(item, { showPills: options.showPills }));
   }
   return wrapper;
 }
@@ -2058,9 +2075,7 @@ function renderTaskList(items, emptyText, options = {}) {
 function renderSpotlightCard(item) {
   const wrap = document.createElement('div');
   if (!item) {
-    wrap.className = 'empty-state';
-    wrap.textContent = 'No standout task yet. Once the board has today or overdue work, it will appear here.';
-    return wrap;
+    return buildEmptyState('No standout task yet. Once the board has today or overdue work, it will appear here.');
   }
 
   const badge = document.createElement('div');
@@ -2082,9 +2097,7 @@ function renderSpotlightCard(item) {
 function renderFocusBlock(item) {
   const wrap = document.createElement('div');
   if (!item) {
-    wrap.className = 'empty-state';
-    wrap.textContent = 'Nothing is pressing right now.';
-    return wrap;
+    return buildEmptyState('Nothing is pressing right now.');
   }
   const big = document.createElement('div');
   big.className = 'focus-text';
@@ -2604,10 +2617,7 @@ function renderCalendarAccountsPanel(options = {}) {
   const host = document.createElement('div');
   host.className = 'google-calendar-accounts';
   if (!appState.calendarAccounts.length) {
-    const empty = document.createElement('div');
-    empty.className = `empty-state${editable ? ' compact-empty' : ''}`;
-    empty.textContent = 'No Google accounts connected yet.';
-    host.append(empty);
+    host.append(buildEmptyState('No Google accounts connected yet.', editable ? 'compact-empty' : ''));
     return host;
   }
 
@@ -2668,7 +2678,9 @@ function renderCalendarAccountsPanel(options = {}) {
       } else {
         const row = document.createElement('div');
         row.className = 'calendar-list-item';
-        row.innerHTML = `<span>${escapeHtml(calendar.summary || calendar.id)}</span><span class="pill">${calendar.selected ? 'Included' : 'Hidden'}</span>`;
+        const label = document.createElement('span');
+        label.textContent = calendar.summary || calendar.id;
+        row.append(label, buildPill(calendar.selected ? 'Included' : 'Hidden'));
         calList.append(row);
       }
     }
