@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.14';
+const APP_VERSION = 'v2.2.15';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -953,8 +953,9 @@ function clearSubscriptions() {
 }
 
 
-const MODE_LAYOUTS = {
+const SURFACE_DEFINITIONS = {
   kitchen: {
+    bodyClasses: ['widget-surface', 'kitchen-surface'],
     screenClass: 'screen two-columns widget-layout widget-layout-kitchen',
     widgets: [
       'context',
@@ -967,27 +968,48 @@ const MODE_LAYOUTS = {
     ],
   },
   tv: {
+    bodyClasses: ['widget-surface', 'tv-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-tv',
     widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
   },
   laundry: {
+    bodyClasses: ['widget-surface', 'laundry-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
     widgets: ['laundrySummary', 'laundryLoads', 'laundrySignals'],
   },
   bedroom: {
+    bodyClasses: ['widget-surface', 'bedroom-surface'],
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
     widgets: ['context', 'bedroomPrimary', 'bedroomLaundry', 'bedroomForget'],
   },
   mobile: {
+    bodyClasses: ['mobile-surface'],
     screenClass: 'screen two-columns widget-layout widget-layout-mobile',
     widgets: ['today', 'laundryLoads', 'upcoming', 'recentLogs', 'signals', 'quickActions', 'context', 'taskMapping'],
   },
 };
 
-function renderMode() {
-  const mode = appState.config.mode || 'tv';
+const SURFACE_BODY_CLASS_NAMES = ['tv-mode', 'mobile-mode', 'widget-surface', 'tv-surface', 'kitchen-surface', 'laundry-surface', 'bedroom-surface', 'mobile-surface'];
+
+function getSurfaceDefinition(mode) {
+  return SURFACE_DEFINITIONS[mode] || SURFACE_DEFINITIONS.kitchen;
+}
+
+function applySurfaceBodyClasses(mode) {
+  const surface = getSurfaceDefinition(mode);
+  for (const className of SURFACE_BODY_CLASS_NAMES) {
+    document.body.classList.remove(className);
+  }
+  for (const className of surface.bodyClasses || []) {
+    document.body.classList.add(className);
+  }
   document.body.classList.toggle('tv-mode', mode === 'tv');
   document.body.classList.toggle('mobile-mode', mode === 'mobile');
+}
+
+function renderMode() {
+  const mode = appState.config.mode || 'tv';
+  applySurfaceBodyClasses(mode);
   const digest = buildTaskDigest();
   const widgetContext = buildWidgetContext(digest);
   if (mode === 'mobile') {
@@ -1016,7 +1038,7 @@ function buildWidgetContext(digest) {
 }
 
 function renderModeLayout(mode, context) {
-  const layout = MODE_LAYOUTS[mode] || MODE_LAYOUTS.kitchen;
+  const layout = getSurfaceDefinition(mode);
   screenEl.className = layout.screenClass;
   screenEl.replaceChildren();
 

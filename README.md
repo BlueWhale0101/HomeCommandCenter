@@ -330,3 +330,12 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 
 Wake lock/runtime hardening:
 - v2.2.14: Centralized wake-lock lifecycle notes, retry/release diagnostics, startup sync, and added Mobile Debug visibility for wake-lock runtime state.
+
+## v2.2.15 cleanup pass
+
+Surface/runtime normalization:
+- v2.2.15: Centralized per-surface definitions, body-class application, and screen layout lookup behind a shared surface registry so mode-specific runtime/layout behavior is less hand-wired.
+
+Roadmap notes:
+- Add per-device pixel-shift protection for always-on displays as a dedicated-display runtime feature near wake-lock/device-runtime hardening.
+- Investigate headless calendar publisher push behavior during Phase 6 reliability work before implementing reconnect or publisher-flow fixes.
