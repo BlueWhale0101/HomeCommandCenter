@@ -1,6 +1,12 @@
 
 # Household Command Center
 
+## v2.2.11
+- Calendar and weather service cleanup pass.
+- Centralized calendar connection and publisher-status state behind shared helpers.
+- Centralized weather snapshot/freshness state behind a shared service helper for mobile/admin surfaces.
+- Reused one snapshot freshness interpreter across calendar/weather status views.
+
 ## v2.2.2
 - Stabilization baseline pass.
 - Unified shipped version markers across `app.js`, `index.html`, and `sw.js`.

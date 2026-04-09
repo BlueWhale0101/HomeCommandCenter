@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.10';
+const APP_VERSION = 'v2.2.11';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1112,35 +1112,18 @@ function renderMobileControlPanel(context) {
 
 
 function summarizeCalendarConnectionState() {
-  const requirement = getCalendarAuthRequirementState();
+  const service = getCalendarServiceState();
   return {
-    total: requirement.totalRequired,
-    connected: requirement.connected,
-    needsReconnect: requirement.needsReconnect,
-    details: requirement.details.map((item, idx) => ({
-      name: item.name || item.email || `Account ${idx + 1}`,
-      status: item.connected ? 'Connected' : 'Needs reconnect',
-    })),
-    hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
+    total: service.total,
+    connected: service.connected,
+    needsReconnect: service.needsReconnect,
+    details: service.details,
+    hasProblem: service.hasProblem,
   };
 }
 
 function buildCalendarConnectionItems() {
-  const summary = summarizeCalendarConnectionState();
-  if (!summary.total) {
-    return [{
-      title: 'No accounts connected on this device',
-      meta: 'Open Mobile → Calendar to connect a Google account for calendar publishing.',
-      pill: 'Setup',
-      pillClass: 'warning',
-    }];
-  }
-  return summary.details.map((detail) => ({
-    title: detail.name,
-    meta: detail.status,
-    pill: detail.status === 'Connected' ? 'Ready' : 'Reconnect',
-    pillClass: detail.status === 'Connected' ? '' : 'warning',
-  }));
+  return getCalendarServiceState().items;
 }
 
 function updateCalendarAuthBanner() {
@@ -1152,14 +1135,14 @@ function updateCalendarAuthBanner() {
     el.innerHTML = '';
     return;
   }
-  const summary = summarizeCalendarConnectionState();
-  if (!summary.total) {
+  const service = getCalendarServiceState();
+  if (!service.total) {
     el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
     el.style.display = 'block';
     return;
   }
-  if (summary.needsReconnect > 0) {
-    el.innerHTML = `<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ${summary.needsReconnect} account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>`;
+  if (service.needsReconnect > 0) {
+    el.innerHTML = `<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ${service.needsReconnect} account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>`;
     el.style.display = 'block';
     return;
   }
@@ -1218,6 +1201,7 @@ function renderMobileLogs() {
 
 function renderMobileCalendar() {
   const wrap = buildMobileStack();
+  const calendarService = getCalendarServiceState();
   wrap.append(buildInlineActions([
     buildSecondaryButton('Add Google account', () => connectGoogleAccountButton?.click()),
     buildSecondaryButton('Push calendar config', async () => {
@@ -1232,12 +1216,11 @@ function renderMobileCalendar() {
   ]));
   const headlessNote = document.createElement('div');
   headlessNote.className = 'muted';
-  const currentPublisher = describeSnapshotPublisher(getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType));
-  headlessNote.textContent = currentPublisher
-    ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${currentPublisher}.`
+  headlessNote.textContent = calendarService.publisher
+    ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${calendarService.publisher}.`
     : 'Headless mode: a connected device publishes merged calendar snapshots for shared displays.';
   wrap.append(headlessNote);
-  wrap.append(buildCard('This Device’s Calendar Connection', 'Local Google auth status for publishing', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('This Device’s Calendar Connection', 'Local Google auth status for publishing', renderTaskList(calendarService.items, 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
   accounts.append(renderCalendarAccountsPanel({ editable: false }));
@@ -1247,6 +1230,7 @@ function renderMobileCalendar() {
 
 function renderMobileWeather() {
   const wrap = buildMobileStack();
+  const weatherService = getWeatherServiceState();
   wrap.append(buildInlineActions([
     buildSecondaryButton('Refresh weather', () => refreshWeatherOnly()),
     buildSecondaryButton('Push weather config', async () => {
@@ -1261,8 +1245,7 @@ function renderMobileWeather() {
     }),
     buildSecondaryButton('Edit weather settings', () => settingsButton?.click()),
   ]));
-  const weather = getSnapshot(appState.config.weatherSnapshotType);
-  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  wrap.append(buildCard('Current Weather', weatherService.locationLabel, renderTaskList(weatherService.items, 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -4272,6 +4255,83 @@ function getSharedConfigUpdatedAt(key) {
   return appState.sharedConfigMeta?.[key]?.updated_at || null;
 }
 
+function getSnapshotFreshnessState(snapshot, fallback = 'Live') {
+  if (!snapshot) {
+    return { level: 'warning', pill: 'Missing', pillClass: 'warning', metaLabel: '', isMissing: true, isStale: false };
+  }
+  const level = snapshotStatusLevel(snapshot);
+  const isStale = !!(snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate());
+  let pill = fallback;
+  if (isStale) pill = 'Stale';
+  else if (level === 'warning') pill = 'Aging';
+  else if (level === 'notice') pill = 'Recent';
+  return {
+    level,
+    pill,
+    pillClass: level === 'warning' ? 'warning' : (level === 'notice' ? 'notice' : ''),
+    metaLabel: snapshotMetaLabel('', snapshot).replace(/^\s*·\s*/, ''),
+    isMissing: false,
+    isStale,
+  };
+}
+
+function getCalendarPublisherSnapshot() {
+  return getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType);
+}
+
+function getCalendarServiceState() {
+  const requirement = getCalendarAuthRequirementState();
+  const publisherSnapshot = getCalendarPublisherSnapshot();
+  const publisher = describeSnapshotPublisher(publisherSnapshot);
+  const details = requirement.details.map((item, idx) => ({
+    name: item.name || item.email || `Account ${idx + 1}`,
+    status: item.connected ? 'Connected' : 'Needs reconnect',
+  }));
+  const items = requirement.totalRequired
+    ? details.map((detail) => ({
+        title: detail.name,
+        meta: detail.status,
+        pill: detail.status === 'Connected' ? 'Ready' : 'Reconnect',
+        pillClass: detail.status === 'Connected' ? '' : 'warning',
+      }))
+    : [{
+        title: 'No accounts connected on this device',
+        meta: 'Open Mobile → Calendar to connect a Google account for calendar publishing.',
+        pill: 'Setup',
+        pillClass: 'warning',
+      }];
+  return {
+    total: requirement.totalRequired,
+    connected: requirement.connected,
+    needsReconnect: requirement.needsReconnect,
+    details,
+    items,
+    hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
+    publisher,
+    publisherSnapshot,
+    publisherFreshness: getSnapshotFreshnessState(publisherSnapshot),
+  };
+}
+
+function getWeatherServiceState() {
+  const snapshot = getSnapshot(appState.config.weatherSnapshotType);
+  const freshness = getSnapshotFreshnessState(snapshot);
+  const locationLabel = cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured');
+  const items = snapshot?.payload ? [{
+    title: formatWeatherSummary(snapshot.payload, { includeTomorrow: true }),
+    meta: snapshotMetaLabel('Weather', snapshot),
+    pill: freshness.pill,
+    pillClass: freshness.pillClass,
+  }] : [];
+  return {
+    snapshot,
+    freshness,
+    locationLabel,
+    items,
+    isConfigured: !!String(appState.config.weatherLocationQuery || appState.config.weatherLatitude || '').trim(),
+  };
+}
+
 function buildCalendarSnapshotSource() {
   const label = String(appState.config.deviceName || appState.deviceKey || 'unknown-device').trim();
   return `calendar-publisher:${label}`;
@@ -4296,20 +4356,11 @@ function snapshotStatusLevel(snapshot) {
 }
 
 function snapshotFreshnessPill(snapshot, fallback = 'Live') {
-  if (!snapshot) return fallback;
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'Stale';
-  const level = snapshotStatusLevel(snapshot);
-  if (level === 'warning') return 'Aging';
-  if (level === 'notice') return 'Recent';
-  return fallback;
+  return getSnapshotFreshnessState(snapshot, fallback).pill;
 }
 
 function snapshotFreshnessClass(snapshot) {
-  if (!snapshot) return '';
-  const level = snapshotStatusLevel(snapshot);
-  if (level === 'warning') return 'warning';
-  if (level === 'notice') return 'notice';
-  return '';
+  return getSnapshotFreshnessState(snapshot).pillClass;
 }
 
 function buildSnapshotStatusItems() {
@@ -4319,8 +4370,9 @@ function buildSnapshotStatusItems() {
     ['Calendar Tomorrow', getSnapshot(appState.config.calendarTomorrowSnapshotType)],
   ];
   return snapshotEntries.map(([label, snapshot]) => {
+    const freshness = getSnapshotFreshnessState(snapshot);
     if (!snapshot) {
-      return { title: label, meta: 'Not published yet', pill: 'Missing', pillClass: 'warning' };
+      return { title: label, meta: 'Not published yet', pill: freshness.pill, pillClass: freshness.pillClass };
     }
     const publisher = describeSnapshotPublisher(snapshot);
     const metaBits = [snapshotMetaLabel(label, snapshot)];
@@ -4328,8 +4380,8 @@ function buildSnapshotStatusItems() {
     return {
       title: label,
       meta: metaBits.filter(Boolean).join(' · '),
-      pill: snapshotFreshnessPill(snapshot),
-      pillClass: snapshotFreshnessClass(snapshot),
+      pill: freshness.pill,
+      pillClass: freshness.pillClass,
     };
   });
 }
