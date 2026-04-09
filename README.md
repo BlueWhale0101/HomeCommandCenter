@@ -292,3 +292,9 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - added refresh deduping/queueing so overlapping realtime or manual refresh requests reuse a single in-flight cycle
 - unified snapshot/shared-config targeted updates behind one path instead of ad hoc rerender calls
 - added lightweight refresh-state visibility to Mobile → Debug
+
+## v2.2.9 cleanup pass
+- normalized signal assembly into a shared evaluation pipeline
+- centralized bins/custom-rule/laundry signal evaluation helpers
+- shared one signal sort path for stored + synthetic signals
+- preserved signal behavior while reducing branching in render-time paths

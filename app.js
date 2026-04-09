@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.8';
+const APP_VERSION = 'v2.2.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3250,13 +3250,26 @@ function buildKitchenHeadline(digest) {
 }
 
 
-function buildTomorrowEventSignal(rules = getEffectiveSignalRules()) {
+function buildSignalEvalContext(now = getNowDate()) {
+  return {
+    now,
+    day: now.getDay(),
+    hour: now.getHours(),
+    signalRules: normalizeSignalRules(getEffectiveSignalRules()),
+    calendarTomorrowItems: getCalendarTomorrowItems(),
+  };
+}
+
+function getCalendarTomorrowItems() {
+  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  return Array.isArray(snapshot?.items) ? snapshot.items : [];
+}
+
+function buildTomorrowEventSignal(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const tomorrowRules = normalizeSignalRules(rules).tomorrowEvent;
   if (!tomorrowRules.enabled) return null;
-  const now = getNowDate();
-  if (now.getHours() < tomorrowRules.startHour) return null;
-  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  if (context.hour < tomorrowRules.startHour) return null;
+  const items = context.calendarTomorrowItems || [];
   if (items.length < tomorrowRules.minEvents) return null;
   const lead = items[0] || {};
   const title = items.length > 1 ? 'Big event tomorrow' : 'Event tomorrow';
@@ -3272,117 +3285,127 @@ function buildTomorrowEventSignal(rules = getEffectiveSignalRules()) {
   };
 }
 
-function activeDbSignals() {
-  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > getNowDate());
+function activeDbSignals(now = getNowDate()) {
+  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > now);
 }
 
-function didLogEventToday(eventType) {
-  const today = getNowDate();
+function didLogEventToday(eventType, now = getNowDate()) {
   return appState.logs.some((log) => {
     if (log.event_type !== eventType || !log.created_at) return false;
     const created = new Date(log.created_at);
-    return isSameDay(created, today);
+    return isSameDay(created, now);
   });
 }
 
-function buildSyntheticRuleSignals(rules = getEffectiveSignalRules()) {
-  const items = [];
-  const normalizedRules = normalizeSignalRules(rules);
-  const now = getNowDate();
-  const day = now.getDay();
-  const hour = now.getHours();
+function evaluateBinsSignal(rule, context) {
+  const binsReminderWindow = rule.enabled && context.day === rule.dayOfWeek && context.hour >= rule.startHour;
+  const binsDoneToday = didLogEventToday('bins_out', context.now);
+  if (!binsReminderWindow || binsDoneToday) return null;
+  const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === Number(rule.dayOfWeek))?.[1] || 'Reminder';
+  const warning = context.hour >= rule.escalateHour;
+  return {
+    id: `synthetic-bins-${rule.dayOfWeek}`,
+    signal_type: 'bins_weekly',
+    title: 'Put bins out tonight',
+    description: warning ? `${dayLabel} night reminder · bins still need to go to the street.` : `${dayLabel} reminder · bins need to go to the street tonight.`,
+    severity: warning ? 'warning' : 'notice',
+    location: rule.location || 'outside',
+    metadata: { synthetic: true, rule: 'weekly_bins', visible_in: ['tv', 'bedroom', 'kitchen'] },
+  };
+}
 
-  const bins = normalizedRules.bins;
-  const binsReminderWindow = bins.enabled && day === bins.dayOfWeek && hour >= bins.startHour;
-  const binsDoneToday = didLogEventToday('bins_out');
-
-  if (binsReminderWindow && !binsDoneToday) {
-    const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === bins.dayOfWeek)?.[1] || 'Reminder';
-    items.push({
-      id: `synthetic-bins-${bins.dayOfWeek}`,
-      signal_type: 'bins_weekly',
-      title: 'Put bins out tonight',
-      description: hour >= bins.escalateHour ? `${dayLabel} night reminder · bins still need to go to the street.` : `${dayLabel} reminder · bins need to go to the street tonight.`,
-      severity: hour >= bins.escalateHour ? 'warning' : 'notice',
-      location: bins.location || 'outside',
-      metadata: { synthetic: true, rule: 'weekly_bins', visible_in: ['tv', 'bedroom', 'kitchen'] },
-    });
+function evaluateCustomSignalRule(rule, context) {
+  if (!rule.enabled || !rule.name) return null;
+  const scheduleDayMatch = rule.scheduleType === 'daily' ? true : context.day === rule.dayOfWeek;
+  const afterStart = context.hour >= rule.startHour;
+  const beforeEnd = rule.endHour === null || context.hour <= rule.endHour;
+  if (!(scheduleDayMatch && afterStart && beforeEnd)) return null;
+  if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType, context.now)) return null;
+  const isWarning = rule.escalateToWarning && context.hour >= rule.escalateHour;
+  const descriptionParts = [];
+  const timeWindowLabel = rule.endHour === null ? `from ${formatHourLabel(rule.startHour)}` : `${formatHourLabel(rule.startHour)}–${formatHourLabel(rule.endHour)}`;
+  if (rule.scheduleType === 'weekly') {
+    descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === Number(rule.dayOfWeek))?.[1] || 'Weekly'} ${timeWindowLabel}`);
+  } else {
+    descriptionParts.push(`Daily ${timeWindowLabel}`);
   }
+  if (rule.clearMode === 'log_event_today' && rule.ackEventType) descriptionParts.push(`ack with ${rule.ackEventType}`);
+  return {
+    id: `synthetic-custom-${rule.id}`,
+    signal_type: 'custom_rule',
+    title: rule.name,
+    description: descriptionParts.join(' · '),
+    severity: isWarning ? 'warning' : 'notice',
+    location: rule.location || 'custom',
+    metadata: { synthetic: true, rule: 'custom_signal', customRuleId: rule.id },
+  };
+}
 
-  const tomorrowEventSignal = buildTomorrowEventSignal(normalizedRules);
+function evaluateLaundrySignals(rule) {
+  if (!rule.enabled) return [];
+  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
+  if (!activeLoads.length) return [];
+  const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
+  const dryingCount = activeLoads.filter((load) => load.status === 'drying').length;
+  const washingCount = activeLoads.filter((load) => load.status === 'washing').length;
+  const detailParts = [];
+  if (washingCount) detailParts.push(`${washingCount} washing`);
+  if (dryingCount) detailParts.push(`${dryingCount} drying`);
+  if (readyCount) detailParts.push(`${readyCount} ready`);
+  return [{
+    id: 'synthetic-laundry-active',
+    signal_type: 'laundry_active',
+    title: activeLoads.length === 1 ? 'Laundry load in progress' : 'Laundry in progress',
+    description: detailParts.join(' · ') || `${activeLoads.length} active load${activeLoads.length === 1 ? '' : 's'}`,
+    severity: readyCount ? 'warning' : 'notice',
+    location: 'laundry',
+    metadata: { synthetic: true, rule: 'laundry_active' },
+  }];
+}
+
+function buildSyntheticRuleSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  const normalizedRules = normalizeSignalRules(rules);
+  const items = [];
+  const binsSignal = evaluateBinsSignal(normalizedRules.bins, context);
+  if (binsSignal) items.push(binsSignal);
+  const tomorrowEventSignal = buildTomorrowEventSignal(normalizedRules, context);
   if (tomorrowEventSignal) items.push(tomorrowEventSignal);
-
   return items;
 }
 
-function buildSyntheticCustomSignals(rules = getEffectiveSignalRules()) {
+function buildSyntheticCustomSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const normalizedRules = normalizeSignalRules(rules);
-  const items = [];
-  const now = getNowDate();
-  const day = now.getDay();
-  const hour = now.getHours();
-
-  for (const rule of normalizedRules.custom) {
-    if (!rule.enabled || !rule.name) continue;
-    const scheduleDayMatch = rule.scheduleType === 'daily' ? true : day === rule.dayOfWeek;
-    const afterStart = hour >= rule.startHour;
-    const beforeEnd = rule.endHour === null || hour <= rule.endHour;
-    const inSchedule = scheduleDayMatch && afterStart && beforeEnd;
-    if (!inSchedule) continue;
-    if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType)) continue;
-    const isWarning = rule.escalateToWarning && hour >= rule.escalateHour;
-    const descriptionParts = [];
-    const timeWindowLabel = rule.endHour === null ? `from ${formatHourLabel(rule.startHour)}` : `${formatHourLabel(rule.startHour)}–${formatHourLabel(rule.endHour)}`;
-    if (rule.scheduleType === 'weekly') {
-      descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly'} ${timeWindowLabel}`);
-    } else {
-      descriptionParts.push(`Daily ${timeWindowLabel}`);
-    }
-    if (rule.clearMode === 'log_event_today' && rule.ackEventType) {
-      descriptionParts.push(`ack with ${rule.ackEventType}`);
-    }
-    items.push({
-      id: `synthetic-custom-${rule.id}`,
-      signal_type: 'custom_rule',
-      title: rule.name,
-      description: descriptionParts.join(' · '),
-      severity: isWarning ? 'warning' : 'notice',
-      location: rule.location || 'custom',
-      metadata: { synthetic: true, rule: 'custom_signal', customRuleId: rule.id },
-    });
-  }
-
-  return items;
+  return normalizedRules.custom.map((rule) => evaluateCustomSignalRule(rule, context)).filter(Boolean);
 }
 
 function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
-  const items = [];
   const normalizedRules = normalizeSignalRules(rules);
-  if (!normalizedRules.laundry.enabled) return items;
-  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
-  if (activeLoads.length) {
-    const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
-    const dryingCount = activeLoads.filter((load) => load.status === 'drying').length;
-    const washingCount = activeLoads.filter((load) => load.status === 'washing').length;
-    const detailParts = [];
-    if (washingCount) detailParts.push(`${washingCount} washing`);
-    if (dryingCount) detailParts.push(`${dryingCount} drying`);
-    if (readyCount) detailParts.push(`${readyCount} ready`);
-    items.push({
-      id: 'synthetic-laundry-active',
-      signal_type: 'laundry_active',
-      title: activeLoads.length === 1 ? 'Laundry load in progress' : 'Laundry in progress',
-      description: detailParts.join(' · ') || `${activeLoads.length} active load${activeLoads.length === 1 ? '' : 's'}`,
-      severity: readyCount ? 'warning' : 'notice',
-      location: 'laundry',
-      metadata: { synthetic: true },
-    });
-  }
-  return items;
+  return evaluateLaundrySignals(normalizedRules.laundry);
 }
 
-function activeSignals(rules = getEffectiveSignalRules()) {
-  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(rules), ...buildSyntheticRuleSignals(rules), ...buildSyntheticCustomSignals(rules)];
+function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  const normalizedRules = normalizeSignalRules(rules);
+  return [
+    ...evaluateLaundrySignals(normalizedRules.laundry),
+    ...buildSyntheticRuleSignals(normalizedRules, context),
+    ...buildSyntheticCustomSignals(normalizedRules, context),
+  ];
+}
+
+function sortSignalsForDisplay(signals = []) {
+  const severityRank = { warning: 0, notice: 1, info: 2 };
+  return [...signals].sort((a, b) => {
+    const severityDelta = (severityRank[a?.severity] ?? 3) - (severityRank[b?.severity] ?? 3);
+    if (severityDelta) return severityDelta;
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
+function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  return sortSignalsForDisplay([
+    ...activeDbSignals(context.now),
+    ...buildSyntheticSignals(rules, context),
+  ]);
 }
 
 function buildForgetItems() {
