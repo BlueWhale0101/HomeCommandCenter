@@ -765,20 +765,30 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.15rem;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 
 .widget-layout-kitchen .quick-button {
-  min-height: 58px;
-  border-radius: 16px;
+  flex: 0 0 auto;
+  min-height: 42px;
+  border-radius: 999px;
   text-align: center;
-  font-size: 0.94rem;
-  padding: 0.72rem 0.7rem;
+  font-size: 0.84rem;
+  line-height: 1.1;
+  padding: 0.52rem 0.78rem;
+  white-space: nowrap;
+  scroll-snap-align: start;
 }
 
 .kitchen-quick-actions-card .card-body {
-  overflow: visible;
+  overflow: hidden;
 }
 
 @media (max-width: 900px) {
@@ -1546,4 +1556,14 @@ body.mobile-mode .topbar {
 .danger-button {
   border-color: rgba(255, 135, 135, 0.35);
   color: #ffd0d0;
+}
+
+
+.widget-layout-kitchen .quick-grid::-webkit-scrollbar {
+  height: 6px;
+}
+
+.widget-layout-kitchen .quick-grid::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.16);
+  border-radius: 999px;
 }
