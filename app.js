@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.11';
+const APP_VERSION = 'v2.4.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -112,6 +112,7 @@ let autoRefreshTimer = null;
 let slowStateBackstopTimer = null;
 let calendarPublishTimer = null;
 let housekeepingTimer = null;
+let pendingTaskCompletions = new Set();
 
 const HEALTHY_AUTO_REFRESH_SECONDS = 600;
 const DEGRADED_AUTO_REFRESH_SECONDS = 90;
@@ -123,6 +124,7 @@ const LOG_RETENTION_DAYS = 30;
 const RESOLVED_SIGNAL_RETENTION_DAYS = 30;
 const LOAD_RETENTION_DAYS = 30;
 const HOUSEKEEPING_LAST_RUN_STORAGE = 'household-command-center-housekeeping-last-run';
+const HOUSEKEEPING_REPORT_STORAGE = 'household-command-center-housekeeping-report';
 
 const DEFAULT_CONNECTION_STATUS = {
   supabase: { level: 'unknown', text: 'Not tested' },
@@ -179,6 +181,7 @@ let appState = {
     lastItemsTomorrow: 0,
     lastSelectedSources: 0,
   },
+  housekeepingDiagnostics: loadHousekeepingDiagnostics(),
   refreshCoordinator: {
     inFlight: null,
     pendingReason: '',
@@ -1454,7 +1457,10 @@ function renderModeLayout(mode, context) {
   screenEl.className = layout.screenClass;
   screenEl.replaceChildren();
 
+  const ambientHealthBanner = mode !== 'mobile' ? buildAmbientHealthBanner() : null;
+
   if (mode === 'tv') {
+    if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
     const tvWrap = document.createElement('div');
     tvWrap.className = 'tv-layout';
     for (const widgetId of layout.widgets) {
@@ -1464,6 +1470,8 @@ function renderModeLayout(mode, context) {
     screenEl.append(tvWrap);
     return;
   }
+
+  if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
 
   for (const widgetId of layout.widgets) {
     const node = renderWidget(widgetId, context);
@@ -1565,6 +1573,25 @@ function buildListItem(item, options = {}) {
   if (options.showPills && item.pill) {
     row.append(buildPill(item.pill, item.pillClass || ''));
   }
+
+  if (typeof options.onActivate === 'function') {
+    row.classList.add('list-item-interactive');
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    row.style.cursor = 'pointer';
+    if (item.actionHint) row.title = item.actionHint;
+    row.addEventListener('click', (event) => {
+      event.preventDefault();
+      options.onActivate(event);
+    });
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        options.onActivate(event);
+      }
+    });
+  }
+
   return row;
 }
 
@@ -1677,6 +1704,24 @@ function renderMobileStatus(context) {
     buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Publisher Health', 'Snapshot publishing and housekeeping traces', renderTaskList(buildPublisherHealthItems(), 'Publisher diagnostics have not been recorded yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Housekeeping Results', 'Per-table prune outcomes and retention windows', renderTaskList(buildHousekeepingResultItems(), 'No housekeeping results recorded on this device yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Degraded State', 'What the ambient screens would tell you right now', renderTaskList((() => {
+      const health = getAmbientHealthState();
+      return [
+        {
+          title: health.title,
+          meta: health.message,
+          pill: health.level === 'degraded' ? 'Degraded' : (health.level === 'aging' ? 'Aging' : 'Healthy'),
+          pillClass: health.level === 'degraded' ? 'warning' : '',
+        },
+        ...health.issues.slice(0, 3).map((issue) => ({
+          title: issue.title,
+          meta: issue.meta || '',
+          pill: issue.level === 'degraded' ? 'Needs attention' : 'Watch',
+          pillClass: issue.level === 'degraded' ? 'warning' : '',
+        })),
+      ];
+    })(), 'Ambient degraded-state diagnostics are not available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Client Version', 'App and service worker alignment', renderTaskList(buildServiceWorkerStatusItems(), 'Service worker diagnostics are not available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'),
@@ -2371,9 +2416,11 @@ function buildTvHero() {
   freshnessEl.className = 'muted tv-freshness';
   const publisher = describeSnapshotPublisher(todayCal);
   const freshnessItems = getDataFreshnessItems();
+  const ambientHealth = getAmbientHealthState();
   const taskFreshness = freshnessItems.find((item) => item.title === 'Tasks');
   const configFreshness = freshnessItems.find((item) => item.title === 'Shared config');
   freshnessEl.textContent = [
+    ambientHealth && ambientHealth.level !== 'ok' ? `Health · ${ambientHealth.level === 'degraded' ? 'Degraded' : 'Aging'}` : null,
     weather ? snapshotMetaLabel('Weather', weather) : null,
     todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
     publisher ? `Publisher · ${publisher}` : null,
@@ -2634,7 +2681,8 @@ function renderTaskList(items, emptyText, options = {}) {
     return wrapper;
   }
   for (const item of items) {
-    wrapper.append(buildListItem(item, { showPills: options.showPills }));
+    const onActivate = typeof item.onActivate === 'function' ? item.onActivate : null;
+    wrapper.append(buildListItem(item, { showPills: options.showPills, onActivate }));
   }
   return wrapper;
 }
@@ -2727,6 +2775,51 @@ function renderTaskMappingSummary() {
 
 
 
+function loadHousekeepingDiagnostics() {
+  try {
+    const raw = localStorage.getItem(HOUSEKEEPING_REPORT_STORAGE);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== 'object') return { lastRunAt: '', results: [] };
+    return {
+      lastRunAt: typeof parsed.lastRunAt === 'string' ? parsed.lastRunAt : '',
+      results: Array.isArray(parsed.results) ? parsed.results.slice(0, 8) : [],
+    };
+  } catch {
+    return { lastRunAt: '', results: [] };
+  }
+}
+
+function persistHousekeepingDiagnostics() {
+  try {
+    const payload = appState.housekeepingDiagnostics || { lastRunAt: '', results: [] };
+    localStorage.setItem(HOUSEKEEPING_REPORT_STORAGE, JSON.stringify({
+      lastRunAt: payload.lastRunAt || '',
+      results: Array.isArray(payload.results) ? payload.results.slice(0, 8) : [],
+    }));
+  } catch {}
+}
+
+function updateHousekeepingResult(entry) {
+  const diagnostics = appState.housekeepingDiagnostics || (appState.housekeepingDiagnostics = { lastRunAt: '', results: [] });
+  const next = {
+    table: entry?.table || '',
+    label: entry?.label || entry?.table || 'Unknown table',
+    retentionDays: Number.isFinite(entry?.retentionDays) ? entry.retentionDays : null,
+    cutoffIso: entry?.cutoffIso || '',
+    ok: entry?.ok !== false,
+    prunedRows: Number.isFinite(entry?.prunedRows) ? entry.prunedRows : null,
+    updatedAt: new Date(getNowMs()).toISOString(),
+    error: entry?.error || '',
+  };
+  const results = Array.isArray(diagnostics.results) ? diagnostics.results.slice() : [];
+  const index = results.findIndex((item) => item && item.table === next.table);
+  if (index >= 0) results[index] = next;
+  else results.push(next);
+  diagnostics.results = results.slice(0, 8);
+  diagnostics.lastRunAt = next.updatedAt;
+  persistHousekeepingDiagnostics();
+}
+
 function loadCalendarAccounts() {
   try {
     const raw = localStorage.getItem(CALENDAR_ACCOUNTS_STORAGE);
@@ -2757,16 +2850,21 @@ async function fetchHouseholdConfig() {
 }
 
 
-async function pruneOldRows(table, builder, label) {
+async function pruneOldRows(table, builder, label, options = {}) {
   if (!appState.supabase) return;
   const ioStartedAt = startIoOperation('writes', 'housekeeping', `${label} prune`);
+  const retentionDays = Number.isFinite(options.retentionDays) ? options.retentionDays : null;
+  const cutoffIso = options.cutoffIso || '';
   try {
-    const { error } = await builder(appState.supabase.from(table).delete());
+    const { data, error } = await builder(appState.supabase.from(table).delete().select('id'));
     if (error) throw error;
-    finishIoOperation('writes', 'housekeeping', ioStartedAt, { ok: true, reason: `${label} prune` });
-    pushDevLog('info', `${label} pruned.`);
+    const prunedRows = Array.isArray(data) ? data.length : null;
+    finishIoOperation('writes', 'housekeeping', ioStartedAt, { ok: true, reason: `${label} prune`, rows: prunedRows });
+    updateHousekeepingResult({ table, label, retentionDays, cutoffIso, ok: true, prunedRows });
+    pushDevLog('info', `${label} pruned${Number.isFinite(prunedRows) ? ` (${prunedRows})` : ''}.`);
   } catch (error) {
     finishIoOperation('writes', 'housekeeping', ioStartedAt, { ok: false, reason: `${label} prune`, error: error?.message || String(error) });
+    updateHousekeepingResult({ table, label, retentionDays, cutoffIso, ok: false, error: error?.message || String(error) });
     pushDevLog('warn', `${label} prune skipped: ${error?.message || error}`);
   }
 }
@@ -2782,10 +2880,10 @@ async function runHousekeeping(force = false) {
   const signalCutoff = new Date(nowMs - RESOLVED_SIGNAL_RETENTION_DAYS * 86400000).toISOString();
   const loadCutoff = new Date(nowMs - LOAD_RETENTION_DAYS * 86400000).toISOString();
 
-  await pruneOldRows('context_snapshots', (q) => q.lt('created_at', snapshotCutoff), 'Old snapshots');
-  await pruneOldRows('household_logs', (q) => q.lt('created_at', logCutoff), 'Old logs');
-  await pruneOldRows('household_signals', (q) => q.in('status', ['dismissed', 'resolved']).lt('updated_at', signalCutoff), 'Resolved signals');
-  await pruneOldRows('laundry_loads', (q) => q.lt('updated_at', loadCutoff).or('status.eq.done,archived_at.not.is.null'), 'Completed laundry loads');
+  await pruneOldRows('context_snapshots', (q) => q.lt('created_at', snapshotCutoff), 'Old snapshots', { retentionDays: SNAPSHOT_RETENTION_DAYS, cutoffIso: snapshotCutoff });
+  await pruneOldRows('household_logs', (q) => q.lt('created_at', logCutoff), 'Old logs', { retentionDays: LOG_RETENTION_DAYS, cutoffIso: logCutoff });
+  await pruneOldRows('household_signals', (q) => q.in('status', ['dismissed', 'resolved']).lt('updated_at', signalCutoff), 'Resolved signals', { retentionDays: RESOLVED_SIGNAL_RETENTION_DAYS, cutoffIso: signalCutoff });
+  await pruneOldRows('laundry_loads', (q) => q.lt('updated_at', loadCutoff).or('status.eq.done,archived_at.not.is.null'), 'Completed laundry loads', { retentionDays: LOAD_RETENTION_DAYS, cutoffIso: loadCutoff });
 
   localStorage.setItem(HOUSEKEEPING_LAST_RUN_STORAGE, String(nowMs));
 }
@@ -3895,11 +3993,14 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
     if (task.signal_type || task.severity) return signalToItem(task);
     const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : 'No due date';
     const owner = task.owner || '';
+    const canComplete = !!task.id && !pendingTaskCompletions.has(task.id);
     return {
       title: task.title,
       meta: [owner, dueMeta].filter(Boolean).join(' · '),
       pill: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
       pillClass: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : '',
+      actionHint: canComplete ? 'Tap to mark complete' : '',
+      onActivate: canComplete ? () => completeTask(task.raw || task) : null,
     };
   });
 }
@@ -4185,6 +4286,67 @@ function removeLocalLoad(loadId) {
 
 function renderAfterLocalLoadChange() {
   renderRuntimeUi({ renderDevConsole: false });
+}
+
+function buildTaskCompletionPayload(task) {
+  const payload = {
+    panel: 'done',
+    completed_at: new Date().toISOString(),
+  };
+  const completedField = appState.config.taskCompletedField;
+  if (completedField) {
+    payload[completedField] = appState.config.useStringCompleted
+      ? appState.config.taskCompletedValue
+      : true;
+  }
+  return payload;
+}
+
+function removeLocalTask(taskId) {
+  if (!taskId) return null;
+  const previous = (appState.tasks || []).find((task) => task && task.id === taskId) || null;
+  appState.tasks = (appState.tasks || []).filter((task) => task && task.id !== taskId);
+  return previous;
+}
+
+function restoreLocalTask(task) {
+  if (!task || !task.id) return;
+  const existing = (appState.tasks || []).find((item) => item && item.id === task.id);
+  if (existing) return;
+  appState.tasks = [task, ...(appState.tasks || [])];
+}
+
+async function completeTask(task) {
+  const taskId = task?.id;
+  if (!taskId || pendingTaskCompletions.has(taskId)) return;
+  if (taskIsArchived(task) || taskIsCompleted(task)) return;
+
+  pendingTaskCompletions.add(taskId);
+  const previousTask = removeLocalTask(taskId) || task;
+  renderRuntimeUi({ renderDevConsole: false });
+
+  const payload = buildTaskCompletionPayload(previousTask);
+  const ioStartedAt = startIoOperation('writes', 'tasks', 'completeTask');
+
+  try {
+    const { error } = await appState.supabase
+      .from(appState.config.taskTable || 'tasks')
+      .update(payload)
+      .eq('id', taskId);
+    if (error) throw error;
+    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: true, reason: 'completeTask' });
+    showToast('Task completed', 'success');
+    setStatus(`Completed: ${previousTask?.title || 'Task'}`);
+  } catch (error) {
+    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: false, reason: 'completeTask', error: error?.message || String(error) });
+    restoreLocalTask(previousTask);
+    renderRuntimeUi({ renderDevConsole: false });
+    console.error(error);
+    showToast('Could not complete task', 'error');
+    setStatus(`Could not complete task: ${error.message}`);
+  } finally {
+    pendingTaskCompletions.delete(taskId);
+  }
 }
 
 async function createQuickLog(item, button) {
@@ -5271,6 +5433,138 @@ function getDataFreshnessItems() {
   ];
 }
 
+
+function getAmbientHealthState() {
+  const freshnessItems = getDataFreshnessItems();
+  const freshnessMap = new Map(freshnessItems.map((item) => [item.title, item]));
+  const snapshotItems = buildSnapshotStatusItems();
+  const sw = appState.serviceWorkerDiagnostics || {};
+  const connection = appState.connectionStatus || {};
+  const publisher = appState.calendarPublisherDiagnostics || {};
+  const issues = [];
+
+  function addIssue(level, title, meta = '') {
+    issues.push({ level, title, meta });
+  }
+
+  if (sw.mismatch) {
+    addIssue('degraded', 'Version mismatch', sw.mismatchReason || 'Refresh this display to load the current build.');
+  } else if (sw.updateReady) {
+    addIssue('aging', 'Update ready', 'Refresh this display to load the latest build.');
+  } else if (sw.registrationState === 'error') {
+    addIssue('degraded', 'Service worker error', sw.mismatchReason || 'This display may be running stale assets.');
+  }
+
+  const realtimeState = connection.realtime || {};
+  if (realtimeState.level === 'warn' || realtimeState.level === 'error') {
+    addIssue('degraded', 'Realtime degraded', `Fallback refresh every ${getAutoRefreshSeconds()}s is active.`);
+  } else if (realtimeState.level === 'unknown' && appState.supabase) {
+    addIssue('aging', 'Realtime connecting', 'Live updates are still coming online.');
+  }
+
+  const taskFreshness = freshnessMap.get('Tasks');
+  const snapshotFreshness = freshnessMap.get('Snapshots');
+  const configFreshness = freshnessMap.get('Shared config');
+
+  if (taskFreshness?.pill === 'Stale') {
+    addIssue('degraded', 'Tasks stale', taskFreshness.meta || 'Task data may be out of date.');
+  } else if (taskFreshness?.pill === 'Aging') {
+    addIssue('aging', 'Tasks aging', taskFreshness.meta || 'Task data is getting older.');
+  }
+
+  if (snapshotFreshness?.pill === 'Stale') {
+    addIssue('degraded', 'Snapshots stale', snapshotFreshness.meta || 'Weather/calendar snapshots are out of date.');
+  } else if (snapshotFreshness?.pill === 'Aging') {
+    addIssue('aging', 'Snapshots aging', snapshotFreshness.meta || 'Weather/calendar snapshots are getting older.');
+  }
+
+  const staleSnapshotDetails = snapshotItems.filter((item) => item.pill === 'Stale');
+  if (staleSnapshotDetails.length) {
+    addIssue('degraded', 'Snapshot source stale', staleSnapshotDetails.map((item) => item.title).slice(0, 2).join(' · '));
+  }
+
+  if (configFreshness?.pill === 'Stale') {
+    addIssue('degraded', 'Shared config stale', configFreshness.meta || 'Shared settings may be out of date.');
+  } else if (configFreshness?.pill === 'Aging') {
+    addIssue('aging', 'Shared config aging', configFreshness.meta || 'Shared settings are getting older.');
+  }
+
+  if (publisher.lastPublishError) {
+    addIssue('degraded', 'Publisher error', publisher.lastPublishError);
+  }
+
+  let level = 'ok';
+  if (issues.some((issue) => issue.level === 'degraded')) level = 'degraded';
+  else if (issues.some((issue) => issue.level === 'aging')) level = 'aging';
+
+  const primary = issues[0] || null;
+  const title = level === 'degraded'
+    ? 'Live view is degraded'
+    : level === 'aging'
+      ? 'Live view may be slightly behind'
+      : 'Live view is healthy';
+
+  let message = 'Realtime and shared data look healthy.';
+  if (primary) {
+    message = primary.meta || primary.title;
+  } else if (!isRealtimeHealthy()) {
+    message = `Realtime fallback refresh is active every ${getAutoRefreshSeconds()}s.`;
+  }
+
+  const pills = [];
+  if (level !== 'ok') pills.push(level === 'degraded' ? 'Degraded' : 'Aging');
+  if (!isRealtimeHealthy()) pills.push(`Refresh ${getAutoRefreshSeconds()}s`);
+  if (sw.updateReady) pills.push('Update ready');
+  if (sw.mismatch) pills.push('Version mismatch');
+
+  return {
+    level,
+    title,
+    message,
+    issues,
+    pills,
+  };
+}
+
+function buildAmbientHealthBanner() {
+  const health = getAmbientHealthState();
+  if (!health || health.level === 'ok') return null;
+
+  const banner = document.createElement('section');
+  banner.className = `ambient-health-banner ${health.level}`;
+
+  const left = document.createElement('div');
+  left.className = 'ambient-health-copy';
+
+  const title = document.createElement('div');
+  title.className = 'ambient-health-title';
+  title.textContent = health.title;
+
+  const detail = document.createElement('div');
+  detail.className = 'ambient-health-detail';
+  const issueBits = health.issues.slice(0, 3).map((issue) => issue.title);
+  detail.textContent = [health.message, issueBits.length > 1 ? issueBits.slice(1).join(' · ') : '']
+    .filter(Boolean)
+    .join(' · ');
+
+  left.append(title, detail);
+  banner.append(left);
+
+  if (health.pills.length) {
+    const pills = document.createElement('div');
+    pills.className = 'ambient-health-pills';
+    for (const label of health.pills.slice(0, 3)) {
+      const pill = document.createElement('span');
+      pill.className = `pill ${health.level === 'degraded' ? 'warning' : ''}`.trim();
+      pill.textContent = label;
+      pills.append(pill);
+    }
+    banner.append(pills);
+  }
+
+  return banner;
+}
+
 function buildSnapshotStatusItems() {
   const snapshotEntries = [
     ['Weather', getSnapshot(appState.config.weatherSnapshotType)],
@@ -5314,6 +5608,34 @@ function buildSharedSyncItems() {
 
 function formatPublisherHealthMeta(parts = []) {
   return parts.filter(Boolean).join(' · ') || 'No diagnostics yet';
+}
+
+function buildHousekeepingResultItems() {
+  const diagnostics = appState.housekeepingDiagnostics || {};
+  const results = Array.isArray(diagnostics.results) ? diagnostics.results : [];
+  const items = [];
+  if (diagnostics.lastRunAt) {
+    items.push({
+      title: 'Last housekeeping run',
+      meta: `Completed ${relativeTime(diagnostics.lastRunAt)}`,
+      pill: 'Recorded',
+    });
+  }
+  results.forEach((result) => {
+    items.push({
+      title: result.label || result.table || 'Housekeeping table',
+      meta: formatPublisherHealthMeta([
+        result.updatedAt ? `Updated ${relativeTime(result.updatedAt)}` : '',
+        Number.isFinite(result.retentionDays) ? `Keeps ${result.retentionDays} day${result.retentionDays === 1 ? '' : 's'}` : '',
+        result.cutoffIso ? `Cutoff ${new Date(result.cutoffIso).toLocaleDateString([], { month: 'short', day: 'numeric' })}` : '',
+        Number.isFinite(result.prunedRows) ? `${result.prunedRows} row${result.prunedRows === 1 ? '' : 's'} pruned` : '',
+        result.error ? result.error : '',
+      ]),
+      pill: result.ok ? (Number.isFinite(result.prunedRows) ? (result.prunedRows > 0 ? 'Pruned' : 'Checked') : 'Healthy') : 'Error',
+      pillClass: result.ok ? '' : 'warning',
+    });
+  });
+  return items;
 }
 
 function buildPublisherHealthItems() {
