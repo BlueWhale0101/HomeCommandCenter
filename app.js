@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.4';
+const APP_VERSION = 'v2.3.7';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -917,6 +917,35 @@ function isRealtimeHealthy() {
   return !!appState.supabase && Number(diag.activeChannels || 0) > 0 && diag.lastStatus === 'SUBSCRIBED';
 }
 
+function getRealtimeHealthDescriptor() {
+  const diag = appState.realtimeDiagnostics || {};
+  const channelStates = Object.values(diag.channelStates || {});
+  const expectedChannels = Number(diag.expectedChannels || 0);
+  const subscribedChannels = channelStates.filter((status) => status === 'SUBSCRIBED').length;
+  const activeChannels = Number(diag.activeChannels || 0);
+  const lastStatus = String(diag.lastStatus || '').toUpperCase();
+  const lastTasks = appState.ioDiagnostics?.reads?.tasks || {};
+  const lastTaskDuration = Number(lastTasks.lastDurationMs || 0);
+  const hadRecentTaskFailure = !!(lastTasks.lastError && lastTasks.lastFinishedAt && (Date.now() - new Date(lastTasks.lastFinishedAt).getTime()) < 10 * 60 * 1000);
+
+  if (!appState.supabase) return { state: 'degraded', level: 'error', text: 'Degraded · not configured' };
+  if (!expectedChannels && !activeChannels && !channelStates.length) return { state: 'connecting', level: 'unknown', text: 'Connecting · preparing channels' };
+  if ([ 'CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED' ].includes(lastStatus)) return { state: 'degraded', level: 'error', text: `Degraded · ${lastStatus.toLowerCase().replace('_', ' ')}` };
+  if ([ 'SUBSCRIBING', 'CHANNEL_OPENING', 'JOINING' ].includes(lastStatus) || subscribedChannels < Math.max(expectedChannels, activeChannels || 0)) {
+    const target = Math.max(expectedChannels, activeChannels || 0);
+    return { state: 'connecting', level: 'unknown', text: `Connecting · ${subscribedChannels}/${target || 0} channels` };
+  }
+  if (lastStatus === 'SUBSCRIBED' && (lastTaskDuration >= 4000 || hadRecentTaskFailure)) {
+    const suffix = hadRecentTaskFailure ? 'recent task retry' : `${lastTaskDuration}ms task read`;
+    return { state: 'slow', level: 'warn', text: `Slow · ${suffix}` };
+  }
+  if (lastStatus === 'SUBSCRIBED') {
+    const lastEvent = diag.lastEventTable ? ` · last ${diag.lastEventTable}` : '';
+    return { state: 'connected', level: 'ok', text: `Connected · ${subscribedChannels || activeChannels} channels${lastEvent}` };
+  }
+  return { state: 'degraded', level: 'warn', text: 'Degraded · waiting for subscription health' };
+}
+
 function getAutoRefreshSeconds() {
   const configured = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
   if (isRealtimeHealthy()) return Math.max(HEALTHY_AUTO_REFRESH_SECONDS, configured);
@@ -1111,18 +1140,12 @@ function updateRealtimeDiagnostics(patch = {}) {
 }
 
 function getRealtimeStatusText() {
-  const diag = appState.realtimeDiagnostics || {};
-  const activeChannels = Number(diag.activeChannels || 0);
-  const lastEventTable = diag.lastEventTable ? ` · last ${diag.lastEventTable}` : '';
-  if (!appState.supabase) return 'Not configured';
-  if (!activeChannels) return 'No active channels';
-  if (diag.lastStatus === 'SUBSCRIBED') return `${activeChannels} channels active${lastEventTable}`;
-  if (diag.lastStatus) return `${diag.lastStatus}${lastEventTable}`;
-  return `${activeChannels} channels configured${lastEventTable}`;
+  return getRealtimeHealthDescriptor().text;
 }
 
-function setRealtimeConnectionStatus(level = 'unknown', fallbackText = '') {
-  setConnectionStatus('realtime', level, fallbackText || getRealtimeStatusText());
+function setRealtimeConnectionStatus(level = '', fallbackText = '') {
+  const descriptor = getRealtimeHealthDescriptor();
+  setConnectionStatus('realtime', level || descriptor.level, fallbackText || descriptor.text);
 }
 
 function buildRealtimeChannelSpecs() {
@@ -1163,17 +1186,18 @@ function noteRealtimeSubscriptionStatus(table, status) {
   };
   updateRealtimeDiagnostics({
     subscribedAt: appState.realtimeDiagnostics?.subscribedAt || new Date().toISOString(),
+    expectedChannels: appState.realtimeDiagnostics?.expectedChannels || appState.subscriptions?.length || 0,
     activeChannels: Object.keys(channelStates).length,
     channelStates,
     lastStatus: status || '',
   });
-  const level = status === 'SUBSCRIBED' ? 'ok' : (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' ? 'warn' : 'unknown');
-  setRealtimeConnectionStatus(level);
+  const descriptor = getRealtimeHealthDescriptor();
+  setRealtimeConnectionStatus();
   resetAutoRefreshTimer();
-resetSlowStateBackstopTimer();
-resetCalendarPublishTimer();
-resetHousekeepingTimer();
-  pushDevLog(level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${status}`);
+  resetSlowStateBackstopTimer();
+  resetCalendarPublishTimer();
+  resetHousekeepingTimer();
+  pushDevLog(descriptor.level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${descriptor.text}`);
 }
 
 function bindRealtime() {
@@ -1185,11 +1209,12 @@ function bindRealtime() {
   const channels = buildRealtimeChannelSpecs();
   updateRealtimeDiagnostics({
     subscribedAt: new Date().toISOString(),
-    activeChannels: channels.length,
+    expectedChannels: channels.length,
+    activeChannels: 0,
     channelStates: {},
     lastStatus: 'SUBSCRIBING',
   });
-  setRealtimeConnectionStatus('unknown', 'Subscribing…');
+  setRealtimeConnectionStatus('unknown', 'Connecting · preparing channels');
 
   appState.subscriptions = channels.map((spec) => {
     const channel = appState.supabase
@@ -1202,12 +1227,12 @@ function bindRealtime() {
 
 function clearSubscriptions() {
   if (!appState.subscriptions?.length || !appState.supabase) {
-    updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: '' });
+    updateRealtimeDiagnostics({ activeChannels: 0, expectedChannels: 0, channelStates: {}, lastStatus: '' });
     return;
   }
   for (const entry of appState.subscriptions) appState.supabase.removeChannel(entry.channel || entry);
   appState.subscriptions = [];
-  updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
+  updateRealtimeDiagnostics({ activeChannels: 0, expectedChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
   setRealtimeConnectionStatus('unknown', 'Channels cleared');
 }
 
@@ -4386,7 +4411,7 @@ async function runConnectionTest() {
     }
 
     if (tasksOk) {
-      setConnectionStatus('realtime', 'ok', appState.subscriptions?.length ? getRealtimeStatusText() : 'Configured in app');
+      setConnectionStatus('realtime', appState.subscriptions?.length ? getRealtimeHealthDescriptor().level : 'ok', appState.subscriptions?.length ? getRealtimeStatusText() : 'Connected · configured in app');
     } else {
       setConnectionStatus('realtime', 'warn', 'Check task access first');
     }
@@ -5283,8 +5308,12 @@ function resetHousekeepingTimer() {
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js');
+      const registration = await navigator.serviceWorker.register(`./sw.js?v=${encodeURIComponent(APP_VERSION)}`);
       if (registration && registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      if (registration && typeof registration.update === 'function') registration.update().catch(() => {});
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        pushDevLog('info', `Service worker controller changed to ${APP_VERSION}.`);
+      }, { once: true });
     } catch (error) {
       console.warn('Service worker registration failed', error);
     }
