@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.20';
+const APP_VERSION = 'v2.2.21';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1931,7 +1931,16 @@ function renderMobileDebug() {
     buildSecondaryButton('Open dev console', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); }),
     buildSecondaryButton('Force refresh', () => refreshAll('debug force refresh')),
   ]));
-  wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList(buildRuntimeDebugItems(), 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
+  const realtimeDiag = appState.realtimeDiagnostics || {};
+  wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
+    { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
+    { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
+    { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
+    { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
+    { title: `Calendar publisher: ${(appState.calendarPublisherDiagnostics || {}).lastPublishStatus || 'idle'}`, meta: `${(appState.calendarPublisherDiagnostics || {}).lastAttemptReason || 'No recent attempt'}${(appState.calendarPublisherDiagnostics || {}).lastSkipReason ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastSkipReason}` : ''}${(appState.calendarPublisherDiagnostics || {}).lastPublishError ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastPublishError}` : ''}`, pill: 'Publisher' },
+    { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
+    buildWakeLockDebugSummary(),
+  ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
 
@@ -2921,69 +2930,6 @@ function buildCalendarPublisherDebugItems() {
       pill: 'Trace',
     },
   ];
-}
-
-function buildRuntimeDebugItems() {
-  return [
-    buildConfigDebugSummary(),
-    buildTimeDebugSummary(),
-    buildStateDebugSummary(),
-    buildCalendarDebugSummary(),
-    buildCalendarPublisherDebugSummaryLine(),
-    buildRealtimeDebugSummary(),
-    buildWakeLockDebugSummary(),
-  ];
-}
-
-function buildConfigDebugSummary() {
-  return {
-    title: `Mode: ${appState.config.mode}`,
-    meta: `Device ${appState.config.deviceName || 'Unnamed'}`,
-    pill: 'Config',
-  };
-}
-
-function buildTimeDebugSummary() {
-  return {
-    title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`,
-    meta: `Status ${statusLine.textContent || ''}`,
-    pill: 'Time',
-  };
-}
-
-function buildStateDebugSummary() {
-  return {
-    title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`,
-    meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`,
-    pill: 'State',
-  };
-}
-
-function buildCalendarDebugSummary() {
-  const diag = appState.calendarDiagnostics || {};
-  return {
-    title: `Calendar fetch: ${diag.fetchedEvents || 0} fetched · ${(diag.mergedToday || 0) + (diag.mergedTomorrow || 0)} merged`,
-    meta: `Selected ${diag.selectedSources || 0} · Expired ${diag.expiredAccounts || 0}${diag.lastError ? ` · ${diag.lastError}` : ''}`,
-    pill: 'Calendar',
-  };
-}
-
-function buildCalendarPublisherDebugSummaryLine() {
-  const diag = appState.calendarPublisherDiagnostics || {};
-  return {
-    title: `Calendar publisher: ${diag.lastPublishStatus || 'idle'}`,
-    meta: `${diag.lastAttemptReason || 'No recent attempt'}${diag.lastSkipReason ? ` · ${diag.lastSkipReason}` : ''}${diag.lastPublishError ? ` · ${diag.lastPublishError}` : ''}`,
-    pill: 'Publisher',
-  };
-}
-
-function buildRealtimeDebugSummary() {
-  const realtimeDiag = appState.realtimeDiagnostics || {};
-  return {
-    title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`,
-    meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`,
-    pill: 'Realtime',
-  };
 }
 
 async function fetchGoogleCalendarSnapshots() {
