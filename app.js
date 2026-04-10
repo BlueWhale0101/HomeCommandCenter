@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.9';
+const APP_VERSION = 'v2.3.10';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1675,6 +1675,7 @@ function renderMobileStatus(context) {
     buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Publisher Health', 'Snapshot publishing and housekeeping traces', renderTaskList(buildPublisherHealthItems(), 'Publisher diagnostics have not been recorded yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Client Version', 'App and service worker alignment', renderTaskList(buildServiceWorkerStatusItems(), 'Service worker diagnostics are not available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'),
@@ -5219,6 +5220,82 @@ function buildSharedSyncItems() {
   });
 }
 
+function formatPublisherHealthMeta(parts = []) {
+  return parts.filter(Boolean).join(' · ') || 'No diagnostics yet';
+}
+
+function buildPublisherHealthItems() {
+  const items = [];
+  const publisher = appState.calendarPublisherDiagnostics || {};
+  const snapshotWrite = ((appState.ioDiagnostics || {}).writes || {}).snapshotPublish || {};
+  const housekeeping = ((appState.ioDiagnostics || {}).writes || {}).housekeeping || {};
+
+  items.push({
+    title: `Calendar publisher: ${publisher.lastPublishStatus || 'idle'}`,
+    meta: formatPublisherHealthMeta([
+      publisher.lastAttemptAt ? `Attempt ${relativeTime(publisher.lastAttemptAt)}` : 'No attempt yet',
+      publisher.lastPublishAt ? `Success ${relativeTime(publisher.lastPublishAt)}` : '',
+      publisher.lastAttemptReason || '',
+      Number.isFinite(publisher.lastSelectedSources) ? `${publisher.lastSelectedSources} source${publisher.lastSelectedSources === 1 ? '' : 's'}` : '',
+    ]),
+    pill: publisher.lastPublishStatus === 'published' ? 'Healthy' : (publisher.lastPublishStatus === 'error' ? 'Error' : (publisher.lastPublishStatus === 'skipped' ? 'Idle' : 'Trace')),
+    pillClass: publisher.lastPublishStatus === 'error' ? 'warning' : '',
+  });
+
+  if (publisher.lastPublishError || publisher.lastSkipReason) {
+    items.push({
+      title: publisher.lastPublishError ? 'Last publisher error' : 'Last publisher skip',
+      meta: publisher.lastPublishError || publisher.lastSkipReason || 'No details',
+      pill: publisher.lastPublishError ? 'Error' : 'Skip',
+      pillClass: 'warning',
+    });
+  }
+
+  items.push({
+    title: 'Snapshot writer',
+    meta: formatPublisherHealthMeta([
+      snapshotWrite.lastStartedAt ? `Attempt ${relativeTime(snapshotWrite.lastStartedAt)}` : 'No attempt yet',
+      snapshotWrite.lastFinishedAt && snapshotWrite.successes ? `Success ${relativeTime(snapshotWrite.lastFinishedAt)}` : '',
+      snapshotWrite.lastReason || '',
+      Number.isFinite(snapshotWrite.lastRows) ? `${snapshotWrite.lastRows} row${snapshotWrite.lastRows === 1 ? '' : 's'}` : '',
+      Number.isFinite(snapshotWrite.lastDurationMs) && snapshotWrite.lastFinishedAt ? `${snapshotWrite.lastDurationMs} ms` : '',
+    ]),
+    pill: snapshotWrite.lastError ? 'Error' : ((snapshotWrite.successes || 0) > 0 ? 'Healthy' : ((snapshotWrite.attempts || 0) > 0 ? 'Trace' : 'Idle')),
+    pillClass: snapshotWrite.lastError ? 'warning' : '',
+  });
+
+  if (snapshotWrite.lastError) {
+    items.push({
+      title: 'Last snapshot write error',
+      meta: snapshotWrite.lastError,
+      pill: 'Error',
+      pillClass: 'warning',
+    });
+  }
+
+  items.push({
+    title: 'Housekeeping job',
+    meta: formatPublisherHealthMeta([
+      housekeeping.lastStartedAt ? `Attempt ${relativeTime(housekeeping.lastStartedAt)}` : 'No run yet',
+      housekeeping.lastFinishedAt && housekeeping.successes ? `Success ${relativeTime(housekeeping.lastFinishedAt)}` : '',
+      housekeeping.lastReason || '',
+      Number.isFinite(housekeeping.lastDurationMs) && housekeeping.lastFinishedAt ? `${housekeeping.lastDurationMs} ms` : '',
+    ]),
+    pill: housekeeping.lastError ? 'Error' : ((housekeeping.successes || 0) > 0 ? 'Healthy' : ((housekeeping.attempts || 0) > 0 ? 'Trace' : 'Idle')),
+    pillClass: housekeeping.lastError ? 'warning' : '',
+  });
+
+  if (housekeeping.lastError) {
+    items.push({
+      title: 'Last housekeeping error',
+      meta: housekeeping.lastError,
+      pill: 'Error',
+      pillClass: 'warning',
+    });
+  }
+
+  return items;
+}
 
 function buildServiceWorkerDebugSummary() {
   const diag = appState.serviceWorkerDiagnostics || {};
