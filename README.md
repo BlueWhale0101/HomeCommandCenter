@@ -1,6 +1,19 @@
 
 # Household Command Center
 
+## v2.2.11
+- Calendar and weather service cleanup pass.
+- Centralized calendar connection and publisher-status state behind shared helpers.
+- Centralized weather snapshot/freshness state behind a shared service helper for mobile/admin surfaces.
+- Reused one snapshot freshness interpreter across calendar/weather status views.
+
+## v2.2.2
+- Stabilization baseline pass.
+- Unified shipped version markers across `app.js`, `index.html`, and `sw.js`.
+- Removed legacy calendar-auth wrapper patch and folded calendar connection status into the main mobile render path.
+- Preserved mobile calendar/status visibility with a native connection summary card and banner refresh.
+
+
 A separate PWA for ambient household awareness and low-friction room-based interaction, built against the same Supabase project as the existing task board while preserving backward compatibility.
 
 ## Project status
@@ -252,3 +265,98 @@ Run the SQL in `household_config_setup.sql` to create the table and permissive a
 - Headless calendar mode: connected devices publish merged calendar snapshots to `context_snapshots`.
 - Unconnected TVs now consume shared snapshots instead of blanking or overwriting them.
 - Added `context_snapshots_headless_setup.sql` for anon insert/select policies and realtime.
+
+
+## Stabilization notes
+
+### v2.2.3 cleanup pass
+- normalized repeated mobile action-row/button construction behind shared helpers
+- removed a few clearly unused helper paths left from earlier patch stacking
+- preserved behavior while reducing duplicated UI wiring in Mobile tabs
+
+
+### v2.2.5 cleanup pass
+- unified Google Calendar account rendering behind a shared internal renderer for editable and read-only mobile views
+- tightened task digest internals to reuse computed evening state and due-bucket results
+- roadmap note added: easy reconnect flow for expired Google Calendar publisher sessions
+
+
+### v2.2.7 cleanup pass
+- normalized mobile tab wiring behind a shared tab registry with label, subtitle, and render definitions
+- reduced repeated mobile stack/card assembly with small internal helpers for shared mobile composition
+- reused the same inline action builders across weather, signals, debug, and log panels to keep mobile admin UI behavior aligned
+
+
+## v2.2.7 cleanup pass
+- normalized shared card/list composition helpers
+- reused shared empty-state and pill builders across task, signal, and calendar admin UI
+- kept behavior stable while reducing render duplication
+
+## v2.2.8 cleanup pass
+
+- normalized refresh paths around shared helpers for full refresh, targeted refresh, and shared UI rerendering
+- added refresh deduping/queueing so overlapping realtime or manual refresh requests reuse a single in-flight cycle
+- unified snapshot/shared-config targeted updates behind one path instead of ad hoc rerender calls
+- added lightweight refresh-state visibility to Mobile → Debug
+
+## v2.2.9 cleanup pass
+- normalized signal assembly into a shared evaluation pipeline
+- centralized bins/custom-rule/laundry signal evaluation helpers
+- shared one signal sort path for stored + synthetic signals
+- preserved signal behavior while reducing branching in render-time paths
+
+
+## v2.2.10 cleanup pass
+- normalized task intelligence internals around a shared `buildTaskIntelligenceContext(...)` path
+- reused cached due-bucket state and shared selectors for task digest assembly
+- consolidated snapshot-to-display mapping and tomorrow-window task selection helpers
+
+
+## v2.2.11 cleanup pass
+- centralized calendar publisher/connection status into shared service helpers
+- normalized weather service state/freshness interpretation behind one shared path
+- reduced drift between mobile status, calendar, and weather trust UI
+
+## v2.2.13 cleanup pass
+- clarified local-vs-shared config ownership behind shared helper paths
+- centralized device profile apply/build logic for load and save flows
+- normalized shared calendar/weather/signal config application into one local-state sync path
+- preserved behavior while reducing config write/read drift
+
+- v2.2.13: Hardened Realtime setup with shared channel specs, subscription diagnostics, scoped event handling, and clearer Mobile debug visibility.
+
+
+## v2.2.14 cleanup pass
+
+Wake lock/runtime hardening:
+- v2.2.14: Centralized wake-lock lifecycle notes, retry/release diagnostics, startup sync, and added Mobile Debug visibility for wake-lock runtime state.
+
+## v2.2.16 cleanup pass
+
+Surface/runtime normalization:
+- v2.2.16: Centralized per-surface definitions, body-class application, and screen layout lookup behind a shared surface registry so mode-specific runtime/layout behavior is less hand-wired.
+
+Roadmap notes:
+- Add per-device pixel-shift protection for always-on displays as a dedicated-display runtime feature near wake-lock/device-runtime hardening.
+- Investigate headless calendar publisher push behavior during Phase 6 reliability work before implementing reconnect or publisher-flow fixes.
+
+
+## v2.2.17 cleanup14
+- Added headless calendar publisher observability to Mobile → Calendar and Mobile → Debug without changing publisher behavior.
+- Tracks last publish attempt, publish status, skip reason, and publisher source for later reliability work.
+
+
+## v2.2.18
+- Fixes laundry local-update ReferenceError by adding the shared `sortLoads(...)` helper used by optimistic laundry state updates.
+- Routes fetched loads through the same sort helper so local and server-refreshed laundry ordering stay aligned.
+
+
+## v2.2.19
+- Fixed the settings modal save flow so the dialog closes immediately after a successful local save.
+- Made the Save settings button an explicit non-submit button to avoid dialog form behavior conflicts.
+- Wrapped the post-save refresh/rebind work in error handling so follow-up refresh issues do not keep the dialog open.
+
+
+## v2.2.22
+- softened bootstrap so a timed-out device profile load is treated as a warning instead of a fatal startup error
+- app now continues booting with local config and retries device profile load in the background
