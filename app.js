@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.10';
+const APP_VERSION = 'v2.3.11';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1673,6 +1673,7 @@ function renderMobileStatus(context) {
   return appendCards(buildMobileStack(), [
     buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
     buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Data Freshness', 'At-a-glance trust for live data', renderTaskList(getDataFreshnessItems(), 'Freshness diagnostics are not available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Publisher Health', 'Snapshot publishing and housekeeping traces', renderTaskList(buildPublisherHealthItems(), 'Publisher diagnostics have not been recorded yet.', { showPills: true }), 'mobile-compact-card'),
@@ -2369,10 +2370,15 @@ function buildTvHero() {
   const freshnessEl = document.createElement('div');
   freshnessEl.className = 'muted tv-freshness';
   const publisher = describeSnapshotPublisher(todayCal);
+  const freshnessItems = getDataFreshnessItems();
+  const taskFreshness = freshnessItems.find((item) => item.title === 'Tasks');
+  const configFreshness = freshnessItems.find((item) => item.title === 'Shared config');
   freshnessEl.textContent = [
     weather ? snapshotMetaLabel('Weather', weather) : null,
     todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
     publisher ? `Publisher · ${publisher}` : null,
+    taskFreshness ? `Tasks · ${taskFreshness.pill}` : null,
+    configFreshness ? `Config · ${configFreshness.pill}` : null,
   ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
 
   section.append(topRow, contextRow, freshnessEl);
@@ -5177,6 +5183,92 @@ function snapshotFreshnessPill(snapshot, fallback = 'Live') {
 
 function snapshotFreshnessClass(snapshot) {
   return getSnapshotFreshnessState(snapshot).pillClass;
+}
+
+function getFreshnessDescriptorFromAgeMs(ageMs, thresholds = {}) {
+  const freshMs = Number(thresholds.freshMs || 0);
+  const agingMs = Number(thresholds.agingMs || freshMs || 0);
+  if (!Number.isFinite(ageMs) || ageMs < 0) return { pill: 'Unknown', pillClass: 'warning', level: 'warning' };
+  if (ageMs <= freshMs) return { pill: 'Fresh', pillClass: '', level: 'info' };
+  if (ageMs <= agingMs) return { pill: 'Aging', pillClass: 'notice', level: 'notice' };
+  return { pill: 'Stale', pillClass: 'warning', level: 'warning' };
+}
+
+function getDataFreshnessItems() {
+  const reads = (appState.ioDiagnostics || {}).reads || {};
+  const nowMs = getNowMs();
+
+  const taskRead = reads.tasks || {};
+  const realtime = appState.realtimeDiagnostics || {};
+  const taskReferenceAt = realtime.lastEventAt || taskRead.lastFinishedAt || taskRead.lastStartedAt || '';
+  const taskAgeMs = taskReferenceAt ? Math.max(0, nowMs - new Date(taskReferenceAt).getTime()) : Number.POSITIVE_INFINITY;
+  const taskDesc = getFreshnessDescriptorFromAgeMs(taskAgeMs, { freshMs: 5 * 60 * 1000, agingMs: 20 * 60 * 1000 });
+  if (taskRead.lastError || ['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(String(realtime.lastStatus || '').toUpperCase())) {
+    taskDesc.pill = 'Stale';
+    taskDesc.pillClass = 'warning';
+    taskDesc.level = 'warning';
+  }
+
+  const snapshots = [
+    getSnapshot(appState.config.weatherSnapshotType),
+    getSnapshot(appState.config.calendarTodaySnapshotType),
+    getSnapshot(appState.config.calendarTomorrowSnapshotType),
+  ].filter(Boolean);
+  const snapshotStates = snapshots.map((snapshot) => getSnapshotFreshnessState(snapshot));
+  let snapshotPill = 'Missing';
+  let snapshotPillClass = 'warning';
+  if (snapshotStates.length) {
+    if (snapshotStates.some((state) => state.pill === 'Stale' || state.isMissing || state.level === 'warning')) {
+      snapshotPill = 'Stale';
+      snapshotPillClass = 'warning';
+    } else if (snapshotStates.some((state) => state.pill === 'Aging' || state.level === 'notice')) {
+      snapshotPill = 'Aging';
+      snapshotPillClass = 'notice';
+    } else {
+      snapshotPill = 'Fresh';
+      snapshotPillClass = '';
+    }
+  }
+
+  const configRead = reads.householdConfig || {};
+  const sharedUpdatedAts = Object.values(appState.sharedConfigMeta || {}).map((entry) => entry?.updated_at).filter(Boolean);
+  const configReferenceAt = configRead.lastFinishedAt || sharedUpdatedAts.sort().slice(-1)[0] || '';
+  const configAgeMs = configReferenceAt ? Math.max(0, nowMs - new Date(configReferenceAt).getTime()) : Number.POSITIVE_INFINITY;
+  const configDesc = getFreshnessDescriptorFromAgeMs(configAgeMs, { freshMs: 15 * 60 * 1000, agingMs: 60 * 60 * 1000 });
+  if (configRead.lastError) {
+    configDesc.pill = 'Stale';
+    configDesc.pillClass = 'warning';
+    configDesc.level = 'warning';
+  }
+
+  return [
+    {
+      title: 'Tasks',
+      meta: [
+        taskReferenceAt ? `Checked ${relativeTime(taskReferenceAt)}` : 'No successful task read yet',
+        taskRead.lastDurationMs ? `${taskRead.lastDurationMs} ms` : '',
+        taskRead.lastError ? `Last error ${taskRead.lastError}` : '',
+      ].filter(Boolean).join(' · '),
+      pill: taskDesc.pill,
+      pillClass: taskDesc.pillClass,
+    },
+    {
+      title: 'Snapshots',
+      meta: snapshots.length ? `Weather/calendar snapshots ${snapshotPill.toLowerCase()}` : 'No shared snapshots published yet',
+      pill: snapshotPill,
+      pillClass: snapshotPillClass,
+    },
+    {
+      title: 'Shared config',
+      meta: [
+        configReferenceAt ? `Checked ${relativeTime(configReferenceAt)}` : 'No shared config read yet',
+        configRead.lastDurationMs ? `${configRead.lastDurationMs} ms` : '',
+        configRead.lastError ? `Last error ${configRead.lastError}` : '',
+      ].filter(Boolean).join(' · '),
+      pill: configDesc.pill,
+      pillClass: configDesc.pillClass,
+    },
+  ];
 }
 
 function buildSnapshotStatusItems() {
