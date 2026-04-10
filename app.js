@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.2';
+const APP_VERSION = 'v2.4.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -34,6 +34,7 @@ const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
 const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
+const SIGNAL_SNOOZE_STORAGE = 'household-command-center-signal-snoozes';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
 const SHARED_CONFIG_TABLE = 'household_config';
 const SHARED_CONFIG_KEYS = {
@@ -1129,6 +1130,101 @@ async function fetchTasks(options = {}) {
   pushDevLog('info', `Fetched ${appState.tasks.length} visible tasks from ${taskTable} (${RECENT_DONE_WINDOW_DAYS}d recent-done query window)`);
 }
 
+
+function loadSignalSnoozes() {
+  try {
+    const raw = localStorage.getItem(SIGNAL_SNOOZE_STORAGE);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function persistSignalSnoozes(map) {
+  try {
+    localStorage.setItem(SIGNAL_SNOOZE_STORAGE, JSON.stringify(map || {}));
+  } catch (_) {}
+}
+
+function isSignalLocallySnoozed(signal, now = getNowDate()) {
+  const id = signal?.id;
+  if (!id) return false;
+  const snoozes = loadSignalSnoozes();
+  const until = snoozes[id];
+  if (!until) return false;
+  const untilMs = new Date(until).getTime();
+  if (!Number.isFinite(untilMs)) {
+    delete snoozes[id];
+    persistSignalSnoozes(snoozes);
+    return false;
+  }
+  if (untilMs <= now.getTime()) {
+    delete snoozes[id];
+    persistSignalSnoozes(snoozes);
+    return false;
+  }
+  return true;
+}
+
+function locallySnoozeSignal(signal, minutes = 120) {
+  const id = signal?.id;
+  if (!id) return;
+  const snoozes = loadSignalSnoozes();
+  const until = new Date(getNowDate().getTime() + minutes * 60000).toISOString();
+  snoozes[id] = until;
+  persistSignalSnoozes(snoozes);
+}
+
+async function dismissSignal(signal) {
+  const signalId = signal?.id;
+  if (!signalId || pendingSignalActions.has(`dismiss:${signalId}`)) return;
+  if (signal?.metadata?.synthetic) {
+    showToast('Synthetic signals can be snoozed, not dismissed', 'info');
+    return;
+  }
+
+  pendingSignalActions.add(`dismiss:${signalId}`);
+  const previousSignals = [...(appState.signals || [])];
+  appState.signals = (appState.signals || []).filter((item) => item && item.id !== signalId);
+  renderRuntimeUi({ renderDevConsole: false });
+  const ioStartedAt = startIoOperation('writes', 'signals', 'dismissSignal');
+
+  try {
+    const { error } = await appState.supabase
+      .from('household_signals')
+      .update({ status: 'dismissed', updated_at: new Date().toISOString() })
+      .eq('id', signalId);
+    if (error) throw error;
+    finishIoOperation('writes', 'signals', ioStartedAt, { ok: true, reason: 'dismissSignal' });
+    showToast('Signal dismissed', 'success');
+    setStatus(`Dismissed signal: ${signal?.title || 'Signal'}`);
+  } catch (error) {
+    finishIoOperation('writes', 'signals', ioStartedAt, { ok: false, reason: 'dismissSignal', error: error?.message || String(error) });
+    appState.signals = previousSignals;
+    renderRuntimeUi({ renderDevConsole: false });
+    console.error(error);
+    showToast('Could not dismiss signal', 'error');
+    setStatus(`Could not dismiss signal: ${error.message}`);
+  } finally {
+    pendingSignalActions.delete(`dismiss:${signalId}`);
+  }
+}
+
+function snoozeSignal(signal, minutes = 120) {
+  const signalId = signal?.id;
+  if (!signalId || pendingSignalActions.has(`snooze:${signalId}`)) return;
+  pendingSignalActions.add(`snooze:${signalId}`);
+  try {
+    locallySnoozeSignal(signal, minutes);
+    renderRuntimeUi({ renderDevConsole: false });
+    showToast(`Signal snoozed for ${minutes}m`, 'success');
+    setStatus(`Snoozed signal: ${signal?.title || 'Signal'}`);
+  } finally {
+    window.setTimeout(() => pendingSignalActions.delete(`snooze:${signalId}`), 250);
+  }
+}
+
 async function fetchSignals() {
   const ioStartedAt = startIoOperation('reads', 'signals', 'fetchSignals');
   const { data, error } = await appState.supabase
@@ -1492,7 +1588,7 @@ const WIDGETS = {
   kitchenHeader: (context) => buildKitchenTodayCard(context),
   today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true })),
   spotlight: (context) => buildCard('Best Next Move', 'Most useful thing to do next', renderSpotlightCard(context.digest.spotlightTask)),
-  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
+  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.')),
   upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true })),
   quickActions: () => buildQuickActionsCard(),
   forget: (context) => buildCard('Don’t Forget', 'Short and important', renderTaskList(context.digest.overdueTasks.slice(0, 4).concat(context.forgetItems.slice(0, 2)), 'Nothing critical is waiting.', { showPills: true })),
@@ -1574,52 +1670,13 @@ function buildListItem(item, options = {}) {
     row.append(buildPill(item.pill, item.pillClass || ''));
   }
 
-  const canActivate = typeof options.onActivate === 'function';
-  const canHold = typeof options.onHold === 'function';
-  if (canActivate || canHold) {
+  if (typeof options.onActivate === 'function') {
     row.classList.add('list-item-interactive');
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
     row.style.cursor = 'pointer';
     if (item.actionHint) row.title = item.actionHint;
-  }
-
-  if (canHold) {
-    let holdTimer = null;
-    let holdTriggered = false;
-    const HOLD_MS = 420;
-    const clearHold = () => {
-      if (holdTimer) {
-        window.clearTimeout(holdTimer);
-        holdTimer = null;
-      }
-    };
-    const startHold = (event) => {
-      clearHold();
-      holdTriggered = false;
-      holdTimer = window.setTimeout(() => {
-        holdTriggered = true;
-        row.classList.add('list-item-hold-active');
-        options.onHold(event);
-        window.setTimeout(() => row.classList.remove('list-item-hold-active'), 220);
-      }, HOLD_MS);
-    };
-    const cancelHold = () => clearHold();
-    row.addEventListener('pointerdown', startHold, { passive: true });
-    row.addEventListener('pointerup', cancelHold);
-    row.addEventListener('pointercancel', cancelHold);
-    row.addEventListener('pointerleave', cancelHold);
-    row.addEventListener('contextmenu', (event) => event.preventDefault());
-    row.__holdTriggered = () => holdTriggered;
-  }
-
-  if (canActivate) {
     row.addEventListener('click', (event) => {
-      if (typeof row.__holdTriggered === 'function' && row.__holdTriggered()) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
       event.preventDefault();
       options.onActivate(event);
     });
@@ -2515,6 +2572,55 @@ function buildBedroomPrimaryItems(context) {
 }
 
 
+
+function buildSignalActionRow(signal) {
+  const wrap = document.createElement('div');
+  wrap.className = 'signal-action-row';
+
+  const snoozeButton = document.createElement('button');
+  snoozeButton.className = 'secondary-button signal-action-button';
+  snoozeButton.type = 'button';
+  snoozeButton.textContent = 'Snooze 2h';
+  snoozeButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    snoozeSignal(signal, 120);
+  });
+  wrap.append(snoozeButton);
+
+  if (!signal?.metadata?.synthetic) {
+    const dismissButton = document.createElement('button');
+    dismissButton.className = 'secondary-button signal-action-button signal-dismiss-button';
+    dismissButton.type = 'button';
+    dismissButton.textContent = 'Dismiss';
+    dismissButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissSignal(signal);
+    });
+    wrap.append(dismissButton);
+  }
+
+  return wrap;
+}
+
+function renderSignalActionList(signals, emptyText, options = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = `list signal-action-list ${options.compact ? 'list-compact' : ''}`.trim();
+  const items = Array.isArray(signals) ? signals : [];
+  if (!items.length) {
+    wrapper.append(buildEmptyState(emptyText));
+    return wrapper;
+  }
+  for (const signal of items) {
+    const item = signalToItem(signal);
+    const row = buildListItem(item, { showPills: true, rowClassName: 'list-item signal-action-item' });
+    row.append(buildSignalActionRow(signal));
+    wrapper.append(row);
+  }
+  return wrapper;
+}
+
 function buildQuickActionsCard() {
   const wrap = document.createElement('div');
   wrap.className = 'quick-grid';
@@ -2721,8 +2827,7 @@ function renderTaskList(items, emptyText, options = {}) {
   }
   for (const item of items) {
     const onActivate = typeof item.onActivate === 'function' ? item.onActivate : null;
-    const onHold = typeof item.onHold === 'function' ? item.onHold : null;
-    wrapper.append(buildListItem(item, { showPills: options.showPills, onActivate, onHold }));
+    wrapper.append(buildListItem(item, { showPills: options.showPills, onActivate }));
   }
   return wrapper;
 }
@@ -4039,9 +4144,8 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
       meta: [owner, dueMeta].filter(Boolean).join(' · '),
       pill: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
       pillClass: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : '',
-      actionHint: canComplete ? 'Tap to complete · long press for details' : 'Long press for details',
+      actionHint: canComplete ? 'Tap to mark complete' : '',
       onActivate: canComplete ? () => completeTask(task.raw || task) : null,
-      onHold: () => openTaskQuickView(task.raw || task),
     };
   });
 }
@@ -4211,7 +4315,7 @@ function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalE
   return sortSignalsForDisplay([
     ...activeDbSignals(context.now),
     ...buildSyntheticSignals(rules, context),
-  ]);
+  ].filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
 }
 
 function buildForgetItems() {
@@ -4264,6 +4368,7 @@ function signalToItem(signal) {
     meta: signal.description || signal.location || '',
     pill: capitalize(signal.severity),
     pillClass: signal.severity === 'warning' ? 'warning' : '',
+    raw: signal,
   };
 }
 
@@ -4299,67 +4404,6 @@ function showToast(message, type = 'info') {
     toast.classList.add('toast-hide');
     window.setTimeout(() => toast.remove(), 220);
   }, 1700);
-}
-
-function showActionToast(message, options = {}) {
-  const host = ensureToastHost();
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${options.type || 'info'} toast-action`;
-
-  const text = document.createElement('span');
-  text.className = 'toast-message';
-  text.textContent = message;
-  toast.append(text);
-
-  let resolved = false;
-  const duration = Number.isFinite(options.duration) ? options.duration : 4500;
-  const dismiss = (runOnDismiss = false) => {
-    if (resolved) return;
-    resolved = true;
-    toast.classList.remove('toast-show');
-    toast.classList.add('toast-hide');
-    window.setTimeout(() => toast.remove(), 220);
-    if (runOnDismiss && typeof options.onDismiss === 'function') options.onDismiss();
-  };
-
-  if (options.actionLabel && typeof options.onAction === 'function') {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'toast-action-button';
-    button.textContent = options.actionLabel;
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (resolved) return;
-      resolved = true;
-      try { options.onAction(); } finally {
-        toast.classList.remove('toast-show');
-        toast.classList.add('toast-hide');
-        window.setTimeout(() => toast.remove(), 220);
-      }
-    });
-    toast.append(button);
-  }
-
-  host.append(toast);
-  requestAnimationFrame(() => toast.classList.add('toast-show'));
-  window.setTimeout(() => dismiss(true), duration);
-  return { dismiss: () => dismiss(false) };
-}
-
-function openTaskQuickView(task) {
-  if (!task) return;
-  const ownerField = appState.config.taskOwnerField;
-  const dateField = appState.config.taskDateField;
-  const title = String(task[appState.config.taskTitleField] || task.title || 'Task');
-  const items = [
-    { title: 'Owner', meta: String(task[ownerField] || 'Unassigned'), pill: 'Task' },
-    { title: 'Due', meta: String(task[dateField] || task.due_text || 'No due date'), pill: 'Schedule' },
-  ];
-  if (task.tag) items.push({ title: 'Tag', meta: String(task.tag), pill: 'Tag' });
-  if (task.recurrence) items.push({ title: 'Recurrence', meta: String(task.recurrence), pill: 'Repeat' });
-  if (task.description) items.push({ title: 'Notes', meta: String(task.description), pill: 'Notes' });
-  openQuickView(title, items, 'No extra task details.');
 }
 
 function pulseButton(button) {
@@ -4418,60 +4462,6 @@ function restoreLocalTask(task) {
   appState.tasks = [task, ...(appState.tasks || [])];
 }
 
-async function undoCompletedTask(taskId) {
-  const pending = activeUndoCompletions.get(taskId);
-  if (!pending || pending.undoing) return;
-  pending.undoing = true;
-  pending.toastHandle?.dismiss?.();
-  restoreLocalTask(pending.task);
-  renderRuntimeUi({ renderDevConsole: false });
-  const ioStartedAt = startIoOperation('writes', 'tasks', 'undoCompleteTask');
-  try {
-    const payload = {
-      panel: pending.previousPanel || null,
-      completed_at: null,
-    };
-    const completedField = appState.config.taskCompletedField;
-    if (completedField) payload[completedField] = appState.config.useStringCompleted ? null : false;
-    const { error } = await appState.supabase
-      .from(appState.config.taskTable || 'tasks')
-      .update(payload)
-      .eq('id', taskId);
-    if (error) throw error;
-    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: true, reason: 'undoCompleteTask' });
-    showToast('Task restored', 'success');
-    setStatus(`Restored: ${pending.task?.title || 'Task'}`);
-    activeUndoCompletions.delete(taskId);
-  } catch (error) {
-    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: false, reason: 'undoCompleteTask', error: error?.message || String(error) });
-    removeLocalTask(taskId);
-    renderRuntimeUi({ renderDevConsole: false });
-    console.error(error);
-    showToast('Could not undo task', 'error');
-    setStatus(`Could not restore task: ${error.message}`);
-    pending.undoing = false;
-  }
-}
-
-function queueTaskUndo(previousTask) {
-  if (!previousTask?.id) return;
-  const existing = activeUndoCompletions.get(previousTask.id);
-  if (existing?.toastHandle?.dismiss) existing.toastHandle.dismiss();
-  const record = { task: previousTask, previousPanel: previousTask.panel || '', undoing: false, toastHandle: null };
-  const toastHandle = showActionToast('Task completed', {
-    type: 'success',
-    actionLabel: 'Undo',
-    duration: 4500,
-    onAction: () => undoCompletedTask(previousTask.id),
-    onDismiss: () => {
-      const current = activeUndoCompletions.get(previousTask.id);
-      if (current && current === record && !current.undoing) activeUndoCompletions.delete(previousTask.id);
-    },
-  });
-  record.toastHandle = toastHandle;
-  activeUndoCompletions.set(previousTask.id, record);
-}
-
 async function completeTask(task) {
   const taskId = task?.id;
   if (!taskId || pendingTaskCompletions.has(taskId)) return;
@@ -4491,7 +4481,7 @@ async function completeTask(task) {
       .eq('id', taskId);
     if (error) throw error;
     finishIoOperation('writes', 'tasks', ioStartedAt, { ok: true, reason: 'completeTask' });
-    queueTaskUndo(previousTask);
+    showToast('Task completed', 'success');
     setStatus(`Completed: ${previousTask?.title || 'Task'}`);
   } catch (error) {
     finishIoOperation('writes', 'tasks', ioStartedAt, { ok: false, reason: 'completeTask', error: error?.message || String(error) });
