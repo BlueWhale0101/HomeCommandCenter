@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.21';
+const APP_VERSION = 'v2.2.22';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -399,7 +399,13 @@ resetAutoRefreshTimer();
   }
   window.__hccBootState.phase = 'loading-device-profile';
   setStatus('Loading device profile…');
-  await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+  const deviceProfileReady = await safeLoadDeviceProfile();
+  window.__hccBootState.deviceProfileReady = deviceProfileReady;
+  if (!deviceProfileReady) {
+    window.setTimeout(() => {
+      if (appState.supabase) safeLoadDeviceProfile();
+    }, 0);
+  }
   window.__hccBootState.phase = 'loading-household-data';
   setStatus('Loading household data…');
   await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
@@ -416,6 +422,19 @@ function withTimeout(promise, ms, label) {
     new Promise((_, reject) => window.setTimeout(() => reject(new Error(label)), ms)),
   ]);
 }
+
+async function safeLoadDeviceProfile() {
+  try {
+    await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+    return true;
+  } catch (error) {
+    console.warn('Device profile load warning:', error);
+    pushDevLog('warn', `Device profile load warning: ${error.message}`);
+    setStatus(`Device profile warning: ${error.message}`);
+    return false;
+  }
+}
+
 
 async function ensureSupabase() {
   const { supabaseUrl, supabaseKey } = appState.config;

@@ -355,3 +355,8 @@ Roadmap notes:
 - Fixed the settings modal save flow so the dialog closes immediately after a successful local save.
 - Made the Save settings button an explicit non-submit button to avoid dialog form behavior conflicts.
 - Wrapped the post-save refresh/rebind work in error handling so follow-up refresh issues do not keep the dialog open.
+
+
+## v2.2.22
+- softened bootstrap so a timed-out device profile load is treated as a warning instead of a fatal startup error
+- app now continues booting with local config and retries device profile load in the background
