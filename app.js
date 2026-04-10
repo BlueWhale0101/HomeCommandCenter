@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.22';
+const APP_VERSION = 'v2.3.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -19,7 +19,7 @@ const DEFAULT_CONFIG = {
   weatherSnapshotType: 'weather_today',
   calendarTodaySnapshotType: 'calendar_today',
   calendarTomorrowSnapshotType: 'calendar_tomorrow',
-  uiRefreshSeconds: 60,
+  uiRefreshSeconds: 600,
   googleClientId: '',
   weatherLocationQuery: '',
   weatherLocationName: '',
@@ -109,6 +109,13 @@ const CUSTOM_SIGNAL_CLEAR_OPTIONS = [
 ];
 
 let autoRefreshTimer = null;
+let slowRefreshTimer = null;
+let calendarPublisherTimer = null;
+
+const HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS = 600;
+const DEGRADED_REALTIME_REFRESH_CEILING_SECONDS = 90;
+const SLOW_STATE_REFRESH_SECONDS = 900;
+const CALENDAR_PUBLISH_REFRESH_SECONDS = 900;
 
 const DEFAULT_CONNECTION_STATUS = {
   supabase: { level: 'unknown', text: 'Not tested' },
@@ -582,38 +589,59 @@ function renderRuntimeUi(options = {}) {
   if (options.renderDevConsole !== false) renderDevConsole();
 }
 
-async function refreshBaseState() {
-  await Promise.all([
+async function runRefreshGroup(tasks, groupLabel = 'refresh group') {
+  const results = await Promise.allSettled(tasks);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn(`${groupLabel} issue`, result.reason);
+    }
+  }
+  return results;
+}
+
+function shouldIncludeSlowStateForReason(reason = '') {
+  const normalized = String(reason || '').toLowerCase();
+  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
+}
+
+function shouldIncludeCalendarRefreshForReason(reason = '') {
+  const normalized = String(reason || '').toLowerCase();
+  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
+}
+
+async function refreshBaseState(options = {}) {
+  const includeSlowState = options.includeSlowState !== false;
+  await runRefreshGroup([
     fetchTasks(),
     fetchSignals(),
     fetchLoads(),
-    fetchSnapshots(),
-    fetchRecentLogs(),
-  ]);
-}
+  ], 'Base refresh');
 
-async function refreshOptionalState() {
-  const followup = await Promise.allSettled([
-    fetchGoogleCalendarSnapshots(),
-    fetchWeatherSnapshot(),
-  ]);
-
-  for (const result of followup) {
-    if (result.status === 'rejected') {
-      console.warn('Follow-up refresh issue', result.reason);
-    }
+  if (includeSlowState) {
+    await runRefreshGroup([
+      fetchSnapshots(),
+      fetchRecentLogs(),
+    ], 'Slow-state refresh');
   }
 }
 
+async function refreshOptionalState(options = {}) {
+  const followup = [fetchWeatherSnapshot()];
+  if (options.includeCalendarRefresh !== false) followup.unshift(fetchGoogleCalendarSnapshots());
+  await runRefreshGroup(followup, 'Follow-up refresh');
+}
+
 async function runFullRefreshCycle(reason = 'manual refresh') {
+  const includeSlowState = shouldIncludeSlowStateForReason(reason);
+  const includeCalendarRefresh = shouldIncludeCalendarRefreshForReason(reason);
   setStatus(`Refreshing ${appState.config.mode} view…`);
   pushDevLog('info', `Starting full refresh: ${reason}.`);
-  await refreshBaseState();
+  await refreshBaseState({ includeSlowState });
 
   // Render immediately from shared/base data so headless displays never block on optional enrichments.
   renderRuntimeUi();
 
-  await refreshOptionalState();
+  await refreshOptionalState({ includeCalendarRefresh });
 
   renderRuntimeUi();
   appState.refreshCoordinator.lastReason = reason;
@@ -775,7 +803,7 @@ async function fetchTasks() {
 
   if (error) {
     console.warn('Task fetch issue', error);
-    appState.tasks = [];
+    pushDevLog('warn', `Task fetch issue: ${error.message || error}`);
     return;
   }
 
@@ -794,7 +822,7 @@ async function fetchSignals() {
     .limit(20);
   if (error) {
     console.warn('Signal fetch issue', error);
-    appState.signals = [];
+    pushDevLog('warn', `Signal fetch issue: ${error.message || error}`);
     return;
   }
   appState.signals = data || [];
@@ -821,7 +849,7 @@ async function fetchLoads() {
     .order('created_at', { ascending: true });
   if (error) {
     console.warn('Laundry fetch issue', error);
-    appState.loads = [];
+    pushDevLog('warn', `Laundry fetch issue: ${error.message || error}`);
     return;
   }
   appState.loads = sortLoads(data || []);
@@ -895,7 +923,7 @@ async function fetchRecentLogs() {
     .limit(10);
   if (error) {
     console.warn('Log fetch issue', error);
-    appState.logs = [];
+    pushDevLog('warn', `Log fetch issue: ${error.message || error}`);
     return;
   }
   appState.logs = data || [];
@@ -924,14 +952,21 @@ function setRealtimeConnectionStatus(level = 'unknown', fallbackText = '') {
 
 function buildRealtimeChannelSpecs() {
   return [
-    { table: appState.config.taskTable, event: '*', scope: 'full', reason: 'task realtime update', handler: () => refreshAll('task realtime update') },
-    { table: 'household_logs', event: '*', scope: 'full', reason: 'log realtime update', handler: () => refreshAll('log realtime update') },
-    { table: 'household_signals', event: '*', scope: 'full', reason: 'signal realtime update', handler: () => refreshAll('signal realtime update') },
-    { table: 'laundry_loads', event: '*', scope: 'full', reason: 'laundry realtime update', handler: () => refreshAll('laundry realtime update') },
+    { table: appState.config.taskTable, event: '*', scope: 'targeted', reason: 'task realtime update', handler: () => runTargetedRefresh('Task realtime update', async () => {
+        await fetchTasks();
+      }) },
+    { table: 'household_logs', event: '*', scope: 'targeted', reason: 'log realtime update', handler: () => runTargetedRefresh('Log realtime update', async () => {
+        await fetchRecentLogs();
+      }) },
+    { table: 'household_signals', event: '*', scope: 'targeted', reason: 'signal realtime update', handler: () => runTargetedRefresh('Signal realtime update', async () => {
+        await fetchSignals();
+      }) },
+    { table: 'laundry_loads', event: '*', scope: 'targeted', reason: 'laundry realtime update', handler: () => runTargetedRefresh('Laundry realtime update', async () => {
+        await fetchLoads();
+      }) },
     { table: 'context_snapshots', event: '*', scope: 'targeted', reason: 'snapshot realtime update', handler: () => refreshFromSnapshotUpdate() },
     { table: SHARED_CONFIG_TABLE, event: '*', scope: 'targeted', reason: 'shared config realtime update', handler: () => runTargetedRefresh('Shared config update', async () => {
         await fetchHouseholdConfig();
-        await fetchSnapshots();
       }) },
   ];
 }
@@ -959,6 +994,7 @@ function noteRealtimeSubscriptionStatus(table, status) {
   });
   const level = status === 'SUBSCRIBED' ? 'ok' : (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' ? 'warn' : 'unknown');
   setRealtimeConnectionStatus(level);
+  resetAutoRefreshTimer();
   pushDevLog(level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${status}`);
 }
 
@@ -989,12 +1025,14 @@ function bindRealtime() {
 function clearSubscriptions() {
   if (!appState.subscriptions?.length || !appState.supabase) {
     updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: '' });
+    resetAutoRefreshTimer();
     return;
   }
   for (const entry of appState.subscriptions) appState.supabase.removeChannel(entry.channel || entry);
   appState.subscriptions = [];
   updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
   setRealtimeConnectionStatus('unknown', 'Channels cleared');
+  resetAutoRefreshTimer();
 }
 
 
@@ -4951,14 +4989,49 @@ function getCalendarAuthRequirementState() {
 }
 
 
+function hasHealthyRealtimeConnection() {
+  const diag = appState.realtimeDiagnostics || {};
+  return !!appState.supabase && Number(diag.activeChannels || 0) > 0 && diag.lastStatus === 'SUBSCRIBED';
+}
+
+function getEffectiveAutoRefreshSeconds() {
+  const configured = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  if (hasHealthyRealtimeConnection()) return Math.max(configured, HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS);
+  return Math.min(configured, DEGRADED_REALTIME_REFRESH_CEILING_SECONDS);
+}
+
+function scheduleSlowStateRefresh() {
+  if (slowRefreshTimer) window.clearInterval(slowRefreshTimer);
+  slowRefreshTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden || hasHealthyRealtimeConnection()) return;
+    pushDevLog('info', `Slow-state recovery refresh fired (${SLOW_STATE_REFRESH_SECONDS}s)`);
+    runTargetedRefresh('Slow-state recovery refresh', async () => {
+      await fetchSnapshots();
+      await fetchRecentLogs();
+    });
+  }, SLOW_STATE_REFRESH_SECONDS * 1000);
+}
+
+function scheduleCalendarPublisherRefresh() {
+  if (calendarPublisherTimer) window.clearInterval(calendarPublisherTimer);
+  calendarPublisherTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden || !hasPublisherCalendarAccounts()) return;
+    pushDevLog('info', `Calendar publisher refresh fired (${CALENDAR_PUBLISH_REFRESH_SECONDS}s)`);
+    fetchGoogleCalendarSnapshots().catch((error) => console.warn('Calendar publisher refresh failed', error));
+  }, CALENDAR_PUBLISH_REFRESH_SECONDS * 1000);
+}
+
 function resetAutoRefreshTimer() {
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
-  const refreshSeconds = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  const refreshSeconds = getEffectiveAutoRefreshSeconds();
   autoRefreshTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
-    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s)`);
-    refreshAll('auto refresh').catch((error) => console.error('Auto refresh failed', error));
+    const reason = hasHealthyRealtimeConnection() ? 'auto refresh' : 'recovery auto refresh';
+    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s · ${hasHealthyRealtimeConnection() ? 'realtime healthy' : 'realtime degraded'})`);
+    refreshAll(reason).catch((error) => console.error('Auto refresh failed', error));
   }, refreshSeconds * 1000);
+  scheduleSlowStateRefresh();
+  scheduleCalendarPublisherRefresh();
 }
 
 async function registerServiceWorker() {
