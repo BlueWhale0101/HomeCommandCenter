@@ -355,3 +355,9 @@ Roadmap notes:
 - Fixed the settings modal save flow so the dialog closes immediately after a successful local save.
 - Made the Save settings button an explicit non-submit button to avoid dialog form behavior conflicts.
 - Wrapped the post-save refresh/rebind work in error handling so follow-up refresh issues do not keep the dialog open.
+
+
+## v2.2.20
+- Cleanup pass: normalized runtime diagnostics behind shared summary helpers.
+- Mobile → Debug now builds config, time, state, calendar, publisher, realtime, and wake summaries through one internal path.
+- No behavior change intended; this reduces diagnostics drift while testing current fixes.
