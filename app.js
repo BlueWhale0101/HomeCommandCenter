@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.2';
+const APP_VERSION = 'v2.3.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -193,6 +193,23 @@ let appState = {
     lastEventType: '',
     lastStatus: '',
   },
+  ioDiagnostics: {
+    sessionStartedAt: new Date().toISOString(),
+    refreshes: { full: 0, targeted: 0, queued: 0, lastType: '', lastReason: '', lastAt: '', lastDurationMs: 0 },
+    reads: {},
+    writes: {},
+    timers: {
+      autoRefreshSeconds: 0,
+      autoRefreshMode: '',
+      autoRefreshLastFiredAt: '',
+      slowStateBackstopSeconds: 0,
+      slowStateBackstopLastFiredAt: '',
+      calendarPublishSeconds: 0,
+      calendarPublishLastFiredAt: '',
+      housekeepingSeconds: 0,
+      housekeepingLastFiredAt: '',
+    },
+  },
 };
 
 const screenEl = document.getElementById('screen');
@@ -219,6 +236,118 @@ const connectGoogleAccountButton = document.getElementById('connect-google-accou
 const googleCalendarAccountsEl = document.getElementById('google-calendar-accounts');
 
 let bootstrapPromise = null;
+
+
+function getIoBucket(kind = 'reads') {
+  const io = appState.ioDiagnostics || (appState.ioDiagnostics = {
+    sessionStartedAt: new Date().toISOString(),
+    refreshes: { full: 0, targeted: 0, queued: 0, lastType: '', lastReason: '', lastAt: '', lastDurationMs: 0 },
+    reads: {},
+    writes: {},
+    timers: {},
+  });
+  if (!io[kind]) io[kind] = {};
+  return io[kind];
+}
+
+function ensureIoEntry(kind, name) {
+  const bucket = getIoBucket(kind);
+  bucket[name] = bucket[name] || {
+    attempts: 0,
+    successes: 0,
+    failures: 0,
+    lastStartedAt: '',
+    lastFinishedAt: '',
+    lastDurationMs: 0,
+    lastRows: null,
+    lastReason: '',
+    lastError: '',
+  };
+  return bucket[name];
+}
+
+function startIoOperation(kind, name, reason = '') {
+  const entry = ensureIoEntry(kind, name);
+  entry.attempts += 1;
+  entry.lastStartedAt = new Date().toISOString();
+  entry.lastReason = reason || entry.lastReason || '';
+  entry.lastError = '';
+  return Date.now();
+}
+
+function finishIoOperation(kind, name, startedAt, details = {}) {
+  const entry = ensureIoEntry(kind, name);
+  entry.lastFinishedAt = new Date().toISOString();
+  entry.lastDurationMs = Math.max(0, Date.now() - (startedAt || Date.now()));
+  if (Object.prototype.hasOwnProperty.call(details, 'rows')) entry.lastRows = details.rows;
+  if (details.reason) entry.lastReason = details.reason;
+  if (details.ok === false) {
+    entry.failures += 1;
+    entry.lastError = details.error || '';
+  } else {
+    entry.successes += 1;
+    entry.lastError = '';
+  }
+}
+
+function noteRefreshIo(type, reason, durationMs = 0) {
+  const refreshes = appState.ioDiagnostics.refreshes || (appState.ioDiagnostics.refreshes = { full: 0, targeted: 0, queued: 0, lastType: '', lastReason: '', lastAt: '', lastDurationMs: 0 });
+  if (type === 'queued') refreshes.queued += 1;
+  else if (type === 'targeted') refreshes.targeted += 1;
+  else refreshes.full += 1;
+  refreshes.lastType = type;
+  refreshes.lastReason = reason || '';
+  refreshes.lastAt = new Date().toISOString();
+  refreshes.lastDurationMs = Math.max(0, Math.round(durationMs || 0));
+}
+
+function updateIoTimerDiagnostics(patch = {}) {
+  const io = appState.ioDiagnostics || (appState.ioDiagnostics = {});
+  io.timers = { ...(io.timers || {}), ...patch };
+}
+
+function formatIoAgo(value) {
+  if (!value) return 'never';
+  const ms = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return 'just now';
+  if (ms < 60000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3600000) return `${Math.round(ms / 60000)}m ago`;
+  return `${Math.round(ms / 3600000)}h ago`;
+}
+
+function buildIoSummaryRows() {
+  const io = appState.ioDiagnostics || {};
+  const refreshes = io.refreshes || {};
+  const timers = io.timers || {};
+  const readEntries = Object.entries(io.reads || {});
+  const writeEntries = Object.entries(io.writes || {});
+  const totalReadAttempts = readEntries.reduce((sum, [, entry]) => sum + Number(entry.attempts || 0), 0);
+  const totalWriteAttempts = writeEntries.reduce((sum, [, entry]) => sum + Number(entry.attempts || 0), 0);
+  const rows = [];
+  rows.push(`IO session ${formatIoAgo(io.sessionStartedAt)} · full ${refreshes.full || 0} · targeted ${refreshes.targeted || 0} · queued ${refreshes.queued || 0}`);
+  rows.push(`Reads ${totalReadAttempts} · writes ${totalWriteAttempts} · poll ${timers.autoRefreshSeconds || 0}s ${timers.autoRefreshMode || 'unknown'} · realtime ${isRealtimeHealthy() ? 'healthy' : 'degraded'}`);
+  const interesting = [
+    ['tasks', (io.reads || {}).tasks],
+    ['signals', (io.reads || {}).signals],
+    ['loads', (io.reads || {}).loads],
+    ['snapshots', (io.reads || {}).snapshots],
+    ['logs', (io.reads || {}).logs],
+    ['household config', (io.reads || {}).householdConfig],
+    ['device profile', (io.reads || {}).deviceProfile],
+    ['snapshot publish', (io.writes || {}).snapshotPublish],
+    ['shared config upsert', (io.writes || {}).sharedConfigUpsert],
+    ['housekeeping', (io.writes || {}).housekeeping],
+  ].filter(([, entry]) => entry && entry.attempts);
+  for (const [label, entry] of interesting.slice(0, 10)) {
+    const parts = [`${label}: ${entry.attempts}x`, `${entry.successes || 0} ok`];
+    if (entry.failures) parts.push(`${entry.failures} fail`);
+    if (entry.lastRows !== null && entry.lastRows !== undefined) parts.push(`rows ${entry.lastRows}`);
+    if (entry.lastDurationMs) parts.push(`${entry.lastDurationMs}ms`);
+    if (entry.lastFinishedAt) parts.push(formatIoAgo(entry.lastFinishedAt));
+    rows.push(parts.join(' · '));
+  }
+  return rows;
+}
 
 
 function clampHour(value, fallback = 0) {
@@ -561,6 +690,7 @@ async function loadHostedSettingsOnce() {
 }
 
 async function loadDeviceProfile() {
+  const readStartedAt = startIoOperation('reads', 'deviceProfile', 'startup');
   try {
     const { data, error } = await appState.supabase
       .from('device_profiles')
@@ -569,6 +699,8 @@ async function loadDeviceProfile() {
       .maybeSingle();
 
     if (error) throw error;
+
+    finishIoOperation('reads', 'deviceProfile', readStartedAt, { ok: true, rows: data ? 1 : 0, reason: 'startup' });
 
     if (data) {
       appState.deviceProfile = data;
@@ -580,6 +712,7 @@ async function loadDeviceProfile() {
     }
 
     const insertPayload = buildDeviceProfilePayload();
+    const writeStartedAt = startIoOperation('writes', 'deviceProfileInsert', 'startup');
 
     const { data: inserted, error: insertError } = await appState.supabase
       .from('device_profiles')
@@ -588,9 +721,11 @@ async function loadDeviceProfile() {
       .single();
 
     if (insertError) throw insertError;
+    finishIoOperation('writes', 'deviceProfileInsert', writeStartedAt, { ok: true, rows: inserted ? 1 : 0, reason: 'startup' });
     appState.deviceProfile = inserted;
     setStatus(`Created device profile for ${appState.config.deviceName}`);
   } catch (error) {
+    finishIoOperation('reads', 'deviceProfile', readStartedAt, { ok: false, reason: 'startup', error: error?.message || String(error) });
     console.error(error);
     setStatus(`Device profile warning: ${error.message}`);
   }
@@ -633,6 +768,8 @@ async function refreshOptionalState() {
 
 async function runFullRefreshCycle(reason = 'manual refresh', options = {}) {
   const includeSlowState = !!options.includeSlowState;
+  const startedAt = Date.now();
+  noteRefreshIo('full', reason, 0);
   setStatus(`Refreshing ${appState.config.mode} view…`);
   pushDevLog('info', `Starting full refresh: ${reason}${includeSlowState ? ' (with slow state)' : ''}.`);
   await refreshBaseState(includeSlowState);
@@ -645,6 +782,7 @@ async function runFullRefreshCycle(reason = 'manual refresh', options = {}) {
   renderRuntimeUi();
   appState.refreshCoordinator.lastReason = reason;
   appState.refreshCoordinator.lastCompletedAt = new Date().toISOString();
+  noteRefreshIo('full', reason, Date.now() - startedAt);
   setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
 }
 
@@ -665,6 +803,7 @@ async function refreshAll(reason = 'manual refresh', options = {}) {
   if (coordinator.inFlight) {
     coordinator.pendingReason = coordinator.pendingReason || reason || 'queued refresh';
     coordinator.pendingOptions = { ...(coordinator.pendingOptions || {}), ...(options || {}) };
+    noteRefreshIo('queued', coordinator.pendingReason, 0);
     pushDevLog('info', `Refresh already running; queued ${coordinator.pendingReason}.`);
     return coordinator.inFlight;
   }
@@ -694,9 +833,12 @@ async function refreshAll(reason = 'manual refresh', options = {}) {
 
 async function runTargetedRefresh(label, refreshWork, options = {}) {
   const successMessage = options.successMessage || `${label} applied without full refresh.`;
+  const startedAt = Date.now();
+  noteRefreshIo('targeted', label, 0);
   try {
     await refreshWork();
     renderRuntimeUi(options.renderOptions || {});
+    noteRefreshIo('targeted', label, Date.now() - startedAt);
     pushDevLog('info', successMessage);
   } catch (error) {
     console.warn(`${label} issue`, error);
@@ -794,6 +936,7 @@ async function fetchTasks() {
   const { taskTable } = appState.config;
   const completedField = appState.config.taskCompletedField;
   const buildBaseQuery = () => appState.supabase.from(taskTable).select('*').order('updated_at', { ascending: false }).limit(120);
+  const ioStartedAt = startIoOperation('reads', 'tasks', 'fetchTasks');
 
   let data = null;
   let error = null;
@@ -817,18 +960,21 @@ async function fetchTasks() {
   }
 
   if (error) {
+    finishIoOperation('reads', 'tasks', ioStartedAt, { ok: false, reason: 'fetchTasks', error: error?.message || String(error) });
     console.warn('Task fetch issue', error);
     pushDevLog('warn', `Task fetch issue; keeping ${appState.tasks.length} cached task${appState.tasks.length === 1 ? '' : 's'}.`);
     return;
   }
 
   const rows = data || [];
+  finishIoOperation('reads', 'tasks', ioStartedAt, { ok: true, rows: rows.length, reason: 'fetchTasks' });
   maybeAutoMapTaskFields(rows);
   appState.tasks = rows.filter((task) => !taskIsCompleted(task) && !taskIsArchived(task));
   pushDevLog('info', `Fetched ${appState.tasks.length} visible tasks from ${taskTable}`);
 }
 
 async function fetchSignals() {
+  const ioStartedAt = startIoOperation('reads', 'signals', 'fetchSignals');
   const { data, error } = await appState.supabase
     .from('household_signals')
     .select('*')
@@ -836,11 +982,13 @@ async function fetchSignals() {
     .order('updated_at', { ascending: false })
     .limit(12);
   if (error) {
+    finishIoOperation('reads', 'signals', ioStartedAt, { ok: false, reason: 'fetchSignals', error: error?.message || String(error) });
     console.warn('Signal fetch issue', error);
     pushDevLog('warn', `Signal fetch issue; keeping ${appState.signals.length} cached signal${appState.signals.length === 1 ? '' : 's'}.`);
     return;
   }
   appState.signals = data || [];
+  finishIoOperation('reads', 'signals', ioStartedAt, { ok: true, rows: appState.signals.length, reason: 'fetchSignals' });
 }
 
 
@@ -857,6 +1005,7 @@ function sortLoads(loads) {
 }
 
 async function fetchLoads() {
+  const ioStartedAt = startIoOperation('reads', 'loads', 'fetchLoads');
   const { data, error } = await appState.supabase
     .from('laundry_loads')
     .select('*')
@@ -865,14 +1014,17 @@ async function fetchLoads() {
     .order('created_at', { ascending: true })
     .limit(25);
   if (error) {
+    finishIoOperation('reads', 'loads', ioStartedAt, { ok: false, reason: 'fetchLoads', error: error?.message || String(error) });
     console.warn('Laundry fetch issue', error);
     pushDevLog('warn', `Laundry fetch issue; keeping ${appState.loads.length} cached load${appState.loads.length === 1 ? '' : 's'}.`);
     return;
   }
   appState.loads = sortLoads(data || []);
+  finishIoOperation('reads', 'loads', ioStartedAt, { ok: true, rows: appState.loads.length, reason: 'fetchLoads' });
 }
 
 async function fetchSnapshots() {
+  const ioStartedAt = startIoOperation('reads', 'snapshots', 'fetchSnapshots');
   const types = [
     appState.config.weatherSnapshotType,
     appState.config.calendarTodaySnapshotType,
@@ -885,6 +1037,7 @@ async function fetchSnapshots() {
     .order('created_at', { ascending: false })
     .limit(12);
   if (error) {
+    finishIoOperation('reads', 'snapshots', ioStartedAt, { ok: false, reason: 'fetchSnapshots', error: error?.message || String(error) });
     console.warn('Snapshot fetch issue', error);
     return;
   }
@@ -911,6 +1064,7 @@ async function fetchSnapshots() {
     }
   }
   appState.snapshots = snapshots;
+  finishIoOperation('reads', 'snapshots', ioStartedAt, { ok: true, rows: (data || []).length, reason: 'fetchSnapshots' });
 }
 
 
@@ -934,17 +1088,20 @@ async function refreshFromSnapshotUpdate() {
 }
 
 async function fetchRecentLogs() {
+  const ioStartedAt = startIoOperation('reads', 'logs', 'fetchRecentLogs');
   const { data, error } = await appState.supabase
     .from('household_logs')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(6);
   if (error) {
+    finishIoOperation('reads', 'logs', ioStartedAt, { ok: false, reason: 'fetchRecentLogs', error: error?.message || String(error) });
     console.warn('Log fetch issue', error);
     pushDevLog('warn', `Log fetch issue; keeping ${appState.logs.length} cached log entr${appState.logs.length === 1 ? 'y' : 'ies'}.`);
     return;
   }
   appState.logs = data || [];
+  finishIoOperation('reads', 'logs', ioStartedAt, { ok: true, rows: appState.logs.length, reason: 'fetchRecentLogs' });
 }
 
 
@@ -2421,15 +2578,18 @@ function loadCalendarAccounts() {
 
 async function fetchHouseholdConfig() {
   if (!appState.supabase) return;
+  const ioStartedAt = startIoOperation('reads', 'householdConfig', 'fetchHouseholdConfig');
   try {
     const { data, error } = await appState.supabase
       .from(SHARED_CONFIG_TABLE)
       .select('key, value, updated_at');
     if (error) throw error;
     const rows = Array.isArray(data) ? data : [];
+    finishIoOperation('reads', 'householdConfig', ioStartedAt, { ok: true, rows: rows.length, reason: 'fetchHouseholdConfig' });
     applySharedConfigRows(rows);
     pushDevLog('info', `Loaded ${rows.length} household config entr${rows.length === 1 ? 'y' : 'ies'}.`);
   } catch (error) {
+    finishIoOperation('reads', 'householdConfig', ioStartedAt, { ok: false, reason: 'fetchHouseholdConfig', error: error?.message || String(error) });
     pushDevLog('warn', `Household config unavailable: ${error?.message || error}`);
   }
 }
@@ -2437,11 +2597,14 @@ async function fetchHouseholdConfig() {
 
 async function pruneOldRows(table, builder, label) {
   if (!appState.supabase) return;
+  const ioStartedAt = startIoOperation('writes', 'housekeeping', `${label} prune`);
   try {
     const { error } = await builder(appState.supabase.from(table).delete());
     if (error) throw error;
+    finishIoOperation('writes', 'housekeeping', ioStartedAt, { ok: true, reason: `${label} prune` });
     pushDevLog('info', `${label} pruned.`);
   } catch (error) {
+    finishIoOperation('writes', 'housekeeping', ioStartedAt, { ok: false, reason: `${label} prune`, error: error?.message || String(error) });
     pushDevLog('warn', `${label} prune skipped: ${error?.message || error}`);
   }
 }
@@ -2477,6 +2640,7 @@ async function compactSnapshotsForType(contextType, keepAfterIso) {
 
 async function publishContextSnapshot(contextType, payload, source = 'headless-google-calendar', validMinutes = 15) {
   if (!appState.supabase) throw new Error('Supabase not connected');
+  const ioStartedAt = startIoOperation('writes', 'snapshotPublish', contextType);
   const row = {
     context_type: contextType,
     payload,
@@ -2484,7 +2648,11 @@ async function publishContextSnapshot(contextType, payload, source = 'headless-g
     valid_until: new Date(getNowMs() + validMinutes * 60 * 1000).toISOString(),
   };
   const { error } = await appState.supabase.from('context_snapshots').insert(row);
-  if (error) throw error;
+  if (error) {
+    finishIoOperation('writes', 'snapshotPublish', ioStartedAt, { ok: false, reason: contextType, error: error?.message || String(error) });
+    throw error;
+  }
+  finishIoOperation('writes', 'snapshotPublish', ioStartedAt, { ok: true, rows: 1, reason: contextType });
   const retentionCutoff = new Date(getNowMs() - SNAPSHOT_RETENTION_DAYS * 86400000).toISOString();
   compactSnapshotsForType(contextType, retentionCutoff).catch((compactError) => console.warn(`Snapshot compaction warning for ${contextType}`, compactError));
 }
@@ -2506,9 +2674,14 @@ function applySharedConfigRows(rows) {
 
 async function upsertSharedConfigEntry(key, value) {
   if (!appState.supabase) throw new Error('Supabase not connected');
+  const ioStartedAt = startIoOperation('writes', 'sharedConfigUpsert', key);
   const payload = { key, value, updated_at: new Date(getNowMs()).toISOString() };
   const { error } = await appState.supabase.from(SHARED_CONFIG_TABLE).upsert(payload, { onConflict: 'key' });
-  if (error) throw error;
+  if (error) {
+    finishIoOperation('writes', 'sharedConfigUpsert', ioStartedAt, { ok: false, reason: key, error: error?.message || String(error) });
+    throw error;
+  }
+  finishIoOperation('writes', 'sharedConfigUpsert', ioStartedAt, { ok: true, rows: 1, reason: key });
 }
 
 async function pushSharedWeatherConfig() {
@@ -4127,6 +4300,7 @@ function buildDiagnosticsText() {
     loadCount: appState.loads.length,
     snapshotTypes: Object.keys(appState.snapshots),
     calendarAccounts: appState.calendarAccounts.map(account => ({ email: account.email, calendars: (account.calendars || []).filter(cal => cal.selected).length, expired: isCalendarAccountExpired(account) })),
+    ioDiagnostics: appState.ioDiagnostics,
     status: statusLine.textContent,
     time: getNowDate().toISOString(),
     testTimeOverride: appState.testTimeOverride,
@@ -4230,8 +4404,17 @@ function renderDevConsole() {
   const timeMeta = appState.testTimeOverride ? ` · test time ${new Date(appState.testTimeOverride).toLocaleString()}` : '';
   const activeCalendarCount = appState.calendarAccounts.reduce((sum, account) => sum + (account.calendars || []).filter(cal => cal.selected).length, 0);
   const eventCount = (appState.calendarDiagnostics.mergedToday || 0) + (appState.calendarDiagnostics.mergedTomorrow || 0);
-  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length} · calendars ${activeCalendarCount} · events ${eventCount}${timeMeta}`;
+  const io = appState.ioDiagnostics || {};
+  const refreshes = io.refreshes || {};
+  const timers = io.timers || {};
+  devConsoleMetaEl.textContent = `${APP_VERSION} · ${appState.config.mode} · tasks ${appState.tasks.length} · signals ${appState.signals.length} · loads ${appState.loads.length} · calendars ${activeCalendarCount} · events ${eventCount} · full ${refreshes.full || 0} · targeted ${refreshes.targeted || 0} · poll ${timers.autoRefreshSeconds || 0}s${timeMeta}`;
   devConsoleLogEl.replaceChildren();
+  for (const line of buildIoSummaryRows()) {
+    const row = document.createElement('div');
+    row.className = 'dev-console-entry info';
+    row.textContent = `[IO] ${line}`;
+    devConsoleLogEl.append(row);
+  }
   if (!devConsoleEntries.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -4640,7 +4823,7 @@ function normalizeLocalConfig(config = {}) {
 
 function persistLocalConfig() {
   appState.config = normalizeLocalConfig(appState.config);
-  persistLocalConfig();
+  saveConfig(appState.config);
 }
 
 function saveConfig(config) {
@@ -5056,8 +5239,10 @@ function getCalendarAuthRequirementState() {
 function resetAutoRefreshTimer() {
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
   const refreshSeconds = getAutoRefreshSeconds();
+  updateIoTimerDiagnostics({ autoRefreshSeconds: refreshSeconds, autoRefreshMode: isRealtimeHealthy() ? 'healthy' : 'degraded' });
   autoRefreshTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
+    updateIoTimerDiagnostics({ autoRefreshLastFiredAt: new Date().toISOString(), autoRefreshSeconds: refreshSeconds, autoRefreshMode: isRealtimeHealthy() ? 'healthy' : 'degraded' });
     pushDevLog('info', `Auto refresh fired (${refreshSeconds}s${isRealtimeHealthy() ? ' realtime-healthy' : ' degraded'})`);
     refreshAll('auto refresh').catch((error) => console.error('Auto refresh failed', error));
   }, refreshSeconds * 1000);
@@ -5065,8 +5250,10 @@ function resetAutoRefreshTimer() {
 
 function resetSlowStateBackstopTimer() {
   if (slowStateBackstopTimer) window.clearInterval(slowStateBackstopTimer);
+  updateIoTimerDiagnostics({ slowStateBackstopSeconds: SLOW_STATE_BACKSTOP_SECONDS });
   slowStateBackstopTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden || isRealtimeHealthy()) return;
+    updateIoTimerDiagnostics({ slowStateBackstopLastFiredAt: new Date().toISOString(), slowStateBackstopSeconds: SLOW_STATE_BACKSTOP_SECONDS });
     runTargetedRefresh('Slow-state recovery', async () => {
       await fetchSnapshots();
       await fetchRecentLogs();
@@ -5076,15 +5263,19 @@ function resetSlowStateBackstopTimer() {
 
 function resetCalendarPublishTimer() {
   if (calendarPublishTimer) window.clearInterval(calendarPublishTimer);
+  updateIoTimerDiagnostics({ calendarPublishSeconds: CALENDAR_PUBLISH_INTERVAL_SECONDS });
   calendarPublishTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
+    updateIoTimerDiagnostics({ calendarPublishLastFiredAt: new Date().toISOString(), calendarPublishSeconds: CALENDAR_PUBLISH_INTERVAL_SECONDS });
     fetchGoogleCalendarSnapshots().catch((error) => console.warn('Scheduled calendar publish failed', error));
   }, CALENDAR_PUBLISH_INTERVAL_SECONDS * 1000);
 }
 
 function resetHousekeepingTimer() {
   if (housekeepingTimer) window.clearInterval(housekeepingTimer);
+  updateIoTimerDiagnostics({ housekeepingSeconds: HOUSEKEEPING_INTERVAL_SECONDS });
   housekeepingTimer = window.setInterval(() => {
+    updateIoTimerDiagnostics({ housekeepingLastFiredAt: new Date().toISOString(), housekeepingSeconds: HOUSEKEEPING_INTERVAL_SECONDS });
     runHousekeeping(false).catch((error) => console.warn('Housekeeping failed', error));
   }, HOUSEKEEPING_INTERVAL_SECONDS * 1000);
 }
