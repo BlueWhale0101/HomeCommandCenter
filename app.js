@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.1';
+const APP_VERSION = 'v2.3.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -109,13 +109,20 @@ const CUSTOM_SIGNAL_CLEAR_OPTIONS = [
 ];
 
 let autoRefreshTimer = null;
-let slowRefreshTimer = null;
-let calendarPublisherTimer = null;
+let slowStateBackstopTimer = null;
+let calendarPublishTimer = null;
+let housekeepingTimer = null;
 
-const HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS = 600;
-const DEGRADED_REALTIME_REFRESH_CEILING_SECONDS = 90;
-const SLOW_STATE_REFRESH_SECONDS = 900;
-const CALENDAR_PUBLISH_REFRESH_SECONDS = 900;
+const HEALTHY_AUTO_REFRESH_SECONDS = 600;
+const DEGRADED_AUTO_REFRESH_SECONDS = 90;
+const SLOW_STATE_BACKSTOP_SECONDS = 1800;
+const CALENDAR_PUBLISH_INTERVAL_SECONDS = 900;
+const HOUSEKEEPING_INTERVAL_SECONDS = 43200;
+const SNAPSHOT_RETENTION_DAYS = 7;
+const LOG_RETENTION_DAYS = 30;
+const RESOLVED_SIGNAL_RETENTION_DAYS = 30;
+const LOAD_RETENTION_DAYS = 30;
+const HOUSEKEEPING_LAST_RUN_STORAGE = 'household-command-center-housekeeping-last-run';
 
 const DEFAULT_CONNECTION_STATUS = {
   supabase: { level: 'unknown', text: 'Not tested' },
@@ -394,6 +401,9 @@ window.updateCalendarAuthBanner = updateCalendarAuthBanner;
 window.summarizeCalendarConnectionState = summarizeCalendarConnectionState;
 
 resetAutoRefreshTimer();
+resetSlowStateBackstopTimer();
+resetCalendarPublishTimer();
+resetHousekeepingTimer();
   if (appState.supabase) {
     window.__hccBootState.phase = 'loading-shared-config';
     setStatus('Loading household config…');
@@ -417,6 +427,8 @@ resetAutoRefreshTimer();
   setStatus('Loading household data…');
   await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
   bindRealtime();
+  fetchGoogleCalendarSnapshots().catch((error) => console.warn('Initial scheduled calendar refresh failed', error));
+  runHousekeeping(false).catch((error) => console.warn('Initial housekeeping failed', error));
   await syncWakeLock({ force: true });
   window.__hccBootState.phase = 'ready';
   window.__hccBootState.finished = true;
@@ -589,59 +601,46 @@ function renderRuntimeUi(options = {}) {
   if (options.renderDevConsole !== false) renderDevConsole();
 }
 
-async function runRefreshGroup(tasks, groupLabel = 'refresh group') {
-  const results = await Promise.allSettled(tasks);
-  for (const result of results) {
-    if (result.status === 'rejected') {
-      console.warn(`${groupLabel} issue`, result.reason);
-    }
-  }
-  return results;
-}
-
-function shouldIncludeSlowStateForReason(reason = '') {
-  const normalized = String(reason || '').toLowerCase();
-  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
-}
-
-function shouldIncludeCalendarRefreshForReason(reason = '') {
-  const normalized = String(reason || '').toLowerCase();
-  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
-}
-
-async function refreshBaseState(options = {}) {
-  const includeSlowState = options.includeSlowState !== false;
-  await runRefreshGroup([
+async function refreshBaseState(includeSlowState = false) {
+  const work = [
     fetchTasks(),
     fetchSignals(),
     fetchLoads(),
-  ], 'Base refresh');
-
+  ];
   if (includeSlowState) {
-    await runRefreshGroup([
-      fetchSnapshots(),
-      fetchRecentLogs(),
-    ], 'Slow-state refresh');
+    work.push(fetchSnapshots(), fetchRecentLogs());
+  }
+
+  const results = await Promise.allSettled(work);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('Base refresh issue', result.reason);
+    }
   }
 }
 
-async function refreshOptionalState(options = {}) {
-  const followup = [fetchWeatherSnapshot()];
-  if (options.includeCalendarRefresh !== false) followup.unshift(fetchGoogleCalendarSnapshots());
-  await runRefreshGroup(followup, 'Follow-up refresh');
+async function refreshOptionalState() {
+  const followup = await Promise.allSettled([
+    fetchWeatherSnapshot(),
+  ]);
+
+  for (const result of followup) {
+    if (result.status === 'rejected') {
+      console.warn('Follow-up refresh issue', result.reason);
+    }
+  }
 }
 
-async function runFullRefreshCycle(reason = 'manual refresh') {
-  const includeSlowState = shouldIncludeSlowStateForReason(reason);
-  const includeCalendarRefresh = shouldIncludeCalendarRefreshForReason(reason);
+async function runFullRefreshCycle(reason = 'manual refresh', options = {}) {
+  const includeSlowState = !!options.includeSlowState;
   setStatus(`Refreshing ${appState.config.mode} view…`);
-  pushDevLog('info', `Starting full refresh: ${reason}.`);
-  await refreshBaseState({ includeSlowState });
+  pushDevLog('info', `Starting full refresh: ${reason}${includeSlowState ? ' (with slow state)' : ''}.`);
+  await refreshBaseState(includeSlowState);
 
   // Render immediately from shared/base data so headless displays never block on optional enrichments.
   renderRuntimeUi();
 
-  await refreshOptionalState({ includeCalendarRefresh });
+  await refreshOptionalState();
 
   renderRuntimeUi();
   appState.refreshCoordinator.lastReason = reason;
@@ -649,7 +648,7 @@ async function runFullRefreshCycle(reason = 'manual refresh') {
   setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
 }
 
-async function refreshAll(reason = 'manual refresh') {
+async function refreshAll(reason = 'manual refresh', options = {}) {
   if (!appState.supabase) {
     setStatus('Supabase settings needed.');
     return;
@@ -658,23 +657,28 @@ async function refreshAll(reason = 'manual refresh') {
   const coordinator = appState.refreshCoordinator || (appState.refreshCoordinator = {
     inFlight: null,
     pendingReason: '',
+    pendingOptions: null,
     lastReason: '',
     lastCompletedAt: '',
   });
 
   if (coordinator.inFlight) {
     coordinator.pendingReason = coordinator.pendingReason || reason || 'queued refresh';
+    coordinator.pendingOptions = { ...(coordinator.pendingOptions || {}), ...(options || {}) };
     pushDevLog('info', `Refresh already running; queued ${coordinator.pendingReason}.`);
     return coordinator.inFlight;
   }
 
   coordinator.pendingReason = coordinator.pendingReason || reason || 'manual refresh';
+  coordinator.pendingOptions = { ...(coordinator.pendingOptions || {}), ...(options || {}) };
   coordinator.inFlight = (async () => {
     while (coordinator.pendingReason) {
       const nextReason = coordinator.pendingReason;
+      const nextOptions = coordinator.pendingOptions || {};
       coordinator.pendingReason = '';
+      coordinator.pendingOptions = null;
       try {
-        await runFullRefreshCycle(nextReason);
+        await runFullRefreshCycle(nextReason, nextOptions);
       } catch (error) {
         handleRuntimeActionError('Refresh failed', error);
         renderRuntimeUi({ renderMode: false });
@@ -766,6 +770,17 @@ function taskIsArchived(task) {
   return false;
 }
 
+function isRealtimeHealthy() {
+  const diag = appState.realtimeDiagnostics || {};
+  return !!appState.supabase && Number(diag.activeChannels || 0) > 0 && diag.lastStatus === 'SUBSCRIBED';
+}
+
+function getAutoRefreshSeconds() {
+  const configured = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  if (isRealtimeHealthy()) return Math.max(HEALTHY_AUTO_REFRESH_SECONDS, configured);
+  return Math.min(configured, DEGRADED_AUTO_REFRESH_SECONDS);
+}
+
 function taskQueryCandidateFilters(baseQuery, completedField) {
   return [
     () => baseQuery.eq(completedField, false),
@@ -778,7 +793,7 @@ function taskQueryCandidateFilters(baseQuery, completedField) {
 async function fetchTasks() {
   const { taskTable } = appState.config;
   const completedField = appState.config.taskCompletedField;
-  const buildBaseQuery = () => appState.supabase.from(taskTable).select('*').limit(120);
+  const buildBaseQuery = () => appState.supabase.from(taskTable).select('*').order('updated_at', { ascending: false }).limit(120);
 
   let data = null;
   let error = null;
@@ -803,7 +818,7 @@ async function fetchTasks() {
 
   if (error) {
     console.warn('Task fetch issue', error);
-    pushDevLog('warn', `Task fetch issue: ${error.message || error}`);
+    pushDevLog('warn', `Task fetch issue; keeping ${appState.tasks.length} cached task${appState.tasks.length === 1 ? '' : 's'}.`);
     return;
   }
 
@@ -819,10 +834,10 @@ async function fetchSignals() {
     .select('*')
     .eq('status', 'active')
     .order('updated_at', { ascending: false })
-    .limit(20);
+    .limit(12);
   if (error) {
     console.warn('Signal fetch issue', error);
-    pushDevLog('warn', `Signal fetch issue: ${error.message || error}`);
+    pushDevLog('warn', `Signal fetch issue; keeping ${appState.signals.length} cached signal${appState.signals.length === 1 ? '' : 's'}.`);
     return;
   }
   appState.signals = data || [];
@@ -846,10 +861,12 @@ async function fetchLoads() {
     .from('laundry_loads')
     .select('*')
     .is('archived_at', null)
-    .order('created_at', { ascending: true });
+    .neq('status', 'done')
+    .order('created_at', { ascending: true })
+    .limit(25);
   if (error) {
     console.warn('Laundry fetch issue', error);
-    pushDevLog('warn', `Laundry fetch issue: ${error.message || error}`);
+    pushDevLog('warn', `Laundry fetch issue; keeping ${appState.loads.length} cached load${appState.loads.length === 1 ? '' : 's'}.`);
     return;
   }
   appState.loads = sortLoads(data || []);
@@ -865,7 +882,8 @@ async function fetchSnapshots() {
     .from('context_snapshots')
     .select('*')
     .in('context_type', types)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(12);
   if (error) {
     console.warn('Snapshot fetch issue', error);
     return;
@@ -920,10 +938,10 @@ async function fetchRecentLogs() {
     .from('household_logs')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(10);
+    .limit(6);
   if (error) {
     console.warn('Log fetch issue', error);
-    pushDevLog('warn', `Log fetch issue: ${error.message || error}`);
+    pushDevLog('warn', `Log fetch issue; keeping ${appState.logs.length} cached log entr${appState.logs.length === 1 ? 'y' : 'ies'}.`);
     return;
   }
   appState.logs = data || [];
@@ -995,6 +1013,9 @@ function noteRealtimeSubscriptionStatus(table, status) {
   const level = status === 'SUBSCRIBED' ? 'ok' : (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' ? 'warn' : 'unknown');
   setRealtimeConnectionStatus(level);
   resetAutoRefreshTimer();
+resetSlowStateBackstopTimer();
+resetCalendarPublishTimer();
+resetHousekeepingTimer();
   pushDevLog(level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${status}`);
 }
 
@@ -1025,14 +1046,12 @@ function bindRealtime() {
 function clearSubscriptions() {
   if (!appState.subscriptions?.length || !appState.supabase) {
     updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: '' });
-    resetAutoRefreshTimer();
     return;
   }
   for (const entry of appState.subscriptions) appState.supabase.removeChannel(entry.channel || entry);
   appState.subscriptions = [];
   updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
   setRealtimeConnectionStatus('unknown', 'Channels cleared');
-  resetAutoRefreshTimer();
 }
 
 
@@ -2416,6 +2435,46 @@ async function fetchHouseholdConfig() {
 }
 
 
+async function pruneOldRows(table, builder, label) {
+  if (!appState.supabase) return;
+  try {
+    const { error } = await builder(appState.supabase.from(table).delete());
+    if (error) throw error;
+    pushDevLog('info', `${label} pruned.`);
+  } catch (error) {
+    pushDevLog('warn', `${label} prune skipped: ${error?.message || error}`);
+  }
+}
+
+async function runHousekeeping(force = false) {
+  if (!appState.supabase || appState.config.mode !== 'mobile') return;
+  const nowMs = getNowMs();
+  const lastRun = Number(localStorage.getItem(HOUSEKEEPING_LAST_RUN_STORAGE) || 0);
+  if (!force && lastRun && (nowMs - lastRun) < (HOUSEKEEPING_INTERVAL_SECONDS * 1000)) return;
+
+  const snapshotCutoff = new Date(nowMs - SNAPSHOT_RETENTION_DAYS * 86400000).toISOString();
+  const logCutoff = new Date(nowMs - LOG_RETENTION_DAYS * 86400000).toISOString();
+  const signalCutoff = new Date(nowMs - RESOLVED_SIGNAL_RETENTION_DAYS * 86400000).toISOString();
+  const loadCutoff = new Date(nowMs - LOAD_RETENTION_DAYS * 86400000).toISOString();
+
+  await pruneOldRows('context_snapshots', (q) => q.lt('created_at', snapshotCutoff), 'Old snapshots');
+  await pruneOldRows('household_logs', (q) => q.lt('created_at', logCutoff), 'Old logs');
+  await pruneOldRows('household_signals', (q) => q.in('status', ['dismissed', 'resolved']).lt('updated_at', signalCutoff), 'Resolved signals');
+  await pruneOldRows('laundry_loads', (q) => q.lt('updated_at', loadCutoff).or('status.eq.done,archived_at.not.is.null'), 'Completed laundry loads');
+
+  localStorage.setItem(HOUSEKEEPING_LAST_RUN_STORAGE, String(nowMs));
+}
+
+async function compactSnapshotsForType(contextType, keepAfterIso) {
+  if (!appState.supabase) return;
+  const { error } = await appState.supabase
+    .from('context_snapshots')
+    .delete()
+    .eq('context_type', contextType)
+    .lt('created_at', keepAfterIso);
+  if (error) throw error;
+}
+
 async function publishContextSnapshot(contextType, payload, source = 'headless-google-calendar', validMinutes = 15) {
   if (!appState.supabase) throw new Error('Supabase not connected');
   const row = {
@@ -2426,6 +2485,8 @@ async function publishContextSnapshot(contextType, payload, source = 'headless-g
   };
   const { error } = await appState.supabase.from('context_snapshots').insert(row);
   if (error) throw error;
+  const retentionCutoff = new Date(getNowMs() - SNAPSHOT_RETENTION_DAYS * 86400000).toISOString();
+  compactSnapshotsForType(contextType, retentionCutoff).catch((compactError) => console.warn(`Snapshot compaction warning for ${contextType}`, compactError));
 }
 
 
@@ -2629,7 +2690,7 @@ async function connectGoogleCalendarAccount() {
             const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
             showToast(`Connected ${connectedLabel}`, 'success');
             pushDevLog('info', `Connected Google Calendar account ${connectedLabel}`);
-            await refreshAll('calendar account connected');
+            await refreshAll('calendar account connected', { includeSlowState: true });
             resolve();
           } catch (error) {
             reject(error);
@@ -2847,7 +2908,7 @@ function renderCalendarAccountsPanel(options = {}) {
       removeButton.textContent = 'Remove';
       removeButton.addEventListener('click', () => {
         saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
-        refreshAll('calendar account removed').catch((error) => console.error('Refresh after removing calendar account failed', error));
+        refreshAll('calendar account removed', { includeSlowState: true }).catch((error) => console.error('Refresh after removing calendar account failed', error));
       });
       header.append(left, removeButton);
     } else {
@@ -2879,7 +2940,7 @@ function renderCalendarAccountsPanel(options = {}) {
             calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
           });
           saveCalendarAccounts(next);
-          refreshAll('calendar selection changed').catch((error) => console.error('Refresh after calendar toggle failed', error));
+          refreshAll('calendar selection changed', { includeSlowState: true }).catch((error) => console.error('Refresh after calendar toggle failed', error));
         });
         const labelText = document.createElement('span');
         labelText.textContent = calendar.summary || calendar.id;
@@ -3992,7 +4053,7 @@ function applyTestTimeOverride() {
   saveTestTimeOverride(appState.testTimeOverride);
   pushDevLog('info', `Set test time override to ${appState.testTimeOverride}`);
   showToast('Test time set', 'success');
-  refreshAll('test time override set').catch((error) => console.error('Refresh after setting test time failed', error));
+  refreshAll('test time override set', { includeSlowState: true }).catch((error) => console.error('Refresh after setting test time failed', error));
   renderDevConsole();
 }
 
@@ -4002,7 +4063,7 @@ function clearTestTimeOverride() {
   if (testTimeInput) testTimeInput.value = '';
   pushDevLog('info', 'Cleared test time override.');
   showToast('Returned to real time', 'success');
-  refreshAll('test time override cleared').catch((error) => console.error('Refresh after clearing test time failed', error));
+  refreshAll('test time override cleared', { includeSlowState: true }).catch((error) => console.error('Refresh after clearing test time failed', error));
   renderDevConsole();
 }
 
@@ -4443,7 +4504,7 @@ function setupButtons() {
   settingsButton.onclick = openSettingsDialog;
   refreshButton.onclick = async () => {
     try {
-      await refreshAll('manual refresh button');
+      await refreshAll('manual refresh button', { includeSlowState: true });
     } catch (error) {
       handleRuntimeActionError('Refresh failed', error);
     }
@@ -4471,10 +4532,13 @@ function setupButtons() {
     try {
       await syncWakeLock({ force: true });
       resetAutoRefreshTimer();
+resetSlowStateBackstopTimer();
+resetCalendarPublishTimer();
+resetHousekeepingTimer();
       clearSubscriptions();
       await ensureSupabase();
       await upsertDeviceProfile();
-      await refreshAll('settings saved');
+      await refreshAll('settings saved', { includeSlowState: true });
       bindRealtime();
     } catch (error) {
       handleRuntimeActionError('Settings saved, but refresh failed', error);
@@ -4989,49 +5053,40 @@ function getCalendarAuthRequirementState() {
 }
 
 
-function hasHealthyRealtimeConnection() {
-  const diag = appState.realtimeDiagnostics || {};
-  return !!appState.supabase && Number(diag.activeChannels || 0) > 0 && diag.lastStatus === 'SUBSCRIBED';
+function resetAutoRefreshTimer() {
+  if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
+  const refreshSeconds = getAutoRefreshSeconds();
+  autoRefreshTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden) return;
+    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s${isRealtimeHealthy() ? ' realtime-healthy' : ' degraded'})`);
+    refreshAll('auto refresh').catch((error) => console.error('Auto refresh failed', error));
+  }, refreshSeconds * 1000);
 }
 
-function getEffectiveAutoRefreshSeconds() {
-  const configured = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
-  if (hasHealthyRealtimeConnection()) return Math.max(configured, HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS);
-  return Math.min(configured, DEGRADED_REALTIME_REFRESH_CEILING_SECONDS);
-}
-
-function scheduleSlowStateRefresh() {
-  if (slowRefreshTimer) window.clearInterval(slowRefreshTimer);
-  slowRefreshTimer = window.setInterval(() => {
-    if (!appState.supabase || document.hidden || hasHealthyRealtimeConnection()) return;
-    pushDevLog('info', `Slow-state recovery refresh fired (${SLOW_STATE_REFRESH_SECONDS}s)`);
-    runTargetedRefresh('Slow-state recovery refresh', async () => {
+function resetSlowStateBackstopTimer() {
+  if (slowStateBackstopTimer) window.clearInterval(slowStateBackstopTimer);
+  slowStateBackstopTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden || isRealtimeHealthy()) return;
+    runTargetedRefresh('Slow-state recovery', async () => {
       await fetchSnapshots();
       await fetchRecentLogs();
     });
-  }, SLOW_STATE_REFRESH_SECONDS * 1000);
+  }, SLOW_STATE_BACKSTOP_SECONDS * 1000);
 }
 
-function scheduleCalendarPublisherRefresh() {
-  if (calendarPublisherTimer) window.clearInterval(calendarPublisherTimer);
-  calendarPublisherTimer = window.setInterval(() => {
-    if (!appState.supabase || document.hidden || !hasPublisherCalendarAccounts()) return;
-    pushDevLog('info', `Calendar publisher refresh fired (${CALENDAR_PUBLISH_REFRESH_SECONDS}s)`);
-    fetchGoogleCalendarSnapshots().catch((error) => console.warn('Calendar publisher refresh failed', error));
-  }, CALENDAR_PUBLISH_REFRESH_SECONDS * 1000);
-}
-
-function resetAutoRefreshTimer() {
-  if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
-  const refreshSeconds = getEffectiveAutoRefreshSeconds();
-  autoRefreshTimer = window.setInterval(() => {
+function resetCalendarPublishTimer() {
+  if (calendarPublishTimer) window.clearInterval(calendarPublishTimer);
+  calendarPublishTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
-    const reason = hasHealthyRealtimeConnection() ? 'auto refresh' : 'recovery auto refresh';
-    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s · ${hasHealthyRealtimeConnection() ? 'realtime healthy' : 'realtime degraded'})`);
-    refreshAll(reason).catch((error) => console.error('Auto refresh failed', error));
-  }, refreshSeconds * 1000);
-  scheduleSlowStateRefresh();
-  scheduleCalendarPublisherRefresh();
+    fetchGoogleCalendarSnapshots().catch((error) => console.warn('Scheduled calendar publish failed', error));
+  }, CALENDAR_PUBLISH_INTERVAL_SECONDS * 1000);
+}
+
+function resetHousekeepingTimer() {
+  if (housekeepingTimer) window.clearInterval(housekeepingTimer);
+  housekeepingTimer = window.setInterval(() => {
+    runHousekeeping(false).catch((error) => console.warn('Housekeeping failed', error));
+  }, HOUSEKEEPING_INTERVAL_SECONDS * 1000);
 }
 
 async function registerServiceWorker() {
@@ -5046,6 +5101,9 @@ async function registerServiceWorker() {
 }
 
 resetAutoRefreshTimer();
+resetSlowStateBackstopTimer();
+resetCalendarPublishTimer();
+resetHousekeepingTimer();
 
 
 let __hccInitStarted = false;
