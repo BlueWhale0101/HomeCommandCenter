@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.3.8';
+const APP_VERSION = 'v2.3.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -129,6 +129,7 @@ const DEFAULT_CONNECTION_STATUS = {
   tasks: { level: 'unknown', text: 'Not tested' },
   deviceProfile: { level: 'unknown', text: 'Not tested' },
   realtime: { level: 'unknown', text: 'Not tested' },
+  serviceWorker: { level: 'unknown', text: 'Not tested' },
 };
 
 const INITIAL_CONFIG = loadConfig();
@@ -193,6 +194,22 @@ let appState = {
     lastEventType: '',
     lastStatus: '',
   },
+  serviceWorkerDiagnostics: {
+    supported: typeof navigator !== 'undefined' && 'serviceWorker' in navigator,
+    registrationState: 'unregistered',
+    scriptUrl: '',
+    scriptVersion: '',
+    controllerScriptUrl: '',
+    controllerVersion: '',
+    cacheVersion: '',
+    waitingVersion: '',
+    installingVersion: '',
+    updateReady: false,
+    mismatch: false,
+    mismatchReason: '',
+    lastCheckAt: '',
+    lastMessageAt: '',
+  },
   ioDiagnostics: {
     sessionStartedAt: new Date().toISOString(),
     refreshes: { full: 0, targeted: 0, queued: 0, lastType: '', lastReason: '', lastAt: '', lastDurationMs: 0 },
@@ -213,6 +230,124 @@ let appState = {
 };
 
 const screenEl = document.getElementById('screen');
+
+function parseServiceWorkerVersion(scriptUrl = '') {
+  if (!scriptUrl) return '';
+  try {
+    const url = new URL(scriptUrl, window.location.href);
+    return url.searchParams.get('v') || '';
+  } catch {
+    const match = String(scriptUrl).match(/[?&]v=([^&#]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+}
+
+function updateServiceWorkerDiagnostics(patch = {}) {
+  appState.serviceWorkerDiagnostics = { ...(appState.serviceWorkerDiagnostics || {}), ...patch };
+}
+
+function evaluateServiceWorkerDiagnostics() {
+  const diag = appState.serviceWorkerDiagnostics || {};
+  const mismatchReasons = [];
+  if (!diag.supported) return { level: 'unknown', text: 'Unavailable', mismatch: false, mismatchReason: '' };
+  if (diag.controllerVersion && diag.controllerVersion !== APP_VERSION) mismatchReasons.push(`controller ${diag.controllerVersion}`);
+  if (diag.cacheVersion && diag.cacheVersion !== APP_VERSION) mismatchReasons.push(`cache ${diag.cacheVersion}`);
+  if (diag.updateReady && diag.waitingVersion && diag.waitingVersion !== APP_VERSION) mismatchReasons.push(`waiting ${diag.waitingVersion}`);
+  const mismatchReason = mismatchReasons.length ? `Version mismatch · ${mismatchReasons.join(' · ')}` : '';
+  if (mismatchReason || diag.mismatchReason) {
+    updateServiceWorkerDiagnostics({ mismatch: true, mismatchReason: mismatchReason || diag.mismatchReason, lastCheckAt: new Date().toISOString() });
+    return { level: 'warn', text: mismatchReason || diag.mismatchReason || 'Version mismatch', mismatch: true, mismatchReason: mismatchReason || diag.mismatchReason || '' };
+  }
+  if (diag.updateReady) {
+    const waiting = diag.waitingVersion ? `v${diag.waitingVersion.replace(/^v/, '')}` : 'new worker';
+    updateServiceWorkerDiagnostics({ mismatch: false, mismatchReason: '', lastCheckAt: new Date().toISOString() });
+    return { level: 'warn', text: `Update ready · ${waiting}`, mismatch: false, mismatchReason: '' };
+  }
+  if (!diag.controllerScriptUrl) {
+    updateServiceWorkerDiagnostics({ mismatch: false, mismatchReason: '', lastCheckAt: new Date().toISOString() });
+    return { level: 'unknown', text: diag.registrationState === 'registering' ? 'Registering…' : 'No controller yet', mismatch: false, mismatchReason: '' };
+  }
+  const activeLabel = diag.cacheVersion ? `cache ${diag.cacheVersion}` : `controller ${diag.controllerVersion || APP_VERSION}`;
+  updateServiceWorkerDiagnostics({ mismatch: false, mismatchReason: '', lastCheckAt: new Date().toISOString() });
+  return { level: 'ok', text: `Current · ${activeLabel}`, mismatch: false, mismatchReason: '' };
+}
+
+function syncServiceWorkerConnectionStatus() {
+  const descriptor = evaluateServiceWorkerDiagnostics();
+  setConnectionStatus('serviceWorker', descriptor.level, descriptor.text);
+  return descriptor;
+}
+
+function requestServiceWorkerVersionReport() {
+  if (!(typeof navigator !== 'undefined' && navigator.serviceWorker && navigator.serviceWorker.controller)) return;
+  try { navigator.serviceWorker.controller.postMessage({ type: 'REPORT_VERSION', appVersion: APP_VERSION }); } catch {}
+}
+
+async function refreshServiceWorkerDiagnostics(registration = null) {
+  const supported = typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
+  if (!supported) {
+    updateServiceWorkerDiagnostics({ supported: false, registrationState: 'unsupported', lastCheckAt: new Date().toISOString() });
+    syncServiceWorkerConnectionStatus();
+    return appState.serviceWorkerDiagnostics;
+  }
+  let reg = registration;
+  if (!reg) {
+    try { reg = await navigator.serviceWorker.getRegistration(); } catch {}
+  }
+  const controllerScriptUrl = navigator.serviceWorker.controller?.scriptURL || '';
+  updateServiceWorkerDiagnostics({
+    supported: true,
+    registrationState: reg ? 'registered' : 'unregistered',
+    scriptUrl: reg?.active?.scriptURL || reg?.waiting?.scriptURL || reg?.installing?.scriptURL || '',
+    scriptVersion: parseServiceWorkerVersion(reg?.active?.scriptURL || reg?.waiting?.scriptURL || reg?.installing?.scriptURL || ''),
+    controllerScriptUrl,
+    controllerVersion: parseServiceWorkerVersion(controllerScriptUrl),
+    waitingVersion: parseServiceWorkerVersion(reg?.waiting?.scriptURL || ''),
+    installingVersion: parseServiceWorkerVersion(reg?.installing?.scriptURL || ''),
+    updateReady: !!reg?.waiting,
+    lastCheckAt: new Date().toISOString(),
+  });
+  syncServiceWorkerConnectionStatus();
+  requestServiceWorkerVersionReport();
+  return appState.serviceWorkerDiagnostics;
+}
+
+function attachServiceWorkerListeners(registration) {
+  if (!(typeof navigator !== 'undefined' && navigator.serviceWorker)) return;
+  if (!navigator.serviceWorker.__hccVersionListener) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const data = event.data || {};
+      if (data.type === 'SW_VERSION_REPORT') {
+        updateServiceWorkerDiagnostics({
+          cacheVersion: String(data.cacheVersion || ''),
+          scriptUrl: String(data.scriptURL || appState.serviceWorkerDiagnostics?.scriptUrl || ''),
+          scriptVersion: parseServiceWorkerVersion(String(data.scriptURL || appState.serviceWorkerDiagnostics?.scriptUrl || '')),
+          controllerScriptUrl: navigator.serviceWorker.controller?.scriptURL || appState.serviceWorkerDiagnostics?.controllerScriptUrl || '',
+          controllerVersion: parseServiceWorkerVersion(navigator.serviceWorker.controller?.scriptURL || appState.serviceWorkerDiagnostics?.controllerScriptUrl || ''),
+          lastMessageAt: new Date().toISOString(),
+        });
+        syncServiceWorkerConnectionStatus();
+        renderApp();
+      }
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.setTimeout(() => { refreshServiceWorkerDiagnostics().then(() => renderApp()).catch(() => {}); }, 100);
+    });
+    navigator.serviceWorker.__hccVersionListener = true;
+  }
+  if (registration && !registration.__hccUpdateListener) {
+    registration.addEventListener('updatefound', () => {
+      const worker = registration.installing;
+      refreshServiceWorkerDiagnostics(registration).then(() => renderApp()).catch(() => {});
+      if (worker) {
+        worker.addEventListener('statechange', () => {
+          refreshServiceWorkerDiagnostics(registration).then(() => renderApp()).catch(() => {});
+        });
+      }
+    });
+    registration.__hccUpdateListener = true;
+  }
+}
 const statusLine = document.getElementById('status-line');
 const settingsButton = document.getElementById('settings-button');
 const refreshButton = document.getElementById('refresh-button');
@@ -1540,6 +1675,7 @@ function renderMobileStatus(context) {
     buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Client Version', 'App and service worker alignment', renderTaskList(buildServiceWorkerStatusItems(), 'Service worker diagnostics are not available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'),
     buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'),
     buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'),
@@ -2190,6 +2326,7 @@ function renderMobileDebug() {
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
     { title: `Calendar publisher: ${(appState.calendarPublisherDiagnostics || {}).lastPublishStatus || 'idle'}`, meta: `${(appState.calendarPublisherDiagnostics || {}).lastAttemptReason || 'No recent attempt'}${(appState.calendarPublisherDiagnostics || {}).lastSkipReason ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastSkipReason}` : ''}${(appState.calendarPublisherDiagnostics || {}).lastPublishError ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastPublishError}` : ''}`, pill: 'Publisher' },
     { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
+    buildServiceWorkerDebugSummary(),
     buildWakeLockDebugSummary(),
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
@@ -4319,6 +4456,7 @@ function buildDiagnosticsText() {
     snapshotTypes: Object.keys(appState.snapshots),
     calendarAccounts: appState.calendarAccounts.map(account => ({ email: account.email, calendars: (account.calendars || []).filter(cal => cal.selected).length, expired: isCalendarAccountExpired(account) })),
     ioDiagnostics: appState.ioDiagnostics,
+    serviceWorkerDiagnostics: appState.serviceWorkerDiagnostics,
     status: statusLine.textContent,
     time: getNowDate().toISOString(),
     testTimeOverride: appState.testTimeOverride,
@@ -4351,6 +4489,7 @@ function renderConnectionStatusPanel() {
     ['tasks', 'Tasks'],
     ['deviceProfile', 'Device profile'],
     ['realtime', 'Realtime'],
+    ['serviceWorker', 'Service worker'],
   ];
   connectionStatusGrid.replaceChildren();
   for (const [key, label] of rows) {
@@ -4412,6 +4551,7 @@ async function runConnectionTest() {
   } catch (error) {
     setConnectionStatus('supabase', 'error', error?.message || 'Could not initialize client');
     setConnectionStatus('tasks', 'unknown', 'Not tested');
+    syncServiceWorkerConnectionStatus();
     setConnectionStatus('deviceProfile', 'unknown', 'Not tested');
     setConnectionStatus('realtime', 'unknown', 'Not tested');
     pushDevLog('error', `Connection test failed: ${error?.message || error}`);
@@ -5079,6 +5219,61 @@ function buildSharedSyncItems() {
   });
 }
 
+
+function buildServiceWorkerDebugSummary() {
+  const diag = appState.serviceWorkerDiagnostics || {};
+  const descriptor = evaluateServiceWorkerDiagnostics();
+  return {
+    title: `Client version: ${APP_VERSION} · ${descriptor.text}`,
+    meta: [
+      diag.controllerVersion ? `Controller ${diag.controllerVersion}` : 'No active controller',
+      diag.cacheVersion ? `Cache ${diag.cacheVersion}` : '',
+      diag.waitingVersion ? `Waiting ${diag.waitingVersion}` : '',
+      diag.lastCheckAt ? `Checked ${relativeTime(diag.lastCheckAt)}` : '',
+    ].filter(Boolean).join(' · '),
+    pill: diag.mismatch ? 'Mismatch' : (diag.updateReady ? 'Update' : 'Version'),
+    pillClass: diag.mismatch || diag.updateReady ? 'warning' : '',
+  };
+}
+
+function buildServiceWorkerStatusItems() {
+  const diag = appState.serviceWorkerDiagnostics || {};
+  const descriptor = evaluateServiceWorkerDiagnostics();
+  const items = [{
+    title: `App ${APP_VERSION} · ${descriptor.text}`,
+    meta: [
+      diag.controllerVersion ? `Controller ${diag.controllerVersion}` : 'No active controller yet',
+      diag.cacheVersion ? `Cache ${diag.cacheVersion}` : '',
+      diag.lastCheckAt ? `Checked ${relativeTime(diag.lastCheckAt)}` : '',
+    ].filter(Boolean).join(' · '),
+    pill: diag.mismatch ? 'Mismatch' : (diag.updateReady ? 'Update' : 'Aligned'),
+    pillClass: diag.mismatch || diag.updateReady ? 'warning' : '',
+  }];
+  if (diag.mismatchReason) {
+    items.push({
+      title: 'Refresh recommended on this device',
+      meta: `${diag.mismatchReason}. A hard refresh or reopening the app should pick up the new worker.`,
+      pill: 'Action',
+      pillClass: 'warning',
+    });
+  } else if (diag.updateReady) {
+    items.push({
+      title: 'New service worker is waiting',
+      meta: `${diag.waitingVersion ? `Version ${diag.waitingVersion}` : 'A newer worker'} is ready and should take over shortly. Reopen this display if it feels stale.`,
+      pill: 'Queued',
+      pillClass: 'warning',
+    });
+  }
+  if (!diag.controllerScriptUrl) {
+    items.push({
+      title: 'First load may not be controlled yet',
+      meta: 'Standalone displays usually attach to the new service worker after the next navigation or reopen.',
+      pill: 'Info',
+    });
+  }
+  return items;
+}
+
 function getSnapshot(type) {
   return appState.snapshots[type] || null;
 }
@@ -5301,12 +5496,21 @@ function resetHousekeepingTimer() {
 async function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
     try {
+      updateServiceWorkerDiagnostics({ supported: true, registrationState: 'registering', lastCheckAt: new Date().toISOString() });
+      syncServiceWorkerConnectionStatus();
       const registration = await navigator.serviceWorker.register(`./sw.js?v=${encodeURIComponent(APP_VERSION)}`);
+      attachServiceWorkerListeners(registration);
       if (registration && typeof registration.update === 'function') await registration.update();
       if (registration && registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      await refreshServiceWorkerDiagnostics(registration);
     } catch (error) {
+      updateServiceWorkerDiagnostics({ registrationState: 'error', mismatch: true, mismatchReason: error?.message || 'Service worker registration failed', lastCheckAt: new Date().toISOString() });
+      syncServiceWorkerConnectionStatus();
       console.warn('Service worker registration failed', error);
     }
+  } else {
+    updateServiceWorkerDiagnostics({ supported: false, registrationState: 'unsupported', lastCheckAt: new Date().toISOString() });
+    syncServiceWorkerConnectionStatus();
   }
 }
 

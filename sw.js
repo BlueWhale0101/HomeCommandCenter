@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v2.3.8';
+const CACHE_VERSION = 'v2.3.9';
 const CACHE_NAME = `household-command-center-${CACHE_VERSION}`;
 const ASSETS = [
   './',
@@ -25,6 +25,9 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data && event.data.type === 'REPORT_VERSION') {
+    event.source?.postMessage({ type: 'SW_VERSION_REPORT', cacheVersion: CACHE_VERSION, scriptURL: self.registration?.active?.scriptURL || self.location.href });
+  }
 });
 
 self.addEventListener('fetch', (event) => {
