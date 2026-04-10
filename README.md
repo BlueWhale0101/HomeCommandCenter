@@ -349,3 +349,9 @@ Roadmap notes:
 ## v2.2.18
 - Fixes laundry local-update ReferenceError by adding the shared `sortLoads(...)` helper used by optimistic laundry state updates.
 - Routes fetched loads through the same sort helper so local and server-refreshed laundry ordering stay aligned.
+
+
+## v2.2.19
+- Fixed the settings modal save flow so the dialog closes immediately after a successful local save.
+- Made the Save settings button an explicit non-submit button to avoid dialog form behavior conflicts.
+- Wrapped the post-save refresh/rebind work in error handling so follow-up refresh issues do not keep the dialog open.

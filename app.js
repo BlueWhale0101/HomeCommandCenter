@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.18';
+const APP_VERSION = 'v2.2.19';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4410,14 +4410,18 @@ function setupButtons() {
     }
     persistLocalConfig();
     fillSettingsForm();
-    await syncWakeLock({ force: true });
-    resetAutoRefreshTimer();
     closeSettingsDialog();
-    clearSubscriptions();
-    await ensureSupabase();
-    await upsertDeviceProfile();
-    await refreshAll('settings saved');
-    bindRealtime();
+    try {
+      await syncWakeLock({ force: true });
+      resetAutoRefreshTimer();
+      clearSubscriptions();
+      await ensureSupabase();
+      await upsertDeviceProfile();
+      await refreshAll('settings saved');
+      bindRealtime();
+    } catch (error) {
+      handleRuntimeActionError('Settings saved, but refresh failed', error);
+    }
   };
 }
 
