@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.2.1';
+const APP_VERSION = 'v2.3.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -19,7 +19,7 @@ const DEFAULT_CONFIG = {
   weatherSnapshotType: 'weather_today',
   calendarTodaySnapshotType: 'calendar_today',
   calendarTomorrowSnapshotType: 'calendar_tomorrow',
-  uiRefreshSeconds: 60,
+  uiRefreshSeconds: 600,
   googleClientId: '',
   weatherLocationQuery: '',
   weatherLocationName: '',
@@ -42,6 +42,22 @@ const SHARED_CONFIG_KEYS = {
   calendarAccounts: 'google_calendar_accounts',
   signalRules: 'signal_rules',
 };
+const DEVICE_PROFILE_CONFIG_KEYS = ['deviceName', 'mode', 'location', 'keepScreenAwake'];
+const LOCAL_ONLY_CONFIG_KEYS = [
+  'supabaseUrl',
+  'supabaseKey',
+  'taskTable',
+  'taskDateField',
+  'taskOwnerField',
+  'taskTitleField',
+  'taskCompletedField',
+  'taskCompletedValue',
+  'useStringCompleted',
+  'weatherSnapshotType',
+  'calendarTodaySnapshotType',
+  'calendarTomorrowSnapshotType',
+  'uiRefreshSeconds',
+];
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
@@ -93,6 +109,13 @@ const CUSTOM_SIGNAL_CLEAR_OPTIONS = [
 ];
 
 let autoRefreshTimer = null;
+let slowRefreshTimer = null;
+let calendarPublisherTimer = null;
+
+const HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS = 600;
+const DEGRADED_REALTIME_REFRESH_CEILING_SECONDS = 90;
+const SLOW_STATE_REFRESH_SECONDS = 900;
+const CALENDAR_PUBLISH_REFRESH_SECONDS = 900;
 
 const DEFAULT_CONNECTION_STATUS = {
   supabase: { level: 'unknown', text: 'Not tested' },
@@ -128,10 +151,41 @@ let appState = {
     note: '',
     needsInteraction: false,
     lastAttemptAt: '',
+    lastReason: '',
+    retryCount: 0,
+    releasedAt: '',
   },
   sharedConfigMeta: {},
   signalRulesDraft: normalizeSignalRules(INITIAL_CONFIG.signalRulesDraft),
   calendarDiagnostics: { selectedSources: 0, fetchedEvents: 0, mergedToday: 0, mergedTomorrow: 0, expiredAccounts: 0, lastError: '', lastSuccessAt: '' },
+  calendarPublisherDiagnostics: {
+    canPublish: false,
+    lastAttemptAt: '',
+    lastAttemptReason: '',
+    lastPublishAt: '',
+    lastPublishStatus: 'idle',
+    lastPublishSource: '',
+    lastSkipReason: '',
+    lastPublishError: '',
+    lastItemsToday: 0,
+    lastItemsTomorrow: 0,
+    lastSelectedSources: 0,
+  },
+  refreshCoordinator: {
+    inFlight: null,
+    pendingReason: '',
+    lastReason: '',
+    lastCompletedAt: '',
+  },
+  realtimeDiagnostics: {
+    subscribedAt: '',
+    activeChannels: 0,
+    channelStates: {},
+    lastEventAt: '',
+    lastEventTable: '',
+    lastEventType: '',
+    lastStatus: '',
+  },
 };
 
 const screenEl = document.getElementById('screen');
@@ -197,7 +251,7 @@ function getEffectiveSignalRules() {
 
 function persistSignalRulesDraft() {
   appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
-  saveConfig(appState.config);
+  persistLocalConfig();
 }
 
 function setSignalRulesDraft(nextRules) {
@@ -334,7 +388,12 @@ async function bootstrap() {
   window.__hccBootState.phase = 'connecting-supabase';
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
-  resetAutoRefreshTimer();
+  
+window.appState = appState;
+window.updateCalendarAuthBanner = updateCalendarAuthBanner;
+window.summarizeCalendarConnectionState = summarizeCalendarConnectionState;
+
+resetAutoRefreshTimer();
   if (appState.supabase) {
     window.__hccBootState.phase = 'loading-shared-config';
     setStatus('Loading household config…');
@@ -347,7 +406,13 @@ async function bootstrap() {
   }
   window.__hccBootState.phase = 'loading-device-profile';
   setStatus('Loading device profile…');
-  await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+  const deviceProfileReady = await safeLoadDeviceProfile();
+  window.__hccBootState.deviceProfileReady = deviceProfileReady;
+  if (!deviceProfileReady) {
+    window.setTimeout(() => {
+      if (appState.supabase) safeLoadDeviceProfile();
+    }, 0);
+  }
   window.__hccBootState.phase = 'loading-household-data';
   setStatus('Loading household data…');
   await withTimeout(refreshAll(), BOOT_TIMEOUT_MS, 'Initial data load timed out');
@@ -364,6 +429,19 @@ function withTimeout(promise, ms, label) {
     new Promise((_, reject) => window.setTimeout(() => reject(new Error(label)), ms)),
   ]);
 }
+
+async function safeLoadDeviceProfile() {
+  try {
+    await withTimeout(loadDeviceProfile(), BOOT_TIMEOUT_MS, 'Device profile timed out');
+    return true;
+  } catch (error) {
+    console.warn('Device profile load warning:', error);
+    pushDevLog('warn', `Device profile load warning: ${error.message}`);
+    setStatus(`Device profile warning: ${error.message}`);
+    return false;
+  }
+}
+
 
 async function ensureSupabase() {
   const { supabaseUrl, supabaseKey } = appState.config;
@@ -458,7 +536,7 @@ async function loadHostedSettingsOnce() {
       return false;
     }
     appState.config = normalized;
-    saveConfig(appState.config);
+    persistLocalConfig();
     markHostedSettingsChecked();
     pushDevLog('info', 'Loaded hosted settings from settings.json');
     setStatus('Loaded hosted settings.');
@@ -482,24 +560,14 @@ async function loadDeviceProfile() {
 
     if (data) {
       appState.deviceProfile = data;
-      appState.config.deviceName = data.device_name || appState.config.deviceName;
-      appState.config.mode = data.mode || appState.config.mode;
-      appState.config.location = data.location || appState.config.location;
-      if (typeof data.settings?.keepScreenAwake === 'boolean') appState.config.keepScreenAwake = data.settings.keepScreenAwake;
-      saveConfig(appState.config);
+      applyDeviceProfileToConfig(data);
+      persistLocalConfig();
       fillSettingsForm();
       setStatus(`Connected as ${appState.config.deviceName} (${appState.config.mode})`);
       return;
     }
 
-    const insertPayload = {
-      device_name: appState.config.deviceName,
-      device_key: appState.deviceKey,
-      mode: appState.config.mode,
-      location: appState.config.location,
-      settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
-      is_active: true,
-    };
+    const insertPayload = buildDeviceProfilePayload();
 
     const { data: inserted, error: insertError } = await appState.supabase
       .from('device_profiles')
@@ -516,42 +584,120 @@ async function loadDeviceProfile() {
   }
 }
 
-async function refreshAll() {
+function renderRuntimeUi(options = {}) {
+  if (options.renderMode !== false) renderMode();
+  if (options.renderDevConsole !== false) renderDevConsole();
+}
+
+async function runRefreshGroup(tasks, groupLabel = 'refresh group') {
+  const results = await Promise.allSettled(tasks);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn(`${groupLabel} issue`, result.reason);
+    }
+  }
+  return results;
+}
+
+function shouldIncludeSlowStateForReason(reason = '') {
+  const normalized = String(reason || '').toLowerCase();
+  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
+}
+
+function shouldIncludeCalendarRefreshForReason(reason = '') {
+  const normalized = String(reason || '').toLowerCase();
+  return !normalized.includes('auto refresh') && !normalized.includes('recovery auto refresh');
+}
+
+async function refreshBaseState(options = {}) {
+  const includeSlowState = options.includeSlowState !== false;
+  await runRefreshGroup([
+    fetchTasks(),
+    fetchSignals(),
+    fetchLoads(),
+  ], 'Base refresh');
+
+  if (includeSlowState) {
+    await runRefreshGroup([
+      fetchSnapshots(),
+      fetchRecentLogs(),
+    ], 'Slow-state refresh');
+  }
+}
+
+async function refreshOptionalState(options = {}) {
+  const followup = [fetchWeatherSnapshot()];
+  if (options.includeCalendarRefresh !== false) followup.unshift(fetchGoogleCalendarSnapshots());
+  await runRefreshGroup(followup, 'Follow-up refresh');
+}
+
+async function runFullRefreshCycle(reason = 'manual refresh') {
+  const includeSlowState = shouldIncludeSlowStateForReason(reason);
+  const includeCalendarRefresh = shouldIncludeCalendarRefreshForReason(reason);
+  setStatus(`Refreshing ${appState.config.mode} view…`);
+  pushDevLog('info', `Starting full refresh: ${reason}.`);
+  await refreshBaseState({ includeSlowState });
+
+  // Render immediately from shared/base data so headless displays never block on optional enrichments.
+  renderRuntimeUi();
+
+  await refreshOptionalState({ includeCalendarRefresh });
+
+  renderRuntimeUi();
+  appState.refreshCoordinator.lastReason = reason;
+  appState.refreshCoordinator.lastCompletedAt = new Date().toISOString();
+  setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+}
+
+async function refreshAll(reason = 'manual refresh') {
   if (!appState.supabase) {
     setStatus('Supabase settings needed.');
     return;
   }
-  setStatus(`Refreshing ${appState.config.mode} view…`);
-  try {
-    await Promise.all([
-      fetchTasks(),
-      fetchSignals(),
-      fetchLoads(),
-      fetchSnapshots(),
-      fetchRecentLogs(),
-    ]);
 
-    // Render immediately from shared/base data so headless displays never block on optional enrichments.
-    renderMode();
-    renderDevConsole();
+  const coordinator = appState.refreshCoordinator || (appState.refreshCoordinator = {
+    inFlight: null,
+    pendingReason: '',
+    lastReason: '',
+    lastCompletedAt: '',
+  });
 
-    const followup = await Promise.allSettled([
-      fetchGoogleCalendarSnapshots(),
-      fetchWeatherSnapshot(),
-    ]);
+  if (coordinator.inFlight) {
+    coordinator.pendingReason = coordinator.pendingReason || reason || 'queued refresh';
+    pushDevLog('info', `Refresh already running; queued ${coordinator.pendingReason}.`);
+    return coordinator.inFlight;
+  }
 
-    for (const result of followup) {
-      if (result.status === 'rejected') {
-        console.warn('Follow-up refresh issue', result.reason);
+  coordinator.pendingReason = coordinator.pendingReason || reason || 'manual refresh';
+  coordinator.inFlight = (async () => {
+    while (coordinator.pendingReason) {
+      const nextReason = coordinator.pendingReason;
+      coordinator.pendingReason = '';
+      try {
+        await runFullRefreshCycle(nextReason);
+      } catch (error) {
+        handleRuntimeActionError('Refresh failed', error);
+        renderRuntimeUi({ renderMode: false });
+        throw error;
       }
     }
+  })().finally(() => {
+    coordinator.inFlight = null;
+  });
 
-    renderMode();
-    renderDevConsole();
-    setStatus(`Showing ${appState.config.mode} mode · Updated ${getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  return coordinator.inFlight;
+}
+
+async function runTargetedRefresh(label, refreshWork, options = {}) {
+  const successMessage = options.successMessage || `${label} applied without full refresh.`;
+  try {
+    await refreshWork();
+    renderRuntimeUi(options.renderOptions || {});
+    pushDevLog('info', successMessage);
   } catch (error) {
-    handleRuntimeActionError('Refresh failed', error);
-    renderDevConsole();
+    console.warn(`${label} issue`, error);
+    pushDevLog('warn', `${label} failed: ${error?.message || error}`);
+    if (options.rethrow) throw error;
   }
 }
 
@@ -578,7 +724,7 @@ function maybeAutoMapTaskFields(tasks) {
   }
   if (Object.keys(updates).length) {
     Object.assign(appState.config, updates);
-    saveConfig(appState.config);
+    persistLocalConfig();
     fillSettingsForm();
     pushDevLog('info', `Auto-mapped task fields: ${Object.entries(updates).map(([k, v]) => `${k}→${v}`).join(', ')}`);
   }
@@ -657,7 +803,7 @@ async function fetchTasks() {
 
   if (error) {
     console.warn('Task fetch issue', error);
-    appState.tasks = [];
+    pushDevLog('warn', `Task fetch issue: ${error.message || error}`);
     return;
   }
 
@@ -676,10 +822,23 @@ async function fetchSignals() {
     .limit(20);
   if (error) {
     console.warn('Signal fetch issue', error);
-    appState.signals = [];
+    pushDevLog('warn', `Signal fetch issue: ${error.message || error}`);
     return;
   }
   appState.signals = data || [];
+}
+
+
+function sortLoads(loads) {
+  const items = Array.isArray(loads) ? [...loads] : [];
+  return items.sort((a, b) => {
+    const aDone = !!(a && (a.archived_at || a.completed_at || a.status === 'done'));
+    const bDone = !!(b && (b.archived_at || b.completed_at || b.status === 'done'));
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    const aTime = Date.parse((a && (a.created_at || a.last_transition_at || a.updated_at)) || '') || 0;
+    const bTime = Date.parse((b && (b.created_at || b.last_transition_at || b.updated_at)) || '') || 0;
+    return aTime - bTime;
+  });
 }
 
 async function fetchLoads() {
@@ -690,10 +849,10 @@ async function fetchLoads() {
     .order('created_at', { ascending: true });
   if (error) {
     console.warn('Laundry fetch issue', error);
-    appState.loads = [];
+    pushDevLog('warn', `Laundry fetch issue: ${error.message || error}`);
     return;
   }
-  appState.loads = data || [];
+  appState.loads = sortLoads(data || []);
 }
 
 async function fetchSnapshots() {
@@ -741,26 +900,19 @@ async function refreshWeatherOnly() {
   try {
     pushDevLog('info', 'Starting weather refresh.');
     await fetchWeatherSnapshot();
-    renderMode();
-    renderDevConsole();
+    renderRuntimeUi();
     showToast('Weather refreshed', 'success');
   } catch (error) {
     handleRuntimeActionError('Weather refresh failed', error);
-    renderDevConsole();
+    renderRuntimeUi({ renderMode: false });
     showToast('Weather refresh failed', 'error');
   }
 }
 
 async function refreshFromSnapshotUpdate() {
-  try {
+  await runTargetedRefresh('Snapshot-only refresh', async () => {
     await fetchSnapshots();
-    renderMode();
-    renderDevConsole();
-    pushDevLog('info', 'Applied snapshot update without full refresh.');
-  } catch (error) {
-    console.warn('Snapshot-only refresh issue', error);
-    pushDevLog('warn', `Snapshot-only refresh failed: ${error?.message || error}`);
-  }
+  });
 }
 
 async function fetchRecentLogs() {
@@ -771,48 +923,122 @@ async function fetchRecentLogs() {
     .limit(10);
   if (error) {
     console.warn('Log fetch issue', error);
-    appState.logs = [];
+    pushDevLog('warn', `Log fetch issue: ${error.message || error}`);
     return;
   }
   appState.logs = data || [];
 }
 
+
+function updateRealtimeDiagnostics(patch = {}) {
+  const current = appState.realtimeDiagnostics || {};
+  appState.realtimeDiagnostics = { ...current, ...patch, channelStates: patch.channelStates || current.channelStates || {} };
+}
+
+function getRealtimeStatusText() {
+  const diag = appState.realtimeDiagnostics || {};
+  const activeChannels = Number(diag.activeChannels || 0);
+  const lastEventTable = diag.lastEventTable ? ` · last ${diag.lastEventTable}` : '';
+  if (!appState.supabase) return 'Not configured';
+  if (!activeChannels) return 'No active channels';
+  if (diag.lastStatus === 'SUBSCRIBED') return `${activeChannels} channels active${lastEventTable}`;
+  if (diag.lastStatus) return `${diag.lastStatus}${lastEventTable}`;
+  return `${activeChannels} channels configured${lastEventTable}`;
+}
+
+function setRealtimeConnectionStatus(level = 'unknown', fallbackText = '') {
+  setConnectionStatus('realtime', level, fallbackText || getRealtimeStatusText());
+}
+
+function buildRealtimeChannelSpecs() {
+  return [
+    { table: appState.config.taskTable, event: '*', scope: 'targeted', reason: 'task realtime update', handler: () => runTargetedRefresh('Task realtime update', async () => {
+        await fetchTasks();
+      }) },
+    { table: 'household_logs', event: '*', scope: 'targeted', reason: 'log realtime update', handler: () => runTargetedRefresh('Log realtime update', async () => {
+        await fetchRecentLogs();
+      }) },
+    { table: 'household_signals', event: '*', scope: 'targeted', reason: 'signal realtime update', handler: () => runTargetedRefresh('Signal realtime update', async () => {
+        await fetchSignals();
+      }) },
+    { table: 'laundry_loads', event: '*', scope: 'targeted', reason: 'laundry realtime update', handler: () => runTargetedRefresh('Laundry realtime update', async () => {
+        await fetchLoads();
+      }) },
+    { table: 'context_snapshots', event: '*', scope: 'targeted', reason: 'snapshot realtime update', handler: () => refreshFromSnapshotUpdate() },
+    { table: SHARED_CONFIG_TABLE, event: '*', scope: 'targeted', reason: 'shared config realtime update', handler: () => runTargetedRefresh('Shared config update', async () => {
+        await fetchHouseholdConfig();
+      }) },
+  ];
+}
+
+function handleRealtimeEvent(spec, payload) {
+  updateRealtimeDiagnostics({
+    lastEventAt: new Date().toISOString(),
+    lastEventTable: spec.table,
+    lastEventType: payload?.eventType || spec.event || '*',
+  });
+  setRealtimeConnectionStatus('ok');
+  return spec.handler(payload);
+}
+
+function noteRealtimeSubscriptionStatus(table, status) {
+  const channelStates = {
+    ...((appState.realtimeDiagnostics && appState.realtimeDiagnostics.channelStates) || {}),
+    [table]: status,
+  };
+  updateRealtimeDiagnostics({
+    subscribedAt: appState.realtimeDiagnostics?.subscribedAt || new Date().toISOString(),
+    activeChannels: Object.keys(channelStates).length,
+    channelStates,
+    lastStatus: status || '',
+  });
+  const level = status === 'SUBSCRIBED' ? 'ok' : (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED' ? 'warn' : 'unknown');
+  setRealtimeConnectionStatus(level);
+  resetAutoRefreshTimer();
+  pushDevLog(level === 'ok' ? 'info' : 'warn', `Realtime ${table}: ${status}`);
+}
+
 function bindRealtime() {
   clearSubscriptions();
-  if (!appState.supabase) return;
-  const channels = [
-    { table: appState.config.taskTable, event: '*', handler: refreshAll },
-    { table: 'household_logs', event: '*', handler: refreshAll },
-    { table: 'household_signals', event: '*', handler: refreshAll },
-    { table: 'laundry_loads', event: '*', handler: refreshAll },
-    { table: 'context_snapshots', event: '*', handler: refreshFromSnapshotUpdate },
-    { table: SHARED_CONFIG_TABLE, event: '*', handler: async () => {
-        await fetchHouseholdConfig();
-        await fetchSnapshots();
-        renderMode();
-        renderDevConsole();
-        pushDevLog('info', 'Applied shared config update without full refresh.');
-      } },
-  ];
+  if (!appState.supabase) {
+    setRealtimeConnectionStatus('unknown', 'Not configured');
+    return;
+  }
+  const channels = buildRealtimeChannelSpecs();
+  updateRealtimeDiagnostics({
+    subscribedAt: new Date().toISOString(),
+    activeChannels: channels.length,
+    channelStates: {},
+    lastStatus: 'SUBSCRIBING',
+  });
+  setRealtimeConnectionStatus('unknown', 'Subscribing…');
 
-  appState.subscriptions = channels.map(({ table, event, handler }) => {
+  appState.subscriptions = channels.map((spec) => {
     const channel = appState.supabase
-      .channel(`realtime-${table}`)
-      .on('postgres_changes', { event, schema: 'public', table }, handler)
-      .subscribe();
-    return channel;
+      .channel(`realtime-${spec.table}`)
+      .on('postgres_changes', { event: spec.event, schema: 'public', table: spec.table }, (payload) => handleRealtimeEvent(spec, payload))
+      .subscribe((status) => noteRealtimeSubscriptionStatus(spec.table, status));
+    return { table: spec.table, channel };
   });
 }
 
 function clearSubscriptions() {
-  if (!appState.subscriptions?.length || !appState.supabase) return;
-  for (const channel of appState.subscriptions) appState.supabase.removeChannel(channel);
+  if (!appState.subscriptions?.length || !appState.supabase) {
+    updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: '' });
+    resetAutoRefreshTimer();
+    return;
+  }
+  for (const entry of appState.subscriptions) appState.supabase.removeChannel(entry.channel || entry);
   appState.subscriptions = [];
+  updateRealtimeDiagnostics({ activeChannels: 0, channelStates: {}, lastStatus: 'CLEARED' });
+  setRealtimeConnectionStatus('unknown', 'Channels cleared');
+  resetAutoRefreshTimer();
 }
 
 
-const MODE_LAYOUTS = {
+const SURFACE_DEFINITIONS = {
   kitchen: {
+    bodyClasses: ['widget-surface', 'kitchen-surface'],
     screenClass: 'screen two-columns widget-layout widget-layout-kitchen',
     widgets: [
       'context',
@@ -825,51 +1051,77 @@ const MODE_LAYOUTS = {
     ],
   },
   tv: {
+    bodyClasses: ['widget-surface', 'tv-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-tv',
     widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
   },
   laundry: {
+    bodyClasses: ['widget-surface', 'laundry-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-laundry',
     widgets: ['laundrySummary', 'laundryLoads', 'laundrySignals'],
   },
   bedroom: {
+    bodyClasses: ['widget-surface', 'bedroom-surface'],
     screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
     widgets: ['context', 'bedroomPrimary', 'bedroomLaundry', 'bedroomForget'],
   },
   mobile: {
+    bodyClasses: ['mobile-surface'],
     screenClass: 'screen two-columns widget-layout widget-layout-mobile',
     widgets: ['today', 'laundryLoads', 'upcoming', 'recentLogs', 'signals', 'quickActions', 'context', 'taskMapping'],
   },
 };
 
-function renderMode() {
-  const mode = appState.config.mode || 'tv';
+const SURFACE_BODY_CLASS_NAMES = ['tv-mode', 'mobile-mode', 'widget-surface', 'tv-surface', 'kitchen-surface', 'laundry-surface', 'bedroom-surface', 'mobile-surface'];
+
+function getSurfaceDefinition(mode) {
+  return SURFACE_DEFINITIONS[mode] || SURFACE_DEFINITIONS.kitchen;
+}
+
+function applySurfaceBodyClasses(mode) {
+  const surface = getSurfaceDefinition(mode);
+  for (const className of SURFACE_BODY_CLASS_NAMES) {
+    document.body.classList.remove(className);
+  }
+  for (const className of surface.bodyClasses || []) {
+    document.body.classList.add(className);
+  }
   document.body.classList.toggle('tv-mode', mode === 'tv');
   document.body.classList.toggle('mobile-mode', mode === 'mobile');
+}
+
+function renderMode() {
+  const mode = appState.config.mode || 'tv';
+  applySurfaceBodyClasses(mode);
   const digest = buildTaskDigest();
   const widgetContext = buildWidgetContext(digest);
   if (mode === 'mobile') {
     renderMobileControlPanel(widgetContext);
+    updateCalendarAuthBanner();
     return;
   }
   renderModeLayout(mode, widgetContext);
+  updateCalendarAuthBanner();
 }
 
 function buildWidgetContext(digest) {
+  const signals = activeSignals();
+  const tomorrowItems = buildTomorrowItemsFromDigest(digest);
+  const forgetItems = buildForgetItemsFromSignals(signals, tomorrowItems, digest);
   return {
     mode: appState.config.mode,
     digest,
-    signals: activeSignals(),
-    tomorrowItems: buildTomorrowItems(),
-    forgetItems: buildForgetItems(),
-    focusItem: buildSoftFocus(),
+    signals,
+    tomorrowItems,
+    forgetItems,
+    focusItem: buildSoftFocusFromDigest(digest, signals),
     isEvening: isEvening(),
     presentationPhase: getPresentationPhase(),
   };
 }
 
 function renderModeLayout(mode, context) {
-  const layout = MODE_LAYOUTS[mode] || MODE_LAYOUTS.kitchen;
+  const layout = getSurfaceDefinition(mode);
   screenEl.className = layout.screenClass;
   screenEl.replaceChildren();
 
@@ -923,22 +1175,100 @@ const WIDGETS = {
 };
 
 
+const MOBILE_TABS = {
+  status: { label: 'Status', subtitle: (context) => 'Whole-house summary', render: (context) => renderMobileStatus(context) },
+  logs: { label: 'Logs', subtitle: () => 'Recent actions and links', render: () => renderMobileLogs() },
+  calendar: { label: 'Calendar', subtitle: () => `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`, render: () => renderMobileCalendar() },
+  weather: { label: 'Weather', subtitle: () => appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration', render: () => renderMobileWeather() },
+  signals: { label: 'Signals', subtitle: () => 'Household reminder rules and previews', render: () => renderMobileSignals() },
+  debug: { subtitle: () => appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls', label: 'Debug', render: () => renderMobileDebug() },
+};
+
+function getMobileTabDefinition(tabKey) {
+  return MOBILE_TABS[tabKey] || MOBILE_TABS.status;
+}
+
+function getMobileTabs() {
+  return Object.entries(MOBILE_TABS);
+}
+
+function buildMobileStack() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mobile-stack';
+  return wrap;
+}
+
+function buildEmptyState(message, extraClass = '') {
+  const empty = document.createElement('div');
+  empty.className = `empty-state ${extraClass}`.trim();
+  empty.textContent = message;
+  return empty;
+}
+
+function buildPill(text, extraClass = '') {
+  const pill = document.createElement('span');
+  pill.className = `pill ${extraClass}`.trim();
+  pill.textContent = text;
+  return pill;
+}
+
+function buildListItem(item, options = {}) {
+  const rowTag = options.tagName || 'div';
+  const row = document.createElement(rowTag);
+  row.className = options.rowClassName || 'list-item';
+
+  const left = document.createElement('div');
+  left.className = options.leftClassName || 'list-item-left';
+  const title = document.createElement('div');
+  title.className = options.titleClassName || 'list-item-title';
+  title.textContent = item.title || '';
+  left.append(title);
+
+  const metaText = item.meta || '';
+  if (metaText || options.showMeta !== false) {
+    const meta = document.createElement('div');
+    meta.className = options.metaClassName || 'list-item-meta';
+    meta.textContent = metaText;
+    left.append(meta);
+  }
+
+  row.append(left);
+  if (options.showPills && item.pill) {
+    row.append(buildPill(item.pill, item.pillClass || ''));
+  }
+  return row;
+}
+
+function buildCardSectionHeader(titleText, subtitleText = '') {
+  const wrap = document.createElement('div');
+  wrap.className = 'card-header';
+  const title = document.createElement('h2');
+  title.textContent = titleText;
+  const subtitle = document.createElement('span');
+  subtitle.className = 'card-subtitle';
+  subtitle.textContent = subtitleText || '';
+  wrap.append(title, subtitle);
+  return wrap;
+}
+
+function appendCards(container, cards) {
+  for (const card of cards) {
+    if (card) container.append(card);
+  }
+  return container;
+}
+
 function renderMobileControlPanel(context) {
   screenEl.className = 'screen single-column mobile-control-screen';
   screenEl.replaceChildren();
 
-  const tabs = [
-    ['status', 'Status'],
-    ['logs', 'Logs'],
-    ['calendar', 'Calendar'],
-    ['weather', 'Weather'],
-    ['signals', 'Signals'],
-    ['debug', 'Debug'],
-  ];
+  const tabs = getMobileTabs();
+  const activeTab = getMobileTabDefinition(appState.mobileTab);
 
   const nav = document.createElement('div');
   nav.className = 'mobile-tabs';
-  for (const [key, label] of tabs) {
+  for (const [key, def] of tabs) {
+    const label = def.label;
     const btn = document.createElement('button');
     btn.className = `mobile-tab-button ${appState.mobileTab === key ? 'active' : ''}`.trim();
     btn.textContent = label;
@@ -955,19 +1285,11 @@ function renderMobileControlPanel(context) {
   const body = document.createElement('div');
   body.className = 'card-body';
 
-  const title = document.createElement('div');
-  title.className = 'card-header';
-  const h2 = document.createElement('h2');
-  h2.textContent = tabs.find(([k]) => k === appState.mobileTab)?.[1] || 'Status';
-  const sub = document.createElement('span');
-  sub.className = 'card-subtitle';
-  sub.textContent = mobileTabSubtitle(appState.mobileTab, context);
-  title.append(h2, sub);
-  panel.append(title);
+  panel.append(buildCardSectionHeader(activeTab.label, activeTab.subtitle(context)));
 
   let content;
   try {
-    content = renderMobileTabContent(appState.mobileTab, context);
+    content = activeTab.render(context);
   } catch (error) {
     handleRuntimeActionError(`Could not render ${appState.mobileTab} tab`, error);
     content = renderInlineErrorCard(`The ${appState.mobileTab} tab hit an error.`, error);
@@ -977,186 +1299,146 @@ function renderMobileControlPanel(context) {
   screenEl.append(panel);
 }
 
-function mobileTabSubtitle(tab, context) {
-  if (tab === 'status') return 'Whole-house summary';
-  if (tab === 'logs') return 'Recent actions and links';
-  if (tab === 'calendar') return `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`;
-  if (tab === 'weather') return appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration';
-  if (tab === 'signals') return 'Household reminder rules and previews';
-  if (tab === 'debug') return appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls';
-  return '';
+
+function summarizeCalendarConnectionState() {
+  const service = getCalendarServiceState();
+  return {
+    total: service.total,
+    connected: service.connected,
+    needsReconnect: service.needsReconnect,
+    details: service.details,
+    hasProblem: service.hasProblem,
+  };
 }
 
-function renderMobileTabContent(tab, context) {
-  if (tab === 'status') return renderMobileStatus(context);
-  if (tab === 'logs') return renderMobileLogs();
-  if (tab === 'calendar') return renderMobileCalendar();
-  if (tab === 'weather') return renderMobileWeather();
-  if (tab === 'signals') return renderMobileSignals();
-  if (tab === 'debug') return renderMobileDebug();
-  return document.createTextNode('');
+function buildCalendarConnectionItems() {
+  return getCalendarServiceState().items;
+}
+
+function updateCalendarAuthBanner() {
+  const el = document.getElementById('calendar-auth-banner');
+  if (!el) return;
+  const isMobileMode = (appState?.config?.mode || '') === 'mobile';
+  if (!isMobileMode) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const service = getCalendarServiceState();
+  if (!service.total) {
+    el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
+    el.style.display = 'block';
+    return;
+  }
+  if (service.needsReconnect > 0) {
+    el.innerHTML = `<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ${service.needsReconnect} account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>`;
+    el.style.display = 'block';
+    return;
+  }
+  el.style.display = 'none';
+  el.innerHTML = '';
 }
 
 function renderMobileStatus(context) {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  wrap.append(buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')));
-  wrap.append(buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'));
   const events = buildBedroomPrimaryItems({ ...context, isEvening: false }).filter((item) => item.pill === 'Calendar').slice(0, 3);
-  wrap.append(buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'));
-  wrap.append(buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'));
-  wrap.append(buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'));
-  return wrap;
+  return appendCards(buildMobileStack(), [
+    buildCard('Active Signals', `${context.signals.length} visible`, renderList(context.signals.slice(0, 6).map(signalToItem), 'Everything looks calm right now.')),
+    buildCard('Calendar Connection', 'Publisher device auth state', renderTaskList(buildCalendarConnectionItems(), 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Snapshot Freshness', 'Weather and calendar trust signals', renderTaskList(buildSnapshotStatusItems(), 'No shared snapshots available yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Shared Household Sync', 'Last shared config updates', renderTaskList(buildSharedSyncItems(), 'Shared household config has not been pushed yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Screen Awake', 'Local device display power', renderTaskList(buildWakeLockStatusItems(), 'No wake-lock status available yet.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Laundry Snapshot', 'Current workflow', renderLaundrySummary(), 'mobile-compact-card'),
+    buildCard('Next Events', 'Merged calendar feed', renderTaskList(events, 'No upcoming events right now.', { showPills: true }), 'mobile-compact-card'),
+    buildCard('Weather', 'Current household weather', renderContextStack(), 'mobile-compact-card'),
+    buildCard('System Health', 'Quick service check', renderConnectionStatusPanel(), 'mobile-compact-card'),
+  ]);
+}
+
+function buildSecondaryButton(label, onClick) {
+  const button = document.createElement('button');
+  button.className = 'secondary-button';
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function buildLinkButton(label, href) {
+  const link = document.createElement('a');
+  link.className = 'secondary-button mobile-link-button';
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noreferrer';
+  link.textContent = label;
+  return link;
+}
+
+function buildInlineActions(items) {
+  const actions = document.createElement('div');
+  actions.className = 'mobile-inline-actions';
+  actions.append(...items);
+  return actions;
 }
 
 function renderMobileLogs() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const openSupabase = document.createElement('a');
-  openSupabase.className = 'secondary-button mobile-link-button';
-  openSupabase.href = 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj';
-  openSupabase.target = '_blank';
-  openSupabase.rel = 'noreferrer';
-  openSupabase.textContent = 'Open Supabase project';
-  actions.append(openSupabase);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildLinkButton('Open Supabase project', 'https://supabase.com/dashboard/project/pssgbrtyhwoumhiynwlj'),
+  ]));
   wrap.append(renderList(appState.logs.slice(0, 30).map(logToItem), 'No recent logs yet.'));
   return wrap;
 }
 
 function renderMobileCalendar() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const addBtn = document.createElement('button');
-  addBtn.className = 'secondary-button';
-  addBtn.textContent = 'Add Google account';
-  addBtn.addEventListener('click', () => connectGoogleAccountButton?.click());
-  const pushBtn = document.createElement('button');
-  pushBtn.className = 'secondary-button';
-  pushBtn.textContent = 'Push calendar config';
-  pushBtn.addEventListener('click', async () => {
-    try {
-      await pushSharedCalendarConfig();
-    } catch (error) {
-      handleRuntimeActionError('Calendar push failed', error);
-      showToast('Could not push calendar config', 'error');
-    }
-  });
-  const settingsBtn = document.createElement('button');
-  settingsBtn.className = 'secondary-button';
-  settingsBtn.textContent = 'Open Settings';
-  settingsBtn.addEventListener('click', () => settingsButton?.click());
-  actions.append(addBtn, pushBtn, settingsBtn);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  const calendarService = getCalendarServiceState();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Add Google account', () => connectGoogleAccountButton?.click()),
+    buildSecondaryButton('Push calendar config', async () => {
+      try {
+        await pushSharedCalendarConfig();
+      } catch (error) {
+        handleRuntimeActionError('Calendar push failed', error);
+        showToast('Could not push calendar config', 'error');
+      }
+    }),
+    buildSecondaryButton('Open Settings', () => settingsButton?.click()),
+  ]));
   const headlessNote = document.createElement('div');
   headlessNote.className = 'muted';
-  const currentPublisher = describeSnapshotPublisher(getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType));
-  headlessNote.textContent = currentPublisher
-    ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${currentPublisher}.`
+  headlessNote.textContent = calendarService.publisher
+    ? `Headless mode: a connected device publishes merged calendar snapshots for shared displays. Current publisher: ${calendarService.publisher}.`
     : 'Headless mode: a connected device publishes merged calendar snapshots for shared displays.';
   wrap.append(headlessNote);
+  wrap.append(buildCard('This Device’s Calendar Connection', 'Local Google auth status for publishing', renderTaskList(calendarService.items, 'No calendar accounts required yet.', { showPills: true }), 'mobile-compact-card'));
   const accounts = document.createElement('div');
   accounts.className = 'mobile-accounts-copy';
-  accounts.append(renderCalendarAccountsClone());
+  accounts.append(renderCalendarAccountsPanel({ editable: false }));
   wrap.append(accounts);
   return wrap;
 }
 
-function renderCalendarAccountsClone() {
-  const host = document.createElement('div');
-  host.className = 'google-calendar-accounts';
-  if (!appState.calendarAccounts.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No Google accounts connected yet.';
-    host.append(empty);
-    return host;
-  }
-  for (const account of appState.calendarAccounts) {
-    const card = document.createElement('div');
-    card.className = 'calendar-account-card';
-    const header = document.createElement('div');
-    header.className = 'calendar-account-header';
-    const title = document.createElement('div');
-    title.className = 'calendar-account-title';
-    title.textContent = account.displayName || account.email || 'Google account';
-    const subtitle = document.createElement('div');
-    subtitle.className = 'muted';
-    subtitle.textContent = `${(account.calendars || []).filter(c => c.selected).length} selected calendar${(account.calendars || []).filter(c => c.selected).length === 1 ? '' : 's'}`;
-    header.append(title, subtitle);
-    card.append(header);
-    const list = document.createElement('div');
-    list.className = 'calendar-list';
-    for (const calendar of account.calendars || []) {
-      const row = document.createElement('div');
-      row.className = 'calendar-list-item';
-      row.innerHTML = `<span>${escapeHtml(calendar.summary || calendar.id)}</span><span class="pill">${calendar.selected ? 'Included' : 'Hidden'}</span>`;
-      list.append(row);
-    }
-    card.append(list);
-    host.append(card);
-  }
-  return host;
-}
-
 function renderMobileWeather() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const refresh = document.createElement('button');
-  refresh.className = 'secondary-button';
-  refresh.textContent = 'Refresh weather';
-  refresh.addEventListener('click', () => refreshWeatherOnly());
-  const push = document.createElement('button');
-  push.className = 'secondary-button';
-  push.textContent = 'Push weather config';
-  push.addEventListener('click', async () => {
-    try {
-      await pushSharedWeatherConfig();
-      await fetchHouseholdConfig();
-      await refreshWeatherOnly();
-    } catch (error) {
-      handleRuntimeActionError('Weather push failed', error);
-      showToast('Could not push weather config', 'error');
-    }
-  });
-  const openSettings = document.createElement('button');
-  openSettings.className = 'secondary-button';
-  openSettings.textContent = 'Edit weather settings';
-  openSettings.addEventListener('click', () => settingsButton?.click());
-  actions.append(refresh, push, openSettings);
-  wrap.append(actions);
-  const weather = getSnapshot(appState.config.weatherSnapshotType);
-  wrap.append(buildCard('Current Weather', cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured'), renderTaskList(weather?.payload ? [{ title: formatWeatherSummary(weather.payload, { includeTomorrow: true }), meta: snapshotMetaLabel('Weather', weather), pill: snapshotFreshnessPill(weather), pillClass: snapshotFreshnessClass(weather) }] : [], 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
+  const wrap = buildMobileStack();
+  const weatherService = getWeatherServiceState();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Refresh weather', () => refreshWeatherOnly()),
+    buildSecondaryButton('Push weather config', async () => {
+      try {
+        await pushSharedWeatherConfig();
+        await fetchHouseholdConfig();
+        await refreshWeatherOnly();
+      } catch (error) {
+        handleRuntimeActionError('Weather push failed', error);
+        showToast('Could not push weather config', 'error');
+      }
+    }),
+    buildSecondaryButton('Edit weather settings', () => settingsButton?.click()),
+  ]));
+  wrap.append(buildCard('Current Weather', weatherService.locationLabel, renderTaskList(weatherService.items, 'Weather not connected yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
 
 
-function renderSignalRuleEditorCard(title, subtitle, buildBody) {
-  const card = document.createElement('section');
-  card.className = 'card mobile-compact-card';
-  const header = document.createElement('div');
-  header.className = 'card-header';
-  const h2 = document.createElement('h2');
-  h2.textContent = title;
-  const sub = document.createElement('span');
-  sub.className = 'card-subtitle';
-  sub.textContent = subtitle;
-  header.append(h2, sub);
-  const body = document.createElement('div');
-  body.className = 'mobile-stack signal-config-card-body';
-  buildBody(body);
-  card.append(header, body);
-  return card;
-}
 
 function renderSignalRulesPreview(rules) {
   const previewItems = [
@@ -1169,50 +1451,30 @@ function renderSignalRulesPreview(rules) {
 
 
 function renderMobileSignals() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-
-  const pushBtn = document.createElement('button');
-  pushBtn.className = 'secondary-button';
-  pushBtn.textContent = 'Push signal config';
-  pushBtn.addEventListener('click', async () => {
-    try {
-      await pushSharedSignalConfig();
-      await fetchHouseholdConfig();
-      renderMode();
-    } catch (error) {
-      handleRuntimeActionError('Signal config push failed', error);
-      showToast('Could not push signal config', 'error');
-    }
-  });
-
-  const loadSharedBtn = document.createElement('button');
-  loadSharedBtn.className = 'secondary-button';
-  loadSharedBtn.textContent = 'Use household config';
-  loadSharedBtn.addEventListener('click', () => {
-    setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
-    showToast('Loaded household signal config', 'success');
-    renderMode();
-  });
-
-  const resetBtn = document.createElement('button');
-  resetBtn.className = 'secondary-button';
-  resetBtn.textContent = 'Reset defaults';
-  resetBtn.addEventListener('click', () => {
-    setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
-    showToast('Reset local signal draft', 'success');
-    renderMode();
-  });
-
-  const addCustomBtn = document.createElement('button');
-  addCustomBtn.className = 'secondary-button';
-  addCustomBtn.textContent = 'Add custom signal';
-  addCustomBtn.addEventListener('click', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true }));
-
-  actions.append(pushBtn, loadSharedBtn, resetBtn, addCustomBtn);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Push signal config', async () => {
+      try {
+        await pushSharedSignalConfig();
+        await fetchHouseholdConfig();
+        renderRuntimeUi({ renderDevConsole: false });
+      } catch (error) {
+        handleRuntimeActionError('Signal config push failed', error);
+        showToast('Could not push signal config', 'error');
+      }
+    }),
+    buildSecondaryButton('Use household config', () => {
+      setSignalRulesDraft(appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] || DEFAULT_SIGNAL_RULES);
+      showToast('Loaded household signal config', 'success');
+      renderRuntimeUi({ renderDevConsole: false });
+    }),
+    buildSecondaryButton('Reset defaults', () => {
+      setSignalRulesDraft(DEFAULT_SIGNAL_RULES);
+      showToast('Reset local signal draft', 'success');
+      renderRuntimeUi({ renderDevConsole: false });
+    }),
+    buildSecondaryButton('Add custom signal', () => openSignalRuleModal('custom', { mode: 'edit', isNew: true })),
+  ]));
 
   const note = document.createElement('div');
   note.className = 'muted';
@@ -1325,9 +1587,7 @@ function renderSignalSummaryCard(item) {
   summary.textContent = item.summary || '';
   titleWrap.append(title, summary);
 
-  const badge = document.createElement('span');
-  badge.className = `pill ${item.enabled ? '' : 'muted-pill'}`.trim();
-  badge.textContent = item.enabled ? 'Enabled' : 'Disabled';
+  const badge = buildPill(item.enabled ? 'Enabled' : 'Disabled', item.enabled ? '' : 'muted-pill');
   top.append(titleWrap, badge);
 
   const detail = document.createElement('div');
@@ -1475,7 +1735,7 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
     saveBtn.addEventListener('click', () => {
       if (!saveSignalModalDraft(modalState)) return;
       close();
-      renderMode();
+      renderRuntimeUi({ renderDevConsole: false });
       showToast('Saved signal rule', 'success');
     });
     footer.append(cancelBtn, saveBtn);
@@ -1487,7 +1747,7 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
       deleteBtn.addEventListener('click', () => {
         deleteCustomSignalRule(modalState.ruleId);
         close();
-        renderMode();
+        renderRuntimeUi({ renderDevConsole: false });
         showToast('Deleted custom signal', 'success');
       });
       footer.prepend(deleteBtn);
@@ -1723,25 +1983,20 @@ function makeOptionalHourField(label, value, onChange) {
 }
 
 function renderMobileDebug() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  const actions = document.createElement('div');
-  actions.className = 'mobile-inline-actions';
-  const openConsole = document.createElement('button');
-  openConsole.className = 'secondary-button';
-  openConsole.textContent = 'Open dev console';
-  openConsole.addEventListener('click', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); });
-  const forceRefresh = document.createElement('button');
-  forceRefresh.className = 'secondary-button';
-  forceRefresh.textContent = 'Force refresh';
-  forceRefresh.addEventListener('click', () => refreshAll());
-  actions.append(openConsole, forceRefresh);
-  wrap.append(actions);
+  const wrap = buildMobileStack();
+  wrap.append(buildInlineActions([
+    buildSecondaryButton('Open dev console', () => { devConsoleEl.classList.remove('hidden'); renderDevConsole(); }),
+    buildSecondaryButton('Force refresh', () => refreshAll('debug force refresh')),
+  ]));
+  const realtimeDiag = appState.realtimeDiagnostics || {};
   wrap.append(buildCard('Diagnostics', 'Current runtime state', renderTaskList([
     { title: `Mode: ${appState.config.mode}`, meta: `Device ${appState.config.deviceName || 'Unnamed'}`, pill: 'Config' },
     { title: `Test time: ${appState.testTimeOverride ? new Date(appState.testTimeOverride).toLocaleString() : 'Real time'}`, meta: `Status ${statusLine.textContent || ''}`, pill: 'Time' },
     { title: `Snapshots: ${Object.keys(appState.snapshots || {}).length}`, meta: `Tasks ${appState.tasks.length} · Signals ${activeSignals().length} · Loads ${appState.loads.length}`, pill: 'State' },
     { title: `Calendar fetch: ${appState.calendarDiagnostics.fetchedEvents} fetched · ${appState.calendarDiagnostics.mergedToday + appState.calendarDiagnostics.mergedTomorrow} merged`, meta: `Selected ${appState.calendarDiagnostics.selectedSources} · Expired ${appState.calendarDiagnostics.expiredAccounts}${appState.calendarDiagnostics.lastError ? ` · ${appState.calendarDiagnostics.lastError}` : ''}`, pill: 'Calendar' },
+    { title: `Calendar publisher: ${(appState.calendarPublisherDiagnostics || {}).lastPublishStatus || 'idle'}`, meta: `${(appState.calendarPublisherDiagnostics || {}).lastAttemptReason || 'No recent attempt'}${(appState.calendarPublisherDiagnostics || {}).lastSkipReason ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastSkipReason}` : ''}${(appState.calendarPublisherDiagnostics || {}).lastPublishError ? ` · ${(appState.calendarPublisherDiagnostics || {}).lastPublishError}` : ''}`, pill: 'Publisher' },
+    { title: `Realtime: ${realtimeDiag.activeChannels || 0} channels · ${realtimeDiag.lastStatus || 'idle'}`, meta: `${realtimeDiag.lastEventTable ? `Last ${realtimeDiag.lastEventTable}` : 'No recent events'}${realtimeDiag.lastEventAt ? ` · ${new Date(realtimeDiag.lastEventAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}`, pill: 'Realtime' },
+    buildWakeLockDebugSummary(),
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
@@ -1999,10 +2254,7 @@ function renderBedroomLaundry() {
     .slice(0, 3);
 
   if (!loads.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No active loads to move right now.';
-    wrapper.append(empty);
+    wrapper.append(buildEmptyState('No active loads to move right now.'));
     return wrapper;
   }
 
@@ -2040,34 +2292,11 @@ function renderTaskList(items, emptyText, options = {}) {
   const wrapper = document.createElement('div');
   wrapper.className = `list ${options.compact ? 'list-compact' : ''}`.trim();
   if (!items.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = emptyText;
-    wrapper.append(empty);
+    wrapper.append(buildEmptyState(emptyText));
     return wrapper;
   }
   for (const item of items) {
-    const row = document.createElement('div');
-    row.className = 'list-item';
-
-    const left = document.createElement('div');
-    left.className = 'list-item-left';
-    const title = document.createElement('div');
-    title.className = 'list-item-title';
-    title.textContent = item.title;
-    const meta = document.createElement('div');
-    meta.className = 'list-item-meta';
-    meta.textContent = item.meta || '';
-    left.append(title, meta);
-
-    row.append(left);
-    if (options.showPills && item.pill) {
-      const pill = document.createElement('span');
-      pill.className = `pill ${item.pillClass || ''}`.trim();
-      pill.textContent = item.pill;
-      row.append(pill);
-    }
-    wrapper.append(row);
+    wrapper.append(buildListItem(item, { showPills: options.showPills }));
   }
   return wrapper;
 }
@@ -2075,9 +2304,7 @@ function renderTaskList(items, emptyText, options = {}) {
 function renderSpotlightCard(item) {
   const wrap = document.createElement('div');
   if (!item) {
-    wrap.className = 'empty-state';
-    wrap.textContent = 'No standout task yet. Once the board has today or overdue work, it will appear here.';
-    return wrap;
+    return buildEmptyState('No standout task yet. Once the board has today or overdue work, it will appear here.');
   }
 
   const badge = document.createElement('div');
@@ -2099,9 +2326,7 @@ function renderSpotlightCard(item) {
 function renderFocusBlock(item) {
   const wrap = document.createElement('div');
   if (!item) {
-    wrap.className = 'empty-state';
-    wrap.textContent = 'Nothing is pressing right now.';
-    return wrap;
+    return buildEmptyState('Nothing is pressing right now.');
   }
   const big = document.createElement('div');
   big.className = 'focus-text';
@@ -2203,12 +2428,6 @@ async function publishContextSnapshot(contextType, payload, source = 'headless-g
   if (error) throw error;
 }
 
-function hasAnyCalendarSnapshots() {
-  return !!(
-    appState.snapshots?.[appState.config.calendarTodaySnapshotType] ||
-    appState.snapshots?.[appState.config.calendarTomorrowSnapshotType]
-  );
-}
 
 function applySharedConfigRows(rows) {
   const map = {};
@@ -2219,27 +2438,8 @@ function applySharedConfigRows(rows) {
   }
   appState.sharedConfig = map;
   appState.sharedConfigMeta = meta;
-  if (typeof map[SHARED_CONFIG_KEYS.googleClientId] === 'string' && map[SHARED_CONFIG_KEYS.googleClientId].trim()) {
-    appState.config.googleClientId = map[SHARED_CONFIG_KEYS.googleClientId].trim();
-  }
-  const weather = map[SHARED_CONFIG_KEYS.weather];
-  if (weather && typeof weather === 'object') {
-    appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
-    appState.config.weatherLocationName = cleanLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
-    appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
-    appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
-    appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
-  }
-  const sharedSignalRules = map[SHARED_CONFIG_KEYS.signalRules];
-  appState.signalRulesDraft = normalizeSignalRules(sharedSignalRules || appState.config.signalRulesDraft || DEFAULT_SIGNAL_RULES);
-  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
-  const sharedAccounts = map[SHARED_CONFIG_KEYS.calendarAccounts];
-  if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
-    const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
-    appState.calendarAccounts = mergedAccounts;
-    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(mergedAccounts)); } catch {}
-  }
-  saveConfig(appState.config);
+  applySharedConfigToLocalState(map);
+  persistLocalConfig();
   try { fillSettingsForm(); } catch {}
 }
 
@@ -2270,7 +2470,7 @@ async function pushSharedSignalConfig() {
   appState.sharedConfig[SHARED_CONFIG_KEYS.signalRules] = payload;
   appState.signalRulesDraft = normalizeSignalRules(payload);
   appState.config.signalRulesDraft = normalizeSignalRules(payload);
-  saveConfig(appState.config);
+  persistLocalConfig();
   showToast('Pushed signal config to household', 'success');
   pushDevLog('info', 'Pushed signal config to household.');
 }
@@ -2429,7 +2629,7 @@ async function connectGoogleCalendarAccount() {
             const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
             showToast(`Connected ${connectedLabel}`, 'success');
             pushDevLog('info', `Connected Google Calendar account ${connectedLabel}`);
-            await refreshAll();
+            await refreshAll('calendar account connected');
             resolve();
           } catch (error) {
             reject(error);
@@ -2559,7 +2759,7 @@ async function fetchWeatherSnapshot() {
     timezone = geo.timezone;
     locationName = cleanLocationName(geo.name);
     appState.config = { ...appState.config, weatherLatitude: latitude, weatherLongitude: longitude, weatherTimezone: timezone, weatherLocationName: locationName, weatherLocationQuery: query };
-    saveConfig(appState.config);
+    persistLocalConfig();
     try { fillSettingsForm(); } catch {}
   }
 
@@ -2622,15 +2822,13 @@ async function fetchWeatherSnapshot() {
   }
 }
 
-function renderCalendarAccounts() {
-  if (!googleCalendarAccountsEl) return;
-  googleCalendarAccountsEl.replaceChildren();
+function renderCalendarAccountsPanel(options = {}) {
+  const { editable = false } = options;
+  const host = document.createElement('div');
+  host.className = 'google-calendar-accounts';
   if (!appState.calendarAccounts.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state compact-empty';
-    empty.textContent = 'No Google accounts connected yet.';
-    googleCalendarAccountsEl.append(empty);
-    return;
+    host.append(buildEmptyState('No Google accounts connected yet.', editable ? 'compact-empty' : ''));
+    return host;
   }
 
   for (const account of appState.calendarAccounts) {
@@ -2639,43 +2837,72 @@ function renderCalendarAccounts() {
 
     const header = document.createElement('div');
     header.className = 'calendar-account-header';
-    const left = document.createElement('div');
-    left.innerHTML = `<strong>${escapeHtml(account.name || account.email)}</strong><div class="muted">${escapeHtml(account.email || '')}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}</div>`;
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'secondary-button mini-button';
-    removeButton.textContent = 'Remove';
-    removeButton.addEventListener('click', () => {
-      saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
-      refreshAll().catch((error) => console.error('Refresh after removing calendar account failed', error));
-    });
-    header.append(left, removeButton);
+
+    if (editable) {
+      const left = document.createElement('div');
+      left.innerHTML = `<strong>${escapeHtml(account.name || account.email)}</strong><div class="muted">${escapeHtml(account.email || '')}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}</div>`;
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'secondary-button mini-button';
+      removeButton.textContent = 'Remove';
+      removeButton.addEventListener('click', () => {
+        saveCalendarAccounts(appState.calendarAccounts.filter(item => item.email !== account.email));
+        refreshAll('calendar account removed').catch((error) => console.error('Refresh after removing calendar account failed', error));
+      });
+      header.append(left, removeButton);
+    } else {
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'calendar-account-title';
+      title.textContent = account.displayName || account.name || account.email || 'Google account';
+      const subtitle = document.createElement('div');
+      subtitle.className = 'muted';
+      const selectedCount = (account.calendars || []).filter((calendar) => calendar.selected).length;
+      subtitle.textContent = `${selectedCount} selected calendar${selectedCount === 1 ? '' : 's'}${isCalendarAccountExpired(account) ? ' · reconnect needed' : ''}`;
+      titleWrap.append(title, subtitle);
+      header.append(titleWrap);
+    }
     card.append(header);
 
     const calList = document.createElement('div');
     calList.className = 'calendar-list';
     for (const calendar of account.calendars || []) {
-      const row = document.createElement('label');
-      row.className = 'calendar-row';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = !!calendar.selected;
-      checkbox.addEventListener('change', () => {
-        const next = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
-          ...item,
-          calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
+      if (editable) {
+        const row = document.createElement('label');
+        row.className = 'calendar-row';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!calendar.selected;
+        checkbox.addEventListener('change', () => {
+          const next = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
+            ...item,
+            calendars: item.calendars.map(cal => cal.id !== calendar.id ? cal : { ...cal, selected: checkbox.checked }),
+          });
+          saveCalendarAccounts(next);
+          refreshAll('calendar selection changed').catch((error) => console.error('Refresh after calendar toggle failed', error));
         });
-        saveCalendarAccounts(next);
-        refreshAll().catch((error) => console.error('Refresh after calendar toggle failed', error));
-      });
-      const labelText = document.createElement('span');
-      labelText.textContent = calendar.summary || calendar.id;
-      row.append(checkbox, labelText);
-      calList.append(row);
+        const labelText = document.createElement('span');
+        labelText.textContent = calendar.summary || calendar.id;
+        row.append(checkbox, labelText);
+        calList.append(row);
+      } else {
+        const row = document.createElement('div');
+        row.className = 'calendar-list-item';
+        const label = document.createElement('span');
+        label.textContent = calendar.summary || calendar.id;
+        row.append(label, buildPill(calendar.selected ? 'Included' : 'Hidden'));
+        calList.append(row);
+      }
     }
     card.append(calList);
-    googleCalendarAccountsEl.append(card);
+    host.append(card);
   }
+  return host;
+}
+
+function renderCalendarAccounts() {
+  if (!googleCalendarAccountsEl) return;
+  googleCalendarAccountsEl.replaceChildren(renderCalendarAccountsPanel({ editable: true }));
 }
 
 function formatCalendarEventTime(event) {
@@ -2714,8 +2941,57 @@ function shouldPublishCalendarSnapshots(todayItems, tomorrowItems) {
     || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow);
 }
 
+function noteCalendarPublisherAttempt(reason, extra = {}) {
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    lastAttemptAt: new Date(getNowMs()).toISOString(),
+    lastAttemptReason: reason || 'publish-cycle',
+    ...extra,
+  };
+}
+
+function noteCalendarPublisherResult(status, extra = {}) {
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    lastPublishStatus: status || 'idle',
+    ...extra,
+  };
+}
+
+function buildCalendarPublisherDebugItems() {
+  const diag = appState.calendarPublisherDiagnostics || {};
+  const publisher = getCalendarServiceState();
+  return [
+    {
+      title: `Publisher ready: ${diag.canPublish ? 'Yes' : 'No'}`,
+      meta: `${diag.lastSelectedSources || 0} selected source${diag.lastSelectedSources === 1 ? '' : 's'}${publisher.publisher ? ` · Active publisher ${publisher.publisher}` : ''}`,
+      pill: diag.canPublish ? 'Ready' : 'Idle',
+      pillClass: diag.canPublish ? '' : 'warning',
+    },
+    {
+      title: `Last publish: ${diag.lastPublishStatus || 'idle'}`,
+      meta: [
+        diag.lastPublishAt ? `At ${new Date(diag.lastPublishAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'No publish yet',
+        diag.lastPublishSource ? `Source ${diag.lastPublishSource}` : '',
+        Number.isFinite(diag.lastItemsToday) || Number.isFinite(diag.lastItemsTomorrow) ? `${diag.lastItemsToday || 0} today · ${diag.lastItemsTomorrow || 0} tomorrow` : '',
+      ].filter(Boolean).join(' · '),
+      pill: diag.lastPublishStatus === 'published' ? 'Published' : (diag.lastPublishStatus === 'skipped' ? 'Skipped' : (diag.lastPublishStatus === 'error' ? 'Error' : 'Idle')),
+      pillClass: diag.lastPublishStatus === 'error' ? 'warning' : '',
+    },
+    {
+      title: `Last attempt: ${diag.lastAttemptReason || 'Not attempted yet'}`,
+      meta: [
+        diag.lastAttemptAt ? `At ${new Date(diag.lastAttemptAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '',
+        diag.lastSkipReason || diag.lastPublishError || '',
+      ].filter(Boolean).join(' · ') || 'No publisher diagnostics yet.',
+      pill: 'Trace',
+    },
+  ];
+}
+
 async function fetchGoogleCalendarSnapshots() {
   const canPublish = hasPublisherCalendarAccounts();
+  noteCalendarPublisherAttempt('calendar-refresh', { canPublish });
 
   if (!canPublish) {
     const existingToday = appState.snapshots[appState.config.calendarTodaySnapshotType];
@@ -2729,6 +3005,11 @@ async function fetchGoogleCalendarSnapshots() {
       expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
       lastError: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
     };
+    noteCalendarPublisherResult(existingToday || existingTomorrow ? 'idle' : 'idle', {
+      canPublish: false,
+      lastSelectedSources: 0,
+      lastSkipReason: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
+    });
     pushDevLog('info', existingToday || existingTomorrow
       ? 'Headless calendar mode: using shared snapshots only on this device.'
       : 'Headless calendar mode: no shared calendar snapshots available yet.');
@@ -2748,6 +3029,13 @@ async function fetchGoogleCalendarSnapshots() {
     expiredAccounts: expiredAccounts.length,
     lastError: '',
   };
+  appState.calendarPublisherDiagnostics = {
+    ...appState.calendarPublisherDiagnostics,
+    canPublish: true,
+    lastSelectedSources: selectedSources.length,
+    lastSkipReason: '',
+    lastPublishError: '',
+  };
 
   const now = getNowDate();
   const todayStart = startOfDay(now);
@@ -2759,6 +3047,11 @@ async function fetchGoogleCalendarSnapshots() {
   let fetchedEvents = 0;
 
   if (!selectedSources.length) {
+    noteCalendarPublisherResult('skipped', {
+      canPublish: true,
+      lastSelectedSources: 0,
+      lastSkipReason: 'No selected local calendars on this device',
+    });
     pushDevLog('warn', 'Calendar publisher has no selected local calendars. Keeping existing shared snapshots.');
     return;
   }
@@ -2821,11 +3114,31 @@ async function fetchGoogleCalendarSnapshots() {
     if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
       await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
       await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
+      noteCalendarPublisherResult('published', {
+        lastPublishAt: createdAt,
+        lastPublishSource: snapshotSource,
+        lastItemsToday: todayItems.length,
+        lastItemsTomorrow: tomorrowItems.length,
+        lastSkipReason: '',
+        lastPublishError: '',
+      });
       pushDevLog('info', 'Published headless calendar snapshots to household.');
     } else {
+      noteCalendarPublisherResult('skipped', {
+        lastPublishSource: snapshotSource,
+        lastItemsToday: todayItems.length,
+        lastItemsTomorrow: tomorrowItems.length,
+        lastSkipReason: 'Snapshots unchanged',
+      });
       pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
     }
   } catch (error) {
+    noteCalendarPublisherResult('error', {
+      lastPublishSource: snapshotSource,
+      lastItemsToday: todayItems.length,
+      lastItemsTomorrow: tomorrowItems.length,
+      lastPublishError: error?.message || String(error),
+    });
     pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
   }
 
@@ -2958,13 +3271,32 @@ function hasEveningCue(task) {
   return includesAnyToken(combined, ['tonight', 'evening', 'before bed', 'before tomorrow']);
 }
 
-function scoreTaskForWindow(task, options = {}) {
+function buildTaskIntelligenceContext(tasks = normalizeTaskRows(), options = {}) {
   const now = options.now || getNowDate();
-  const dueBucket = getTaskDueBucket(task, now);
-  const windowName = options.windowName || 'today';
-  const signals = options.signals || [];
-  const tomorrowSnapshot = options.tomorrowSnapshot || null;
+  const todaySnapshot = options.todaySnapshot || getSnapshotPayload(appState.config.calendarTodaySnapshotType);
+  const tomorrowSnapshot = options.tomorrowSnapshot || getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const signals = options.signals || activeSignals();
   const evening = options.evening ?? isEvening();
+  const dueBucketById = new Map(tasks.map((task) => [task.id, getTaskDueBucket(task, now)]));
+  return {
+    tasks,
+    now,
+    todaySnapshot,
+    tomorrowSnapshot,
+    signals,
+    evening,
+    dueBucketById,
+  };
+}
+
+function scoreTaskForWindow(task, options = {}) {
+  const intelligenceContext = options.intelligenceContext || null;
+  const now = intelligenceContext?.now || options.now || getNowDate();
+  const dueBucket = intelligenceContext?.dueBucketById?.get(task.id) || getTaskDueBucket(task, now);
+  const windowName = options.windowName || 'today';
+  const signals = intelligenceContext?.signals || options.signals || [];
+  const tomorrowSnapshot = intelligenceContext?.tomorrowSnapshot || options.tomorrowSnapshot || null;
+  const evening = intelligenceContext?.evening ?? options.evening ?? isEvening();
   let score = 0;
 
   if (windowName === 'today') {
@@ -3000,8 +3332,9 @@ function scoreTaskForWindow(task, options = {}) {
 }
 
 function rankTasksForWindow(tasks, options = {}) {
+  const intelligenceContext = options.intelligenceContext || buildTaskIntelligenceContext(tasks, options);
   return [...tasks]
-    .map((task) => ({ ...task, intelligenceScore: scoreTaskForWindow(task, options) }))
+    .map((task) => ({ ...task, intelligenceScore: scoreTaskForWindow(task, { ...options, intelligenceContext }) }))
     .sort((a, b) => {
       if (b.intelligenceScore !== a.intelligenceScore) return b.intelligenceScore - a.intelligenceScore;
       if (a.sortScore !== b.sortScore) return a.sortScore - b.sortScore;
@@ -3009,45 +3342,53 @@ function rankTasksForWindow(tasks, options = {}) {
     });
 }
 
+function mapSnapshotItemsToDisplay(items = [], labelPrefix = '') {
+  return items.map((item) => ({
+    title: item.title,
+    meta: [item.sourceLabel || 'Calendar', labelPrefix && item.time ? `${labelPrefix} · ${item.time}` : labelPrefix || item.time].filter(Boolean).join(' · '),
+    pill: 'Calendar',
+  }));
+}
+
+function selectTasksByDueBucket(tasks, dueBucketById, buckets) {
+  return tasks.filter((task) => buckets.includes(dueBucketById.get(task.id)));
+}
+
+function selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext) {
+  const { dueBucketById, evening } = intelligenceContext;
+  return rankedTomorrowTasks.filter((task) => {
+    const bucket = dueBucketById.get(task.id);
+    return bucket === 'tomorrow' || (evening && bucket === 'today') || hasTomorrowPrepCue(task);
+  }).slice(0, 8);
+}
 
 function buildTaskDigest() {
   const tasks = normalizeTaskRows();
-  const today = getNowDate();
-  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const tomorrowSnapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const signals = activeSignals();
+  const intelligenceContext = buildTaskIntelligenceContext(tasks);
+  const { todaySnapshot, tomorrowSnapshot, signals, dueBucketById } = intelligenceContext;
 
-  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', now: today, signals, tomorrowSnapshot, evening: isEvening() });
-  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', now: today, signals, tomorrowSnapshot, evening: isEvening() });
+  const rankedTodayTasks = rankTasksForWindow(tasks, { windowName: 'today', intelligenceContext });
+  const rankedTomorrowTasks = rankTasksForWindow(tasks, { windowName: 'tomorrow', intelligenceContext });
 
-  const overdueTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'overdue');
-  const upcomingTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'future').slice(0, 8);
-  const todayTasks = rankedTodayTasks.filter((task) => ['today', 'overdue'].includes(getTaskDueBucket(task, today)));
-  const undatedTasks = rankedTodayTasks.filter((task) => getTaskDueBucket(task, today) === 'undated');
+  const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
+  const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
+  const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
+  const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
+  const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
   const calendarTodayItems = Array.isArray(todaySnapshot?.items)
-    ? todaySnapshot.items.map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
+    ? mapSnapshotItemsToDisplay(todaySnapshot.items)
     : [];
   const calendarTomorrowItems = Array.isArray(tomorrowSnapshot?.items)
-    ? tomorrowSnapshot.items.map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time ? `Tomorrow · ${item.time}` : 'Tomorrow'].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
+    ? mapSnapshotItemsToDisplay(tomorrowSnapshot.items, 'Tomorrow')
     : [];
 
   const todayTaskItems = toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today');
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
-  const tomorrowTaskItems = toDisplayTaskItems(rankedTomorrowTasks.filter((task) => {
-    const bucket = getTaskDueBucket(task, today);
-    return bucket === 'tomorrow' || (isEvening() && bucket === 'today') || hasTomorrowPrepCue(task);
-  }).slice(0, 8), 'Tomorrow');
+  const tomorrowWindowTasks = selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext);
+  const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
   const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
 
   const spotlightTask = rankedTodayTasks[0] || signals.map(signalToItem)[0] || undatedTasks[0] || null;
@@ -3073,7 +3414,7 @@ function buildTaskDigest() {
       upcoming: upcomingTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
-      tomorrow: rankedTomorrowTasks.filter((task) => getTaskDueBucket(task, today) === 'tomorrow').length,
+      tomorrow: tomorrowOnlyTasks.length,
     },
   };
 }
@@ -3177,13 +3518,26 @@ function buildKitchenHeadline(digest) {
 }
 
 
-function buildTomorrowEventSignal(rules = getEffectiveSignalRules()) {
+function buildSignalEvalContext(now = getNowDate()) {
+  return {
+    now,
+    day: now.getDay(),
+    hour: now.getHours(),
+    signalRules: normalizeSignalRules(getEffectiveSignalRules()),
+    calendarTomorrowItems: getCalendarTomorrowItems(),
+  };
+}
+
+function getCalendarTomorrowItems() {
+  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  return Array.isArray(snapshot?.items) ? snapshot.items : [];
+}
+
+function buildTomorrowEventSignal(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const tomorrowRules = normalizeSignalRules(rules).tomorrowEvent;
   if (!tomorrowRules.enabled) return null;
-  const now = getNowDate();
-  if (now.getHours() < tomorrowRules.startHour) return null;
-  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
-  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  if (context.hour < tomorrowRules.startHour) return null;
+  const items = context.calendarTomorrowItems || [];
   if (items.length < tomorrowRules.minEvents) return null;
   const lead = items[0] || {};
   const title = items.length > 1 ? 'Big event tomorrow' : 'Event tomorrow';
@@ -3199,142 +3553,166 @@ function buildTomorrowEventSignal(rules = getEffectiveSignalRules()) {
   };
 }
 
-function activeDbSignals() {
-  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > getNowDate());
+function activeDbSignals(now = getNowDate()) {
+  return appState.signals.filter((signal) => !signal.expires_at || new Date(signal.expires_at) > now);
 }
 
-function didLogEventToday(eventType) {
-  const today = getNowDate();
+function didLogEventToday(eventType, now = getNowDate()) {
   return appState.logs.some((log) => {
     if (log.event_type !== eventType || !log.created_at) return false;
     const created = new Date(log.created_at);
-    return isSameDay(created, today);
+    return isSameDay(created, now);
   });
 }
 
-function buildSyntheticRuleSignals(rules = getEffectiveSignalRules()) {
-  const items = [];
-  const normalizedRules = normalizeSignalRules(rules);
-  const now = getNowDate();
-  const day = now.getDay();
-  const hour = now.getHours();
+function evaluateBinsSignal(rule, context) {
+  const binsReminderWindow = rule.enabled && context.day === rule.dayOfWeek && context.hour >= rule.startHour;
+  const binsDoneToday = didLogEventToday('bins_out', context.now);
+  if (!binsReminderWindow || binsDoneToday) return null;
+  const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === Number(rule.dayOfWeek))?.[1] || 'Reminder';
+  const warning = context.hour >= rule.escalateHour;
+  return {
+    id: `synthetic-bins-${rule.dayOfWeek}`,
+    signal_type: 'bins_weekly',
+    title: 'Put bins out tonight',
+    description: warning ? `${dayLabel} night reminder · bins still need to go to the street.` : `${dayLabel} reminder · bins need to go to the street tonight.`,
+    severity: warning ? 'warning' : 'notice',
+    location: rule.location || 'outside',
+    metadata: { synthetic: true, rule: 'weekly_bins', visible_in: ['tv', 'bedroom', 'kitchen'] },
+  };
+}
 
-  const bins = normalizedRules.bins;
-  const binsReminderWindow = bins.enabled && day === bins.dayOfWeek && hour >= bins.startHour;
-  const binsDoneToday = didLogEventToday('bins_out');
-
-  if (binsReminderWindow && !binsDoneToday) {
-    const dayLabel = DAY_OPTIONS.find(([value]) => Number(value) === bins.dayOfWeek)?.[1] || 'Reminder';
-    items.push({
-      id: `synthetic-bins-${bins.dayOfWeek}`,
-      signal_type: 'bins_weekly',
-      title: 'Put bins out tonight',
-      description: hour >= bins.escalateHour ? `${dayLabel} night reminder · bins still need to go to the street.` : `${dayLabel} reminder · bins need to go to the street tonight.`,
-      severity: hour >= bins.escalateHour ? 'warning' : 'notice',
-      location: bins.location || 'outside',
-      metadata: { synthetic: true, rule: 'weekly_bins', visible_in: ['tv', 'bedroom', 'kitchen'] },
-    });
+function evaluateCustomSignalRule(rule, context) {
+  if (!rule.enabled || !rule.name) return null;
+  const scheduleDayMatch = rule.scheduleType === 'daily' ? true : context.day === rule.dayOfWeek;
+  const afterStart = context.hour >= rule.startHour;
+  const beforeEnd = rule.endHour === null || context.hour <= rule.endHour;
+  if (!(scheduleDayMatch && afterStart && beforeEnd)) return null;
+  if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType, context.now)) return null;
+  const isWarning = rule.escalateToWarning && context.hour >= rule.escalateHour;
+  const descriptionParts = [];
+  const timeWindowLabel = rule.endHour === null ? `from ${formatHourLabel(rule.startHour)}` : `${formatHourLabel(rule.startHour)}–${formatHourLabel(rule.endHour)}`;
+  if (rule.scheduleType === 'weekly') {
+    descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === Number(rule.dayOfWeek))?.[1] || 'Weekly'} ${timeWindowLabel}`);
+  } else {
+    descriptionParts.push(`Daily ${timeWindowLabel}`);
   }
+  if (rule.clearMode === 'log_event_today' && rule.ackEventType) descriptionParts.push(`ack with ${rule.ackEventType}`);
+  return {
+    id: `synthetic-custom-${rule.id}`,
+    signal_type: 'custom_rule',
+    title: rule.name,
+    description: descriptionParts.join(' · '),
+    severity: isWarning ? 'warning' : 'notice',
+    location: rule.location || 'custom',
+    metadata: { synthetic: true, rule: 'custom_signal', customRuleId: rule.id },
+  };
+}
 
-  const tomorrowEventSignal = buildTomorrowEventSignal(normalizedRules);
+function evaluateLaundrySignals(rule) {
+  if (!rule.enabled) return [];
+  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
+  if (!activeLoads.length) return [];
+  const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
+  const dryingCount = activeLoads.filter((load) => load.status === 'drying').length;
+  const washingCount = activeLoads.filter((load) => load.status === 'washing').length;
+  const detailParts = [];
+  if (washingCount) detailParts.push(`${washingCount} washing`);
+  if (dryingCount) detailParts.push(`${dryingCount} drying`);
+  if (readyCount) detailParts.push(`${readyCount} ready`);
+  return [{
+    id: 'synthetic-laundry-active',
+    signal_type: 'laundry_active',
+    title: activeLoads.length === 1 ? 'Laundry load in progress' : 'Laundry in progress',
+    description: detailParts.join(' · ') || `${activeLoads.length} active load${activeLoads.length === 1 ? '' : 's'}`,
+    severity: readyCount ? 'warning' : 'notice',
+    location: 'laundry',
+    metadata: { synthetic: true, rule: 'laundry_active' },
+  }];
+}
+
+function buildSyntheticRuleSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  const normalizedRules = normalizeSignalRules(rules);
+  const items = [];
+  const binsSignal = evaluateBinsSignal(normalizedRules.bins, context);
+  if (binsSignal) items.push(binsSignal);
+  const tomorrowEventSignal = buildTomorrowEventSignal(normalizedRules, context);
   if (tomorrowEventSignal) items.push(tomorrowEventSignal);
-
   return items;
 }
 
-function buildSyntheticCustomSignals(rules = getEffectiveSignalRules()) {
+function buildSyntheticCustomSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const normalizedRules = normalizeSignalRules(rules);
-  const items = [];
-  const now = getNowDate();
-  const day = now.getDay();
-  const hour = now.getHours();
-
-  for (const rule of normalizedRules.custom) {
-    if (!rule.enabled || !rule.name) continue;
-    const scheduleDayMatch = rule.scheduleType === 'daily' ? true : day === rule.dayOfWeek;
-    const afterStart = hour >= rule.startHour;
-    const beforeEnd = rule.endHour === null || hour <= rule.endHour;
-    const inSchedule = scheduleDayMatch && afterStart && beforeEnd;
-    if (!inSchedule) continue;
-    if (rule.clearMode === 'log_event_today' && rule.ackEventType && didLogEventToday(rule.ackEventType)) continue;
-    const isWarning = rule.escalateToWarning && hour >= rule.escalateHour;
-    const descriptionParts = [];
-    const timeWindowLabel = rule.endHour === null ? `from ${formatHourLabel(rule.startHour)}` : `${formatHourLabel(rule.startHour)}–${formatHourLabel(rule.endHour)}`;
-    if (rule.scheduleType === 'weekly') {
-      descriptionParts.push(`${DAY_OPTIONS.find(([value]) => Number(value) === rule.dayOfWeek)?.[1] || 'Weekly'} ${timeWindowLabel}`);
-    } else {
-      descriptionParts.push(`Daily ${timeWindowLabel}`);
-    }
-    if (rule.clearMode === 'log_event_today' && rule.ackEventType) {
-      descriptionParts.push(`ack with ${rule.ackEventType}`);
-    }
-    items.push({
-      id: `synthetic-custom-${rule.id}`,
-      signal_type: 'custom_rule',
-      title: rule.name,
-      description: descriptionParts.join(' · '),
-      severity: isWarning ? 'warning' : 'notice',
-      location: rule.location || 'custom',
-      metadata: { synthetic: true, rule: 'custom_signal', customRuleId: rule.id },
-    });
-  }
-
-  return items;
+  return normalizedRules.custom.map((rule) => evaluateCustomSignalRule(rule, context)).filter(Boolean);
 }
 
 function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
-  const items = [];
   const normalizedRules = normalizeSignalRules(rules);
-  if (!normalizedRules.laundry.enabled) return items;
-  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
-  if (activeLoads.length) {
-    const readyCount = activeLoads.filter((load) => load.status === 'ready').length;
-    const dryingCount = activeLoads.filter((load) => load.status === 'drying').length;
-    const washingCount = activeLoads.filter((load) => load.status === 'washing').length;
-    const detailParts = [];
-    if (washingCount) detailParts.push(`${washingCount} washing`);
-    if (dryingCount) detailParts.push(`${dryingCount} drying`);
-    if (readyCount) detailParts.push(`${readyCount} ready`);
-    items.push({
-      id: 'synthetic-laundry-active',
-      signal_type: 'laundry_active',
-      title: activeLoads.length === 1 ? 'Laundry load in progress' : 'Laundry in progress',
-      description: detailParts.join(' · ') || `${activeLoads.length} active load${activeLoads.length === 1 ? '' : 's'}`,
-      severity: readyCount ? 'warning' : 'notice',
-      location: 'laundry',
-      metadata: { synthetic: true },
-    });
-  }
-  return items;
+  return evaluateLaundrySignals(normalizedRules.laundry);
 }
 
-function activeSignals(rules = getEffectiveSignalRules()) {
-  return [...activeDbSignals(), ...buildSyntheticLaundrySignals(rules), ...buildSyntheticRuleSignals(rules), ...buildSyntheticCustomSignals(rules)];
+function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  const normalizedRules = normalizeSignalRules(rules);
+  return [
+    ...evaluateLaundrySignals(normalizedRules.laundry),
+    ...buildSyntheticRuleSignals(normalizedRules, context),
+    ...buildSyntheticCustomSignals(normalizedRules, context),
+  ];
+}
+
+function sortSignalsForDisplay(signals = []) {
+  const severityRank = { warning: 0, notice: 1, info: 2 };
+  return [...signals].sort((a, b) => {
+    const severityDelta = (severityRank[a?.severity] ?? 3) - (severityRank[b?.severity] ?? 3);
+    if (severityDelta) return severityDelta;
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+}
+
+function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
+  return sortSignalsForDisplay([
+    ...activeDbSignals(context.now),
+    ...buildSyntheticSignals(rules, context),
+  ]);
 }
 
 function buildForgetItems() {
+  const digest = buildTaskDigest();
+  const signals = activeSignals();
+  const tomorrowItems = buildTomorrowItemsFromDigest(digest);
+  return buildForgetItemsFromSignals(signals, tomorrowItems, digest);
+}
+
+function buildForgetItemsFromSignals(signals, tomorrowItems = [], digest = null) {
   const items = [];
-  const topSignals = activeSignals().slice(0, 3);
+  const topSignals = (signals || []).slice(0, 3);
   for (const signal of topSignals) items.push(signalToItem(signal));
-  if (!items.length) {
-    const tomorrow = buildTomorrowItems()[0];
-    if (tomorrow) items.push(tomorrow);
-  }
+  if (!items.length && tomorrowItems[0]) items.push(tomorrowItems[0]);
+  if (!items.length && digest?.overdueTasks?.[0]) items.push(digest.overdueTasks[0]);
   return items.slice(0, 4);
 }
 
 function buildSoftFocus() {
   const digest = buildTaskDigest();
-  if (digest.spotlightTask) return digest.spotlightTask;
-  const topSignal = activeSignals()[0];
+  const signals = activeSignals();
+  return buildSoftFocusFromDigest(digest, signals);
+}
+
+function buildSoftFocusFromDigest(digest, signals = []) {
+  if (digest?.spotlightTask) return digest.spotlightTask;
+  const topSignal = signals[0];
   if (topSignal) return { title: topSignal.title, meta: topSignal.description || 'Gentle attention item' };
   return null;
 }
 
 function buildTomorrowItems() {
-  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
   const digest = buildTaskDigest();
-  const taskItems = digest.tomorrowTasks.slice(0, 4);
+  return buildTomorrowItemsFromDigest(digest);
+}
+
+function buildTomorrowItemsFromDigest(digest) {
+  const snapshot = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType);
+  const taskItems = digest?.tomorrowTasks?.slice(0, 4) || [];
   const events = Array.isArray(snapshot?.items)
     ? snapshot.items.slice(0, 3).map((item) => ({ title: item.title, meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '), pill: 'Calendar' }))
     : [];
@@ -3392,6 +3770,27 @@ function pulseButton(button) {
   button.classList.add('quick-button-hit');
 }
 
+function upsertLocalLoad(load) {
+  if (!load || !load.id) return;
+  const loads = Array.isArray(appState.loads) ? [...appState.loads] : [];
+  const idx = loads.findIndex((item) => item && item.id === load.id);
+  if (idx >= 0) {
+    loads[idx] = { ...loads[idx], ...load };
+  } else {
+    loads.unshift(load);
+  }
+  appState.loads = sortLoads(loads);
+}
+
+function removeLocalLoad(loadId) {
+  if (!loadId) return;
+  appState.loads = (appState.loads || []).filter((item) => item && item.id !== loadId);
+}
+
+function renderAfterLocalLoadChange() {
+  renderRuntimeUi({ renderDevConsole: false });
+}
+
 async function createQuickLog(item, button) {
   try {
     const actor = guessActor();
@@ -3423,8 +3822,12 @@ async function createLoad(button = null) {
       machine: 'washer',
       metadata: {},
     };
-    const { error } = await appState.supabase.from('laundry_loads').insert(payload);
+    const { data, error } = await appState.supabase.from('laundry_loads').insert(payload).select().single();
     if (error) throw error;
+    if (data) {
+      upsertLocalLoad(data);
+      renderAfterLocalLoadChange();
+    }
     pulseButton(button);
     showToast('Started new laundry load', 'success');
     setStatus('Started a new laundry load.');
@@ -3446,6 +3849,8 @@ async function advanceLoad(load, button = null) {
     };
     const { error } = await appState.supabase.from('laundry_loads').update(payload).eq('id', load.id);
     if (error) throw error;
+    upsertLocalLoad({ ...load, ...payload, id: load.id });
+    renderAfterLocalLoadChange();
     pulseButton(button);
     showToast(`Moved load to ${capitalize(nextStatus)}`, 'success');
     setStatus(`Laundry load moved to ${nextStatus}.`);
@@ -3587,7 +3992,7 @@ function applyTestTimeOverride() {
   saveTestTimeOverride(appState.testTimeOverride);
   pushDevLog('info', `Set test time override to ${appState.testTimeOverride}`);
   showToast('Test time set', 'success');
-  refreshAll().catch((error) => console.error('Refresh after setting test time failed', error));
+  refreshAll('test time override set').catch((error) => console.error('Refresh after setting test time failed', error));
   renderDevConsole();
 }
 
@@ -3597,7 +4002,7 @@ function clearTestTimeOverride() {
   if (testTimeInput) testTimeInput.value = '';
   pushDevLog('info', 'Cleared test time override.');
   showToast('Returned to real time', 'success');
-  refreshAll().catch((error) => console.error('Refresh after clearing test time failed', error));
+  refreshAll('test time override cleared').catch((error) => console.error('Refresh after clearing test time failed', error));
   renderDevConsole();
 }
 
@@ -3746,7 +4151,7 @@ async function runConnectionTest() {
     }
 
     if (tasksOk) {
-      setConnectionStatus('realtime', 'ok', 'Configured in app');
+      setConnectionStatus('realtime', 'ok', appState.subscriptions?.length ? getRealtimeStatusText() : 'Configured in app');
     } else {
       setConnectionStatus('realtime', 'warn', 'Check task access first');
     }
@@ -3866,6 +4271,28 @@ function updateWakeLockStatus(patch = {}) {
   };
 }
 
+function getWakeLockLifecycleNote(reason = '', fallback = '') {
+  if (!reason) return fallback || '';
+  const labels = {
+    'user-interaction': 'Retrying after interaction',
+    lifecycle: 'Refreshing on focus/visibility return',
+    released: 'Re-requesting after system release',
+    'interval-retry': 'Periodic retry',
+    settings: 'Refreshing after settings change',
+    startup: 'Starting keep-awake manager',
+    hidden: 'Paused while app is hidden',
+    disabled: 'Disabled in settings',
+  };
+  return labels[reason] || fallback || reason;
+}
+
+function noteWakeLockLifecycle(reason = '', patch = {}) {
+  updateWakeLockStatus({
+    lastReason: reason || appState.wakeLockStatus?.lastReason || '',
+    ...patch,
+  });
+}
+
 async function releaseWakeLock(reason = '') {
   const sentinel = appState.wakeLockSentinel;
   appState.wakeLockSentinel = null;
@@ -3874,26 +4301,35 @@ async function releaseWakeLock(reason = '') {
   }
   updateWakeLockStatus({
     active: false,
-    note: reason || (desiredWakeLockEnabled() ? 'Released' : 'Disabled'),
+    note: getWakeLockLifecycleNote(reason, reason || (desiredWakeLockEnabled() ? 'Released' : 'Disabled')),
     error: '',
+    releasedAt: new Date().toISOString(),
+    lastReason: reason || appState.wakeLockStatus?.lastReason || '',
   });
 }
 
+function queueWakeLockSync(reason = '') {
+  window.setTimeout(() => {
+    syncWakeLock({ reason, force: true });
+  }, 250);
+}
+
 async function syncWakeLock(options = {}) {
+  const reason = options.reason || '';
   const enabled = desiredWakeLockEnabled();
-  updateWakeLockStatus({ enabled, supported: supportsScreenWakeLock() });
+  noteWakeLockLifecycle(reason, { enabled, supported: supportsScreenWakeLock() });
 
   if (!enabled) {
-    await releaseWakeLock('Disabled in settings');
+    await releaseWakeLock('disabled');
     updateWakeLockStatus({ needsInteraction: false });
     return false;
   }
   if (!supportsScreenWakeLock()) {
-    updateWakeLockStatus({ active: false, error: '', note: 'Not supported on this browser/device', needsInteraction: false });
+    updateWakeLockStatus({ active: false, error: '', note: 'Not supported on this browser/device', needsInteraction: false, retryCount: 0 });
     return false;
   }
   if (document.hidden) {
-    await releaseWakeLock('Paused while app is hidden');
+    await releaseWakeLock('hidden');
     return false;
   }
   if (appState.wakeLockSentinel && !options.force) {
@@ -3914,15 +4350,14 @@ async function syncWakeLock(options = {}) {
       updateWakeLockStatus({
         active: false,
         note: document.hidden ? 'Paused while app is hidden' : 'Released by system',
+        releasedAt: new Date().toISOString(),
       });
       if (!document.hidden && desiredWakeLockEnabled()) {
-        window.setTimeout(() => {
-          syncWakeLock({ reason: 'released', force: true });
-        }, 250);
+        queueWakeLockSync('released');
       }
-      try { if (appState.config.mode === 'mobile') renderMode(); } catch {}
+      try { if (appState.config.mode === 'mobile') renderRuntimeUi({ renderDevConsole: false }); } catch {}
     });
-    updateWakeLockStatus({ active: true, error: '', note: 'Active', needsInteraction: false, lastAttemptAt: new Date().toISOString() });
+    updateWakeLockStatus({ active: true, error: '', note: 'Active', needsInteraction: false, lastAttemptAt: new Date().toISOString(), retryCount: 0 });
     return true;
   } catch (error) {
     const message = error?.message || String(error || 'Wake lock request failed');
@@ -3933,9 +4368,24 @@ async function syncWakeLock(options = {}) {
       note: needsInteraction ? 'Tap once to activate keep-awake' : 'Request failed',
       needsInteraction,
       lastAttemptAt: new Date().toISOString(),
+      retryCount: (appState.wakeLockStatus?.retryCount || 0) + 1,
     });
     return false;
   }
+}
+
+function buildWakeLockDebugSummary() {
+  const status = appState.wakeLockStatus || {};
+  return {
+    title: `Wake lock: ${status.active ? 'active' : (status.enabled ? 'enabled' : 'off')}`,
+    meta: [
+      status.lastReason ? `Last reason ${status.lastReason}` : '',
+      status.lastAttemptAt ? `Attempt ${formatWakeLockAttemptTime(status.lastAttemptAt)}` : '',
+      status.releasedAt ? `Release ${formatWakeLockAttemptTime(status.releasedAt)}` : '',
+      status.retryCount ? `Retries ${status.retryCount}` : '',
+    ].filter(Boolean).join(' · '),
+    pill: 'Wake',
+  };
 }
 
 function buildWakeLockStatusItems() {
@@ -3981,6 +4431,7 @@ function setupWakeLockHooks() {
       syncWakeLock({ reason: 'interval-retry' });
     }
   }, 30000);
+  syncWakeLock({ reason: 'startup' });
   window.addEventListener('beforeunload', () => {
     try { appState.wakeLockSentinel?.release(); } catch {}
     appState.wakeLockSentinel = null;
@@ -3992,7 +4443,7 @@ function setupButtons() {
   settingsButton.onclick = openSettingsDialog;
   refreshButton.onclick = async () => {
     try {
-      await refreshAll();
+      await refreshAll('manual refresh button');
     } catch (error) {
       handleRuntimeActionError('Refresh failed', error);
     }
@@ -4014,29 +4465,26 @@ function setupButtons() {
       appState.config.weatherTimezone = '';
       appState.config.weatherLocationName = '';
     }
-    saveConfig(appState.config);
+    persistLocalConfig();
     fillSettingsForm();
-    await syncWakeLock({ force: true });
-    resetAutoRefreshTimer();
     closeSettingsDialog();
-    clearSubscriptions();
-    await ensureSupabase();
-    await upsertDeviceProfile();
-    await refreshAll();
-    bindRealtime();
+    try {
+      await syncWakeLock({ force: true });
+      resetAutoRefreshTimer();
+      clearSubscriptions();
+      await ensureSupabase();
+      await upsertDeviceProfile();
+      await refreshAll('settings saved');
+      bindRealtime();
+    } catch (error) {
+      handleRuntimeActionError('Settings saved, but refresh failed', error);
+    }
   };
 }
 
 async function upsertDeviceProfile() {
   if (!appState.supabase) return;
-  const payload = {
-    device_name: appState.config.deviceName,
-    device_key: appState.deviceKey,
-    mode: appState.config.mode,
-    location: appState.config.location,
-    settings: { keepScreenAwake: !!appState.config.keepScreenAwake },
-    is_active: true,
-  };
+  const payload = buildDeviceProfilePayload();
   const { data, error } = await appState.supabase
     .from('device_profiles')
     .upsert(payload, { onConflict: 'device_key' })
@@ -4100,14 +4548,94 @@ function renderEmptyShell(message) {
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE);
-    return raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG };
+    return normalizeLocalConfig(raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : { ...DEFAULT_CONFIG });
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return normalizeLocalConfig({ ...DEFAULT_CONFIG });
   }
 }
 
+function normalizeLocalConfig(config = {}) {
+  const normalized = { ...DEFAULT_CONFIG, ...config };
+  for (const key of DEVICE_PROFILE_CONFIG_KEYS) {
+    if (normalized[key] == null) normalized[key] = DEFAULT_CONFIG[key];
+  }
+  for (const key of LOCAL_ONLY_CONFIG_KEYS) {
+    if (normalized[key] == null) normalized[key] = DEFAULT_CONFIG[key];
+  }
+  normalized.signalRulesDraft = normalizeSignalRules(normalized.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  normalized.googleClientId = String(normalized.googleClientId || '').trim();
+  normalized.weatherLocationQuery = String(normalized.weatherLocationQuery || '').trim();
+  normalized.weatherLocationName = cleanLocationName(String(normalized.weatherLocationName || '').trim());
+  normalized.weatherLatitude = String(normalized.weatherLatitude || '').trim();
+  normalized.weatherLongitude = String(normalized.weatherLongitude || '').trim();
+  normalized.weatherTimezone = String(normalized.weatherTimezone || '').trim();
+  normalized.uiRefreshSeconds = Math.max(15, Number(normalized.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  normalized.keepScreenAwake = !!normalized.keepScreenAwake;
+  return normalized;
+}
+
+function persistLocalConfig() {
+  appState.config = normalizeLocalConfig(appState.config);
+  persistLocalConfig();
+}
+
 function saveConfig(config) {
-  localStorage.setItem(CONFIG_STORAGE, JSON.stringify(config));
+  localStorage.setItem(CONFIG_STORAGE, JSON.stringify(normalizeLocalConfig(config)));
+}
+
+function applyDeviceProfileToConfig(profile) {
+  if (!profile || typeof profile !== 'object') return appState.config;
+  appState.config.deviceName = profile.device_name || appState.config.deviceName;
+  appState.config.mode = profile.mode || appState.config.mode;
+  appState.config.location = profile.location || appState.config.location;
+  if (typeof profile.settings?.keepScreenAwake === 'boolean') appState.config.keepScreenAwake = profile.settings.keepScreenAwake;
+  return appState.config;
+}
+
+function buildDeviceProfilePayload(config = appState.config) {
+  const source = normalizeLocalConfig(config);
+  return {
+    device_name: source.deviceName,
+    device_key: appState.deviceKey,
+    mode: source.mode,
+    location: source.location,
+    settings: { keepScreenAwake: !!source.keepScreenAwake },
+    is_active: true,
+  };
+}
+
+function applySharedWeatherConfig(weather) {
+  if (!weather || typeof weather !== 'object') return;
+  appState.config.weatherLocationQuery = String(weather.weatherLocationQuery || weather.locationQuery || appState.config.weatherLocationQuery || '').trim();
+  appState.config.weatherLocationName = cleanLocationName(String(weather.weatherLocationName || weather.locationName || appState.config.weatherLocationName || '').trim());
+  appState.config.weatherLatitude = String(weather.weatherLatitude || weather.latitude || appState.config.weatherLatitude || '').trim();
+  appState.config.weatherLongitude = String(weather.weatherLongitude || weather.longitude || appState.config.weatherLongitude || '').trim();
+  appState.config.weatherTimezone = String(weather.weatherTimezone || weather.timezone || appState.config.weatherTimezone || '').trim();
+}
+
+function applySharedCalendarConfig(sharedMap) {
+  if (typeof sharedMap?.[SHARED_CONFIG_KEYS.googleClientId] === 'string' && sharedMap[SHARED_CONFIG_KEYS.googleClientId].trim()) {
+    appState.config.googleClientId = sharedMap[SHARED_CONFIG_KEYS.googleClientId].trim();
+  }
+  const sharedAccounts = sharedMap?.[SHARED_CONFIG_KEYS.calendarAccounts];
+  if (Array.isArray(sharedAccounts) && sharedAccounts.length) {
+    const mergedAccounts = mergeSharedCalendarAccounts(sharedAccounts, appState.calendarAccounts || []);
+    appState.calendarAccounts = mergedAccounts;
+    try { localStorage.setItem(CALENDAR_ACCOUNTS_STORAGE, JSON.stringify(mergedAccounts)); } catch {}
+  }
+}
+
+function applySharedSignalRulesConfig(sharedMap) {
+  const sharedSignalRules = sharedMap?.[SHARED_CONFIG_KEYS.signalRules];
+  appState.signalRulesDraft = normalizeSignalRules(sharedSignalRules || appState.config.signalRulesDraft || DEFAULT_SIGNAL_RULES);
+  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
+}
+
+function applySharedConfigToLocalState(sharedMap) {
+  applySharedCalendarConfig(sharedMap);
+  applySharedWeatherConfig(sharedMap?.[SHARED_CONFIG_KEYS.weather]);
+  applySharedSignalRulesConfig(sharedMap);
+  appState.config = normalizeLocalConfig(appState.config);
 }
 
 function getOrCreateDeviceKey() {
@@ -4137,6 +4665,83 @@ function getSharedConfigUpdatedAt(key) {
   return appState.sharedConfigMeta?.[key]?.updated_at || null;
 }
 
+function getSnapshotFreshnessState(snapshot, fallback = 'Live') {
+  if (!snapshot) {
+    return { level: 'warning', pill: 'Missing', pillClass: 'warning', metaLabel: '', isMissing: true, isStale: false };
+  }
+  const level = snapshotStatusLevel(snapshot);
+  const isStale = !!(snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate());
+  let pill = fallback;
+  if (isStale) pill = 'Stale';
+  else if (level === 'warning') pill = 'Aging';
+  else if (level === 'notice') pill = 'Recent';
+  return {
+    level,
+    pill,
+    pillClass: level === 'warning' ? 'warning' : (level === 'notice' ? 'notice' : ''),
+    metaLabel: snapshotMetaLabel('', snapshot).replace(/^\s*·\s*/, ''),
+    isMissing: false,
+    isStale,
+  };
+}
+
+function getCalendarPublisherSnapshot() {
+  return getSnapshot(appState.config.calendarTodaySnapshotType) || getSnapshot(appState.config.calendarTomorrowSnapshotType);
+}
+
+function getCalendarServiceState() {
+  const requirement = getCalendarAuthRequirementState();
+  const publisherSnapshot = getCalendarPublisherSnapshot();
+  const publisher = describeSnapshotPublisher(publisherSnapshot);
+  const details = requirement.details.map((item, idx) => ({
+    name: item.name || item.email || `Account ${idx + 1}`,
+    status: item.connected ? 'Connected' : 'Needs reconnect',
+  }));
+  const items = requirement.totalRequired
+    ? details.map((detail) => ({
+        title: detail.name,
+        meta: detail.status,
+        pill: detail.status === 'Connected' ? 'Ready' : 'Reconnect',
+        pillClass: detail.status === 'Connected' ? '' : 'warning',
+      }))
+    : [{
+        title: 'No accounts connected on this device',
+        meta: 'Open Mobile → Calendar to connect a Google account for calendar publishing.',
+        pill: 'Setup',
+        pillClass: 'warning',
+      }];
+  return {
+    total: requirement.totalRequired,
+    connected: requirement.connected,
+    needsReconnect: requirement.needsReconnect,
+    details,
+    items,
+    hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
+    publisher,
+    publisherSnapshot,
+    publisherFreshness: getSnapshotFreshnessState(publisherSnapshot),
+  };
+}
+
+function getWeatherServiceState() {
+  const snapshot = getSnapshot(appState.config.weatherSnapshotType);
+  const freshness = getSnapshotFreshnessState(snapshot);
+  const locationLabel = cleanLocationName(appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'No location configured');
+  const items = snapshot?.payload ? [{
+    title: formatWeatherSummary(snapshot.payload, { includeTomorrow: true }),
+    meta: snapshotMetaLabel('Weather', snapshot),
+    pill: freshness.pill,
+    pillClass: freshness.pillClass,
+  }] : [];
+  return {
+    snapshot,
+    freshness,
+    locationLabel,
+    items,
+    isConfigured: !!String(appState.config.weatherLocationQuery || appState.config.weatherLatitude || '').trim(),
+  };
+}
+
 function buildCalendarSnapshotSource() {
   const label = String(appState.config.deviceName || appState.deviceKey || 'unknown-device').trim();
   return `calendar-publisher:${label}`;
@@ -4161,20 +4766,11 @@ function snapshotStatusLevel(snapshot) {
 }
 
 function snapshotFreshnessPill(snapshot, fallback = 'Live') {
-  if (!snapshot) return fallback;
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'Stale';
-  const level = snapshotStatusLevel(snapshot);
-  if (level === 'warning') return 'Aging';
-  if (level === 'notice') return 'Recent';
-  return fallback;
+  return getSnapshotFreshnessState(snapshot, fallback).pill;
 }
 
 function snapshotFreshnessClass(snapshot) {
-  if (!snapshot) return '';
-  const level = snapshotStatusLevel(snapshot);
-  if (level === 'warning') return 'warning';
-  if (level === 'notice') return 'notice';
-  return '';
+  return getSnapshotFreshnessState(snapshot).pillClass;
 }
 
 function buildSnapshotStatusItems() {
@@ -4184,8 +4780,9 @@ function buildSnapshotStatusItems() {
     ['Calendar Tomorrow', getSnapshot(appState.config.calendarTomorrowSnapshotType)],
   ];
   return snapshotEntries.map(([label, snapshot]) => {
+    const freshness = getSnapshotFreshnessState(snapshot);
     if (!snapshot) {
-      return { title: label, meta: 'Not published yet', pill: 'Missing', pillClass: 'warning' };
+      return { title: label, meta: 'Not published yet', pill: freshness.pill, pillClass: freshness.pillClass };
     }
     const publisher = describeSnapshotPublisher(snapshot);
     const metaBits = [snapshotMetaLabel(label, snapshot)];
@@ -4193,8 +4790,8 @@ function buildSnapshotStatusItems() {
     return {
       title: label,
       meta: metaBits.filter(Boolean).join(' · '),
-      pill: snapshotFreshnessPill(snapshot),
-      pillClass: snapshotFreshnessClass(snapshot),
+      pill: freshness.pill,
+      pillClass: freshness.pillClass,
     };
   });
 }
@@ -4264,11 +4861,6 @@ function startOfDay(date) {
   return copy;
 }
 
-function endOfDay(date) {
-  const copy = new Date(date);
-  copy.setHours(23, 59, 59, 999);
-  return copy;
-}
 
 function isSameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -4397,14 +4989,49 @@ function getCalendarAuthRequirementState() {
 }
 
 
+function hasHealthyRealtimeConnection() {
+  const diag = appState.realtimeDiagnostics || {};
+  return !!appState.supabase && Number(diag.activeChannels || 0) > 0 && diag.lastStatus === 'SUBSCRIBED';
+}
+
+function getEffectiveAutoRefreshSeconds() {
+  const configured = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  if (hasHealthyRealtimeConnection()) return Math.max(configured, HEALTHY_REALTIME_REFRESH_FLOOR_SECONDS);
+  return Math.min(configured, DEGRADED_REALTIME_REFRESH_CEILING_SECONDS);
+}
+
+function scheduleSlowStateRefresh() {
+  if (slowRefreshTimer) window.clearInterval(slowRefreshTimer);
+  slowRefreshTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden || hasHealthyRealtimeConnection()) return;
+    pushDevLog('info', `Slow-state recovery refresh fired (${SLOW_STATE_REFRESH_SECONDS}s)`);
+    runTargetedRefresh('Slow-state recovery refresh', async () => {
+      await fetchSnapshots();
+      await fetchRecentLogs();
+    });
+  }, SLOW_STATE_REFRESH_SECONDS * 1000);
+}
+
+function scheduleCalendarPublisherRefresh() {
+  if (calendarPublisherTimer) window.clearInterval(calendarPublisherTimer);
+  calendarPublisherTimer = window.setInterval(() => {
+    if (!appState.supabase || document.hidden || !hasPublisherCalendarAccounts()) return;
+    pushDevLog('info', `Calendar publisher refresh fired (${CALENDAR_PUBLISH_REFRESH_SECONDS}s)`);
+    fetchGoogleCalendarSnapshots().catch((error) => console.warn('Calendar publisher refresh failed', error));
+  }, CALENDAR_PUBLISH_REFRESH_SECONDS * 1000);
+}
+
 function resetAutoRefreshTimer() {
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
-  const refreshSeconds = Math.max(15, Number(appState.config.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
+  const refreshSeconds = getEffectiveAutoRefreshSeconds();
   autoRefreshTimer = window.setInterval(() => {
     if (!appState.supabase || document.hidden) return;
-    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s)`);
-    refreshAll();
+    const reason = hasHealthyRealtimeConnection() ? 'auto refresh' : 'recovery auto refresh';
+    pushDevLog('info', `Auto refresh fired (${refreshSeconds}s · ${hasHealthyRealtimeConnection() ? 'realtime healthy' : 'realtime degraded'})`);
+    refreshAll(reason).catch((error) => console.error('Auto refresh failed', error));
   }, refreshSeconds * 1000);
+  scheduleSlowStateRefresh();
+  scheduleCalendarPublisherRefresh();
 }
 
 async function registerServiceWorker() {
@@ -4433,156 +5060,3 @@ if (document.readyState === 'loading') {
 } else {
   scheduleInitApp();
 }
-
-
-
-/* v1.2.3-dev calendar auth status helpers */
-(function () {
-  const originalInit = window.initCalendarDiagnostics;
-  const originalRenderMobileStatus = window.renderMobileStatus;
-  const originalRenderMobileCalendar = window.renderMobileCalendar;
-  const originalOpenModalList = window.openModalList;
-
-  function getCalendarAccountsSafe() {
-    const state = window.appState || {};
-    if (Array.isArray(state.googleAccounts)) return state.googleAccounts;
-    if (Array.isArray(state.calendarAccounts)) return state.calendarAccounts;
-    if (Array.isArray(state.googleCalendarAccounts)) return state.googleCalendarAccounts;
-    return [];
-  }
-
-  function summarizeCalendarAuthState() {
-    const requirement = getCalendarAuthRequirementState();
-    return {
-      total: requirement.totalRequired,
-      connected: requirement.connected,
-      expired: requirement.needsReconnect,
-      needsReconnect: requirement.needsReconnect,
-      details: requirement.details.map((item, idx) => ({
-        name: item.name || item.email || `Account ${idx + 1}`,
-        status: item.connected ? 'Connected' : 'Needs reconnect',
-      })),
-      hasProblem: requirement.needsReconnect > 0 || requirement.totalRequired === 0,
-    };
-  }
-
-  window.summarizeCalendarAuthState = summarizeCalendarAuthState;
-
-  window.renderCalendarAuthBanner = function renderCalendarAuthBanner() {
-    const summary = summarizeCalendarAuthState();
-    const el = document.getElementById('calendar-auth-banner');
-    if (!el) return;
-    const isMobileMode = (appState?.config?.mode || '') === 'mobile';
-    if (!isMobileMode) {
-      el.style.display = 'none';
-      return;
-    }
-    if (!summary.total) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar not connected.</strong> Use Mobile → Calendar to connect this device.</div>';
-      el.style.display = 'block';
-      return;
-    }
-    if (summary.needsReconnect > 0) {
-      el.innerHTML = '<div class="auth-banner auth-banner-warn"><strong>Calendar needs reconnect on this device.</strong> ' +
-        summary.needsReconnect + ' account(s) need sign-in again. Open Mobile → Calendar and reconnect.</div>';
-      el.style.display = 'block';
-      return;
-    }
-    el.style.display = 'none';
-  };
-
-  window.openCalendarReconnectHelp = function openCalendarReconnectHelp() {
-    const summary = summarizeCalendarAuthState();
-    const items = [];
-    if (!summary.total) {
-      items.push('No Google Calendar accounts connected on this device yet.');
-    } else {
-      summary.details.forEach(d => items.push(`${d.name} — ${d.status}`));
-    }
-    items.push('Reconnect path: Mobile → Calendar → Add Google account / reconnect.');
-    if (typeof window.openModalList === 'function') {
-      window.openModalList('Calendar connection status', items);
-    } else {
-      alert(items.join('\n'));
-    }
-  };
-
-  window.getCalendarEmptyStateMessage = function getCalendarEmptyStateMessage() {
-    const summary = summarizeCalendarAuthState();
-    if (!summary.total) return 'No calendar accounts connected on this device yet.';
-    if (summary.needsReconnect > 0) return 'Calendar needs reconnect on this device.';
-    return 'No events loaded.';
-  };
-
-  document.addEventListener('DOMContentLoaded', function () {
-    try {
-      const app = document.getElementById('app');
-      if (app && !document.getElementById('calendar-auth-banner')) {
-        const banner = document.createElement('div');
-        banner.id = 'calendar-auth-banner';
-        banner.className = 'calendar-auth-banner-slot';
-        app.prepend(banner);
-      }
-    } catch (e) {}
-    setTimeout(() => {
-      try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-    }, 400);
-  });
-
-  if (typeof originalRenderMobileStatus === 'function') {
-    window.renderMobileStatus = function wrappedRenderMobileStatus() {
-      const result = originalRenderMobileStatus.apply(this, arguments);
-      try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-      return result;
-    };
-  }
-
-  if (typeof originalRenderMobileCalendar === 'function') {
-    window.renderMobileCalendar = function wrappedRenderMobileCalendar() {
-      const result = originalRenderMobileCalendar.apply(this, arguments);
-      try {
-        const container = document.querySelector('[data-mobile-tab="calendar"], #mobile-calendar-tab, #calendar-tab');
-        const summary = summarizeCalendarAuthState();
-        if (container && !container.querySelector('.calendar-auth-card')) {
-          const card = document.createElement('div');
-          card.className = 'mobile-card calendar-auth-card';
-          card.innerHTML = `
-            <div class="mobile-card-title">This device’s calendar connection</div>
-            <div class="calendar-auth-summary"></div>
-            <div class="calendar-auth-actions">
-              <button class="secondary-button" id="calendar-reconnect-help-btn">Reconnect help</button>
-            </div>
-          `;
-          container.prepend(card);
-          card.querySelector('#calendar-reconnect-help-btn').addEventListener('click', window.openCalendarReconnectHelp);
-        }
-        const summaryEl = container && container.querySelector('.calendar-auth-summary');
-        if (summaryEl) {
-          if (!summary.total) {
-            summaryEl.innerHTML = '<div class="auth-inline warn">No accounts connected on this device.</div>';
-          } else if (summary.needsReconnect > 0) {
-            summaryEl.innerHTML = `<div class="auth-inline warn">${summary.needsReconnect} account(s) need reconnect on this device.</div>`;
-          } else {
-            summaryEl.innerHTML = `<div class="auth-inline ok">${summary.connected} connected account(s) ready on this device.</div>`;
-          }
-        }
-      } catch (e) {}
-      return result;
-    };
-  }
-
-  // Patch common empty-state text if present in runtime helpers
-  const originalRenderEventsQuickView = window.renderEventsQuickView;
-  if (typeof originalRenderEventsQuickView === 'function') {
-    window.renderEventsQuickView = function wrappedEventsQuickView() {
-      const result = originalRenderEventsQuickView.apply(this, arguments);
-      return result;
-    };
-  }
-
-  // Expose to other renderers
-  window.refreshCalendarAuthIndicators = function () {
-    try { window.renderCalendarAuthBanner && window.renderCalendarAuthBanner(); } catch (e) {}
-    try { window.renderMobileCalendar && window.renderMobileCalendar(); } catch (e) {}
-  };
-})();
