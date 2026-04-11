@@ -1,4 +1,4 @@
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4388,7 +4388,7 @@ function dedupeSignals(signals = []) {
 }
 
 function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSignalEvalContext(), baseSignals = []) {
-  const items = [];
+  const candidates = [];
   const now = context?.now || getNowDate();
   const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
   const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
@@ -4402,44 +4402,54 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
       return Math.max(maxDays, diffDays);
     }, 1);
 
-    items.push({
-      id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
-      signal_type: 'derived_overdue_pressure',
-      title: overdueTasks.length === 1 ? 'Overdue task needs attention' : `${overdueTasks.length} overdue tasks`,
-      description: overdueTasks.length === 1
-        ? `${overdueTasks[0]?.title || 'Task'} is overdue`
-        : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
-      severity: overdueTasks.length >= 3 || oldestOverdueDays >= 2 ? 'warning' : 'notice',
-      location: 'tasks',
-      metadata: { synthetic: true, derived: true, rule: 'derived_overdue_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    candidates.push({
+      priority: 100 + Math.min(20, overdueTasks.length * 4) + Math.min(10, oldestOverdueDays),
+      signal: {
+        id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
+        signal_type: 'derived_overdue_pressure',
+        title: overdueTasks.length === 1 ? 'Overdue task needs attention' : `${overdueTasks.length} overdue tasks`,
+        description: overdueTasks.length === 1
+          ? `${overdueTasks[0]?.title || 'Task'} is overdue`
+          : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
+        severity: overdueTasks.length >= 2 || oldestOverdueDays >= 3 ? 'warning' : 'notice',
+        location: 'tasks',
+        metadata: { synthetic: true, derived: true, rule: 'derived_overdue_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'], priority: 'high' },
+      },
     });
   }
 
-  if (todayTasks.length >= 6) {
-    items.push({
-      id: `derived-today-load-${todayTasks.length}`,
-      signal_type: 'derived_today_load',
-      title: todayTasks.length >= 9 ? 'Very full day' : 'Heavy day',
-      description: `${todayTasks.length} tasks are due today`,
-      severity: todayTasks.length >= 9 ? 'warning' : 'notice',
-      location: 'tasks',
-      metadata: { synthetic: true, derived: true, rule: 'derived_today_load', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+  if (todayTasks.length >= 7) {
+    candidates.push({
+      priority: 60 + Math.min(15, todayTasks.length),
+      signal: {
+        id: `derived-today-load-${todayTasks.length}`,
+        signal_type: 'derived_today_load',
+        title: todayTasks.length >= 10 ? 'Very full day' : 'Heavy day',
+        description: `${todayTasks.length} tasks are due today`,
+        severity: todayTasks.length >= 10 ? 'warning' : 'notice',
+        location: 'tasks',
+        metadata: { synthetic: true, derived: true, rule: 'derived_today_load', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'], priority: 'medium' },
+      },
     });
   }
 
   if (!overdueTasks.length && !todayTasks.length && !hasDbSignals && !hasOtherSignals) {
-    items.push({
-      id: 'derived-all-clear',
-      signal_type: 'derived_all_clear',
-      title: 'All clear',
-      description: tasks.length ? 'No tasks are due today or overdue' : 'No active tasks or reminders right now',
-      severity: 'info',
-      location: 'system',
-      metadata: { synthetic: true, derived: true, rule: 'derived_all_clear', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    candidates.push({
+      priority: tasks.length ? 15 : 10,
+      signal: {
+        id: tasks.length ? 'derived-all-clear' : 'derived-idle-house',
+        signal_type: 'derived_all_clear',
+        title: 'All clear',
+        description: tasks.length ? 'No tasks are due today or overdue' : 'No active tasks or reminders right now',
+        severity: 'info',
+        location: 'system',
+        metadata: { synthetic: true, derived: true, rule: 'derived_all_clear', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'], priority: 'low' },
+      },
     });
   }
 
-  return items.slice(0, 2);
+  candidates.sort((a, b) => b.priority - a.priority);
+  return candidates.slice(0, 1).map((entry) => entry.signal);
 }
 
 function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
