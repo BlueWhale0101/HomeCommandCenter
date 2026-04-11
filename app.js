@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.14';
+const APP_VERSION = '2.4.16';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -115,9 +115,8 @@ let calendarPublishTimer = null;
 let housekeepingTimer = null;
 let pendingTaskCompletions = new Set();
 let pendingSignalActions = new Set();
-const actionRetryHandlers = new Map();
+let armedTaskCompletions = new Map();
 const TASK_COMPLETE_ARM_WINDOW_MS = 3200;
-let armedTaskCompletion = { taskId: '', expiresAt: 0, timerId: null };
 
 const HEALTHY_AUTO_REFRESH_SECONDS = 600;
 const DEGRADED_AUTO_REFRESH_SECONDS = 90;
@@ -1071,170 +1070,6 @@ function getAutoRefreshSeconds() {
   return Math.min(configured, DEGRADED_AUTO_REFRESH_SECONDS);
 }
 
-function normalizeTaskCompletedFieldName(value) {
-  const field = String(value || '').trim();
-  if (!field) return '';
-  const lowered = field.toLowerCase();
-  if (['completed', 'complete'].includes(lowered)) return '';
-  return field;
-}
-
-function getSafeTaskCompletedField(task = null) {
-  const field = normalizeTaskCompletedFieldName(appState.config.taskCompletedField);
-  if (!field) return '';
-  if (task && !fieldExistsOnTask(field, task)) return '';
-  return field;
-}
-
-function getRemoteActionBlockState() {
-  if (!appState.supabase) {
-    return { blocked: true, reason: 'Connect Supabase first' };
-  }
-  const serviceWorker = appState.connectionStatus?.serviceWorker || {};
-  if (serviceWorker.level === 'warn' && (appState.serviceWorkerDiagnostics?.mismatch || appState.serviceWorkerDiagnostics?.updateReady)) {
-    return { blocked: true, reason: 'Refresh this display to load the current build' };
-  }
-  const supabase = appState.connectionStatus?.supabase || {};
-  if (supabase.level === 'error') {
-    return { blocked: true, reason: supabase.text || 'Supabase connection is degraded' };
-  }
-  const tasks = appState.connectionStatus?.tasks || {};
-  if (tasks.level === 'error') {
-    return { blocked: true, reason: tasks.text || 'Task access is degraded' };
-  }
-  return { blocked: false, reason: '' };
-}
-
-function registerActionRetry(key, handler) {
-  if (!key || typeof handler !== 'function') return;
-  actionRetryHandlers.set(key, handler);
-}
-
-function clearArmedTaskCompletion(options = {}) {
-  const shouldRender = options.render !== false;
-  if (armedTaskCompletion.timerId) {
-    window.clearTimeout(armedTaskCompletion.timerId);
-  }
-  const hadArmedTask = !!armedTaskCompletion.taskId;
-  armedTaskCompletion = { taskId: '', expiresAt: 0, timerId: null };
-  if (shouldRender && hadArmedTask) {
-    renderRuntimeUi({ renderDevConsole: false });
-  }
-}
-
-function isTaskCompletionArmed(taskId) {
-  return !!taskId && armedTaskCompletion.taskId === taskId && armedTaskCompletion.expiresAt > Date.now();
-}
-
-function armTaskCompletion(task) {
-  const taskId = task?.id;
-  if (!taskId) return false;
-  const isSameTask = armedTaskCompletion.taskId === taskId && armedTaskCompletion.expiresAt > Date.now();
-  if (isSameTask) return true;
-  if (armedTaskCompletion.timerId) {
-    window.clearTimeout(armedTaskCompletion.timerId);
-  }
-  armedTaskCompletion = {
-    taskId,
-    expiresAt: Date.now() + TASK_COMPLETE_ARM_WINDOW_MS,
-    timerId: window.setTimeout(() => clearArmedTaskCompletion(), TASK_COMPLETE_ARM_WINDOW_MS + 40),
-  };
-  showToast(`Tap again to complete: ${task.title || 'Task'}`, 'info', { dismissAfterMs: 2400 });
-  setStatus(`Armed completion for ${task.title || 'task'}`);
-  renderRuntimeUi({ renderDevConsole: false });
-  return false;
-}
-
-function handleTaskActivation(task) {
-  const taskId = task?.id;
-  if (!taskId || pendingTaskCompletions.has(taskId)) return;
-  if (taskIsArchived(task) || taskIsCompleted(task)) return;
-  if (!isTaskCompletionArmed(taskId)) {
-    armTaskCompletion(task);
-    return;
-  }
-  clearArmedTaskCompletion({ render: false });
-  completeTask(task);
-}
-
-async function runRegisteredRetry(key) {
-  const handler = key ? actionRetryHandlers.get(key) : null;
-  if (!handler) return;
-  try {
-    await handler();
-  } finally {
-    clearActionRetry(key);
-  }
-}
-
-function showActionFeedback({ type = 'info', message = '', retryKey = '' } = {}) {
-  const actionLabelMap = {
-    success: 'success',
-    error: 'error',
-    blocked: 'warning',
-    pending: 'info',
-  };
-  showToast(message, actionLabelMap[type] || type, retryKey ? { retryKey } : undefined);
-}
-
-async function performRemoteAction({
-  actionKey = '',
-  actionLabel = 'Action',
-  pendingMessage = '',
-  successMessage = '',
-  failedMessage = '',
-  blockedMessage = '',
-  optimisticApply = null,
-  optimisticRollback = null,
-  request = null,
-  onSuccess = null,
-  onError = null,
-  allowWhenDegraded = false,
-} = {}) {
-  if (typeof optimisticApply === 'function') optimisticApply();
-  const blockState = allowWhenDegraded ? { blocked: false, reason: '' } : getRemoteActionBlockState();
-  if (blockState.blocked) {
-    if (typeof optimisticRollback === 'function') optimisticRollback();
-    const message = blockedMessage || `${actionLabel} blocked — ${blockState.reason}`;
-    showActionFeedback({ type: 'blocked', message });
-    setStatus(message);
-    return false;
-  }
-
-  showActionFeedback({ type: 'pending', message: pendingMessage || `${actionLabel}…` });
-
-  try {
-    if (typeof request === 'function') await request();
-    if (typeof onSuccess === 'function') onSuccess();
-    clearActionRetry(actionKey);
-    showActionFeedback({ type: 'success', message: successMessage || `${actionLabel} complete` });
-    return true;
-  } catch (error) {
-    if (typeof optimisticRollback === 'function') optimisticRollback();
-    if (typeof onError === 'function') onError(error);
-    if (actionKey) registerActionRetry(actionKey, async () => performRemoteAction({
-      actionKey,
-      actionLabel,
-      pendingMessage,
-      successMessage,
-      failedMessage,
-      blockedMessage,
-      optimisticApply,
-      optimisticRollback,
-      request,
-      onSuccess,
-      onError,
-      allowWhenDegraded,
-    }));
-    showActionFeedback({
-      type: 'error',
-      message: failedMessage || `${actionLabel} failed`,
-      retryKey: actionKey || '',
-    });
-    return false;
-  }
-}
-
 function taskQueryCandidateFilters(baseQuery, completedField) {
   return [
     () => baseQuery.eq(completedField, false),
@@ -1349,6 +1184,57 @@ function locallySnoozeSignal(signal, minutes = 120) {
   persistSignalSnoozes(snoozes);
 }
 
+function getRemoteWriteGuard(tableName = '') {
+  const connection = appState.connectionStatus || {};
+  const sw = appState.serviceWorkerDiagnostics || {};
+  const reasons = [];
+
+  if (!appState.supabase) reasons.push('Supabase is not connected yet.');
+  if (sw.mismatch) reasons.push(sw.mismatchReason || 'This display is running a stale version.');
+  if ((connection.supabase?.level || '').toLowerCase() === 'error') reasons.push(connection.supabase?.text || 'Supabase connection failed.');
+
+  const lowered = String(tableName || '').toLowerCase();
+  if (lowered === 'tasks' && (connection.tasks?.level || '').toLowerCase() === 'error') {
+    reasons.push(connection.tasks?.text || 'Tasks are not reachable right now.');
+  }
+  if (lowered === 'device_profiles' && (connection.deviceProfile?.level || '').toLowerCase() === 'error') {
+    reasons.push(connection.deviceProfile?.text || 'Device profile checks are failing.');
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    reason: reasons[0] || '',
+  };
+}
+
+function clearArmedTaskCompletion(taskId) {
+  if (!taskId) return;
+  const existingTimer = armedTaskCompletions.get(taskId);
+  if (existingTimer) window.clearTimeout(existingTimer);
+  armedTaskCompletions.delete(taskId);
+}
+
+function armTaskCompletion(taskId) {
+  if (!taskId) return false;
+  clearArmedTaskCompletion(taskId);
+  const timer = window.setTimeout(() => {
+    armedTaskCompletions.delete(taskId);
+    renderRuntimeUi({ renderDevConsole: false });
+  }, TASK_COMPLETE_ARM_WINDOW_MS);
+  armedTaskCompletions.set(taskId, timer);
+  return true;
+}
+
+function isTaskCompletionArmed(taskId) {
+  return !!taskId && armedTaskCompletions.has(taskId);
+}
+
+function getDisplayItemKey(item = {}) {
+  if (item.itemKey) return item.itemKey;
+  if (item.id != null) return `id:${item.id}`;
+  return `title:${item.title || ''}|meta:${item.meta || ''}|pill:${item.pill || ''}`;
+}
+
 async function dismissSignal(signal) {
   const signalId = signal?.id;
   if (!signalId || pendingSignalActions.has(`dismiss:${signalId}`)) return;
@@ -1357,45 +1243,35 @@ async function dismissSignal(signal) {
     return;
   }
 
+  const writeGuard = getRemoteWriteGuard('household_signals');
+  if (!writeGuard.allowed) {
+    showToast(writeGuard.reason || 'Live connection is degraded. Signal not dismissed.', 'warning', { durationMs: 2400 });
+    setStatus(`Blocked signal dismiss: ${writeGuard.reason || 'write path not ready'}`);
+    return;
+  }
+
   pendingSignalActions.add(`dismiss:${signalId}`);
   const previousSignals = [...(appState.signals || [])];
-  const optimisticApply = () => {
-    appState.signals = (appState.signals || []).filter((item) => item && item.id !== signalId);
-    renderRuntimeUi({ renderDevConsole: false });
-  };
-  const optimisticRollback = () => {
-    appState.signals = previousSignals;
-    renderRuntimeUi({ renderDevConsole: false });
-  };
+  appState.signals = (appState.signals || []).filter((item) => item && item.id !== signalId);
+  renderRuntimeUi({ renderDevConsole: false });
   const ioStartedAt = startIoOperation('writes', 'signals', 'dismissSignal');
 
   try {
-    await performRemoteAction({
-      actionKey: `dismiss:${signalId}`,
-      actionLabel: 'Dismiss signal',
-      pendingMessage: 'Dismissing signal…',
-      successMessage: 'Signal dismissed',
-      failedMessage: 'Could not dismiss signal — restored',
-      blockedMessage: 'Signal dismiss blocked — live connection needs recovery',
-      optimisticApply,
-      optimisticRollback,
-      request: async () => {
-        const { error } = await appState.supabase
-          .from('household_signals')
-          .update({ status: 'dismissed', updated_at: new Date().toISOString() })
-          .eq('id', signalId);
-        if (error) throw error;
-      },
-      onSuccess: () => {
-        finishIoOperation('writes', 'signals', ioStartedAt, { ok: true, reason: 'dismissSignal' });
-        setStatus(`Dismissed signal: ${signal?.title || 'Signal'}`);
-      },
-      onError: (error) => {
-        finishIoOperation('writes', 'signals', ioStartedAt, { ok: false, reason: 'dismissSignal', error: error?.message || String(error) });
-        console.error(error);
-        setStatus(`Could not dismiss signal: ${error.message}`);
-      },
-    });
+    const { error } = await appState.supabase
+      .from('household_signals')
+      .update({ status: 'dismissed', updated_at: new Date().toISOString() })
+      .eq('id', signalId);
+    if (error) throw error;
+    finishIoOperation('writes', 'signals', ioStartedAt, { ok: true, reason: 'dismissSignal' });
+    showToast('Signal dismissed', 'success');
+    setStatus(`Dismissed signal: ${signal?.title || 'Signal'}`);
+  } catch (error) {
+    finishIoOperation('writes', 'signals', ioStartedAt, { ok: false, reason: 'dismissSignal', error: error?.message || String(error) });
+    appState.signals = previousSignals;
+    renderRuntimeUi({ renderDevConsole: false });
+    console.error(error);
+    showToast('Could not dismiss signal — restored on screen', 'error', { durationMs: 2400 });
+    setStatus(`Could not dismiss signal: ${error.message}`);
   } finally {
     pendingSignalActions.delete(`dismiss:${signalId}`);
   }
@@ -1406,10 +1282,9 @@ function snoozeSignal(signal, minutes = 120) {
   if (!signalId || pendingSignalActions.has(`snooze:${signalId}`)) return;
   pendingSignalActions.add(`snooze:${signalId}`);
   try {
-    showActionFeedback({ type: 'pending', message: 'Snoozing signal…' });
     locallySnoozeSignal(signal, minutes);
     renderRuntimeUi({ renderDevConsole: false });
-    showActionFeedback({ type: 'success', message: `Signal snoozed for ${minutes}m` });
+    showToast(`Signal snoozed for ${minutes}m`, 'success');
     setStatus(`Snoozed signal: ${signal?.title || 'Signal'}`);
   } finally {
     window.setTimeout(() => pendingSignalActions.delete(`snooze:${signalId}`), 250);
@@ -1839,7 +1714,7 @@ function buildPill(text, extraClass = '') {
 function buildListItem(item, options = {}) {
   const rowTag = options.tagName || 'div';
   const row = document.createElement(rowTag);
-  row.className = ['list-item', options.rowClassName || '', item.rowClassName || ''].filter(Boolean).join(' ').trim();
+  row.className = options.rowClassName || 'list-item';
 
   const left = document.createElement('div');
   left.className = options.leftClassName || 'list-item-left';
@@ -1866,11 +1741,6 @@ function buildListItem(item, options = {}) {
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
     row.style.cursor = 'pointer';
-    if (item.isArmed) {
-      row.style.borderColor = 'rgba(244, 208, 63, 0.85)';
-      row.style.boxShadow = '0 0 0 1px rgba(244, 208, 63, 0.28) inset';
-      row.style.background = 'rgba(244, 208, 63, 0.10)';
-    }
     if (item.actionHint) row.title = item.actionHint;
     row.addEventListener('click', (event) => {
       event.preventDefault();
@@ -4178,7 +4048,9 @@ function rankTasksForWindow(tasks, options = {}) {
 }
 
 function mapSnapshotItemsToDisplay(items = [], labelPrefix = '') {
-  return items.map((item) => ({
+  return items.map((item, index) => ({
+    id: item.id || item.eventId || item.uid || `${item.title || 'calendar'}-${item.time || index}`,
+    itemKey: `calendar:${item.id || item.eventId || item.uid || `${item.title || 'calendar'}-${item.time || index}`}`,
     title: item.title,
     meta: [item.sourceLabel || 'Calendar', labelPrefix && item.time ? `${labelPrefix} · ${item.time}` : labelPrefix || item.time].filter(Boolean).join(' · '),
     pill: 'Calendar',
@@ -4256,15 +4128,24 @@ function buildTaskDigest() {
 
 function blendTaskAndEventItems(taskItems, eventItems, extraItems = [], maxItems = 8) {
   const blended = [];
+  const seen = new Set();
+  const pushUnique = (item) => {
+    if (!item || blended.length >= maxItems) return;
+    const key = getDisplayItemKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    blended.push(item);
+  };
+
   const maxLen = Math.max(taskItems.length, eventItems.length);
   for (let i = 0; i < maxLen; i += 1) {
-    if (taskItems[i]) blended.push(taskItems[i]);
-    if (eventItems[i]) blended.push(eventItems[i]);
+    pushUnique(taskItems[i]);
+    pushUnique(eventItems[i]);
     if (blended.length >= maxItems) break;
   }
   for (const item of extraItems) {
     if (blended.length >= maxItems) break;
-    blended.push(item);
+    pushUnique(item);
   }
   return blended.slice(0, maxItems);
 }
@@ -4337,14 +4218,14 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
     const canComplete = !!task.id && !pendingTaskCompletions.has(task.id);
     const armed = canComplete && isTaskCompletionArmed(task.id);
     return {
+      id: task.id,
+      itemKey: `task:${task.id || task.title}`,
       title: task.title,
-      meta: [owner, dueMeta, armed ? 'Tap again to complete' : ''].filter(Boolean).join(' · '),
-      pill: armed ? 'Ready' : task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
+      meta: [owner, armed ? 'Ready to complete' : dueMeta].filter(Boolean).join(' · '),
+      pill: armed ? 'Ready' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill),
       pillClass: armed ? 'warning' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : ''),
-      actionHint: canComplete ? (armed ? 'Tap again to mark complete' : 'Tap twice to mark complete') : '',
-      rowClassName: armed ? 'list-item-armed' : '',
-      isArmed: armed,
-      onActivate: canComplete ? () => handleTaskActivation(task.raw || task) : null,
+      actionHint: canComplete ? (armed ? 'Tap again to complete' : 'Tap once to arm completion') : '',
+      onActivate: canComplete ? () => completeTask(task.raw || task) : null,
     };
   });
 }
@@ -4595,33 +4476,15 @@ function showToast(message, type = 'info', options = {}) {
   const host = ensureToastHost();
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  const messageEl = document.createElement('span');
-  messageEl.textContent = message;
-  toast.append(messageEl);
-
-  if (options.retryKey) {
-    const retryButton = document.createElement('button');
-    retryButton.type = 'button';
-    retryButton.textContent = 'Retry';
-    retryButton.className = 'secondary-button toast-retry-button';
-    retryButton.style.marginLeft = '0.75rem';
-    retryButton.style.padding = '0.2rem 0.5rem';
-    retryButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      toast.remove();
-      runRegisteredRetry(options.retryKey);
-    });
-    toast.append(retryButton);
-  }
-
+  toast.textContent = message;
   host.append(toast);
   requestAnimationFrame(() => toast.classList.add('toast-show'));
-  const dismissAfterMs = Number(options.dismissAfterMs) > 0 ? Number(options.dismissAfterMs) : (options.retryKey ? 4200 : 1700);
+  const duration = Math.max(900, Number(options.durationMs) || 1700);
   window.setTimeout(() => {
     toast.classList.remove('toast-show');
     toast.classList.add('toast-hide');
     window.setTimeout(() => toast.remove(), 220);
-  }, dismissAfterMs);
+  }, duration);
 }
 
 function pulseButton(button) {
@@ -4657,8 +4520,8 @@ function buildTaskCompletionPayload(task) {
     panel: 'done',
     completed_at: new Date().toISOString(),
   };
-  const completedField = getSafeTaskCompletedField(task);
-  if (completedField) {
+  const completedField = String(appState.config.taskCompletedField || '').trim();
+  if (completedField && completedField !== 'completed' && task && Object.prototype.hasOwnProperty.call(task, completedField)) {
     payload[completedField] = appState.config.useStringCompleted
       ? appState.config.taskCompletedValue
       : true;
@@ -4685,162 +4548,137 @@ async function completeTask(task) {
   if (!taskId || pendingTaskCompletions.has(taskId)) return;
   if (taskIsArchived(task) || taskIsCompleted(task)) return;
 
-  clearArmedTaskCompletion({ render: false });
+  if (!isTaskCompletionArmed(taskId)) {
+    armTaskCompletion(taskId);
+    renderRuntimeUi({ renderDevConsole: false });
+    showToast('Tap again to complete', 'info', { durationMs: TASK_COMPLETE_ARM_WINDOW_MS - 250 });
+    setStatus(`Armed completion for ${task?.title || 'task'}. Tap again to confirm.`);
+    return;
+  }
+
+  clearArmedTaskCompletion(taskId);
+  const writeGuard = getRemoteWriteGuard('tasks');
+  if (!writeGuard.allowed) {
+    renderRuntimeUi({ renderDevConsole: false });
+    showToast(writeGuard.reason || 'Live connection is degraded. Task not completed.', 'warning', { durationMs: 2400 });
+    setStatus(`Blocked task completion: ${writeGuard.reason || 'write path not ready'}`);
+    return;
+  }
+
   pendingTaskCompletions.add(taskId);
   const previousTask = removeLocalTask(taskId) || task;
-  const optimisticApply = () => {
-    appState.tasks = (appState.tasks || []).filter((item) => item && item.id !== taskId);
-    renderRuntimeUi({ renderDevConsole: false });
-  };
-  const optimisticRollback = () => {
-    restoreLocalTask(previousTask);
-    renderRuntimeUi({ renderDevConsole: false });
-  };
-  optimisticApply();
+  renderRuntimeUi({ renderDevConsole: false });
 
   const payload = buildTaskCompletionPayload(previousTask);
   const ioStartedAt = startIoOperation('writes', 'tasks', 'completeTask');
 
   try {
-    await performRemoteAction({
-      actionKey: `complete:${taskId}`,
-      actionLabel: 'Complete task',
-      pendingMessage: 'Completing task…',
-      successMessage: 'Task completed',
-      failedMessage: 'Could not complete task — restored',
-      blockedMessage: 'Task completion blocked — live connection needs recovery',
-      optimisticRollback,
-      request: async () => {
-        const { error } = await appState.supabase
-          .from(appState.config.taskTable || 'tasks')
-          .update(payload)
-          .eq('id', taskId);
-        if (error) throw error;
-      },
-      onSuccess: () => {
-        finishIoOperation('writes', 'tasks', ioStartedAt, { ok: true, reason: 'completeTask' });
-        setStatus(`Completed: ${previousTask?.title || 'Task'}`);
-      },
-      onError: (error) => {
-        finishIoOperation('writes', 'tasks', ioStartedAt, { ok: false, reason: 'completeTask', error: error?.message || String(error) });
-        console.error(error);
-        setStatus(`Could not complete task: ${error.message}`);
-      },
-    });
+    const { error } = await appState.supabase
+      .from(appState.config.taskTable || 'tasks')
+      .update(payload)
+      .eq('id', taskId);
+    if (error) throw error;
+    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: true, reason: 'completeTask' });
+    showToast('Task completed', 'success');
+    setStatus(`Completed: ${previousTask?.title || 'Task'}`);
+  } catch (error) {
+    finishIoOperation('writes', 'tasks', ioStartedAt, { ok: false, reason: 'completeTask', error: error?.message || String(error) });
+    restoreLocalTask(previousTask);
+    renderRuntimeUi({ renderDevConsole: false });
+    console.error(error);
+    showToast('Could not complete task — restored on screen', 'error', { durationMs: 2400 });
+    setStatus(`Could not complete task: ${error.message}`);
   } finally {
     pendingTaskCompletions.delete(taskId);
   }
 }
 
 async function createQuickLog(item, button) {
-  const actor = guessActor();
-  const payload = {
-    event_type: item.eventType,
-    location: item.location,
-    actor,
-    source: appState.config.mode,
-    details: {},
-  };
-  const ioStartedAt = startIoOperation('writes', 'logs', 'createQuickLog');
-  await performRemoteAction({
-    actionKey: `quicklog:${item.eventType}`,
-    actionLabel: item.label,
-    pendingMessage: `Logging ${item.label.toLowerCase()}…`,
-    successMessage: `${item.label} logged`,
-    failedMessage: `Could not log ${item.label.toLowerCase()}`,
-    blockedMessage: `Logging blocked — live connection needs recovery`,
-    request: async () => {
-      const { error } = await appState.supabase.from('household_logs').insert(payload);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      finishIoOperation('writes', 'logs', ioStartedAt, { ok: true, reason: 'createQuickLog' });
-      pulseButton(button);
-      setStatus(`Logged: ${item.label}`);
-    },
-    onError: (error) => {
-      finishIoOperation('writes', 'logs', ioStartedAt, { ok: false, reason: 'createQuickLog', error: error?.message || String(error) });
-      console.error(error);
-      setStatus(`Could not log action: ${error.message}`);
-    },
-  });
+  const writeGuard = getRemoteWriteGuard('household_logs');
+  if (!writeGuard.allowed) {
+    showToast(writeGuard.reason || 'Live connection is degraded. Log not saved.', 'warning', { durationMs: 2400 });
+    setStatus(`Blocked quick log: ${writeGuard.reason || 'write path not ready'}`);
+    return;
+  }
+  try {
+    const actor = guessActor();
+    const payload = {
+      event_type: item.eventType,
+      location: item.location,
+      actor,
+      source: appState.config.mode,
+      details: {},
+    };
+    const { error } = await appState.supabase.from('household_logs').insert(payload);
+    if (error) throw error;
+    pulseButton(button);
+    showToast(`${item.label} logged`, 'success');
+    setStatus(`Logged: ${item.label}`);
+  } catch (error) {
+    console.error(error);
+    showToast(`Could not log ${item.label.toLowerCase()}`, 'error');
+    setStatus(`Could not log action: ${error.message}`);
+  }
 }
 
 async function createLoad(button = null) {
-  const payload = {
-    label: null,
-    status: 'washing',
-    started_by: guessActor(),
-    machine: 'washer',
-    metadata: {},
-  };
-  const ioStartedAt = startIoOperation('writes', 'laundry_loads', 'createLoad');
-  await performRemoteAction({
-    actionKey: 'laundry:create',
-    actionLabel: 'Start laundry load',
-    pendingMessage: 'Starting new laundry load…',
-    successMessage: 'Started new laundry load',
-    failedMessage: 'Could not start laundry load',
-    blockedMessage: 'Laundry action blocked — live connection needs recovery',
-    request: async () => {
-      const { data, error } = await appState.supabase.from('laundry_loads').insert(payload).select().single();
-      if (error) throw error;
-      if (data) {
-        upsertLocalLoad(data);
-        renderAfterLocalLoadChange();
-      }
-    },
-    onSuccess: () => {
-      finishIoOperation('writes', 'laundry_loads', ioStartedAt, { ok: true, reason: 'createLoad' });
-      pulseButton(button);
-      setStatus('Started a new laundry load.');
-    },
-    onError: (error) => {
-      finishIoOperation('writes', 'laundry_loads', ioStartedAt, { ok: false, reason: 'createLoad', error: error?.message || String(error) });
-      console.error(error);
-      setStatus(`Could not start load: ${error.message}`);
-    },
-  });
+  const writeGuard = getRemoteWriteGuard('laundry_loads');
+  if (!writeGuard.allowed) {
+    showToast(writeGuard.reason || 'Live connection is degraded. Load not started.', 'warning', { durationMs: 2400 });
+    setStatus(`Blocked laundry action: ${writeGuard.reason || 'write path not ready'}`);
+    return;
+  }
+  try {
+    const payload = {
+      label: null,
+      status: 'washing',
+      started_by: guessActor(),
+      machine: 'washer',
+      metadata: {},
+    };
+    const { data, error } = await appState.supabase.from('laundry_loads').insert(payload).select().single();
+    if (error) throw error;
+    if (data) {
+      upsertLocalLoad(data);
+      renderAfterLocalLoadChange();
+    }
+    pulseButton(button);
+    showToast('Started new laundry load', 'success');
+    setStatus('Started a new laundry load.');
+  } catch (error) {
+    console.error(error);
+    showToast('Could not start laundry load', 'error');
+    setStatus(`Could not start load: ${error.message}`);
+  }
 }
 
 async function advanceLoad(load, button = null) {
-  const nextStatus = LOAD_STATUS_ORDER[Math.min(LOAD_STATUS_ORDER.indexOf(load.status) + 1, LOAD_STATUS_ORDER.length - 1)];
-  const payload = {
-    status: nextStatus,
-    last_transition_at: new Date().toISOString(),
-    completed_at: nextStatus === 'done' ? new Date().toISOString() : null,
-    machine: nextStatus === 'drying' || nextStatus === 'ready' ? 'dryer' : 'washer',
-  };
-  const previousLoad = { ...load };
-  upsertLocalLoad({ ...load, ...payload, id: load.id });
-  renderAfterLocalLoadChange();
-  const ioStartedAt = startIoOperation('writes', 'laundry_loads', 'advanceLoad');
-  await performRemoteAction({
-    actionKey: `laundry:advance:${load.id}`,
-    actionLabel: 'Advance laundry load',
-    pendingMessage: `Moving load to ${capitalize(nextStatus)}…`,
-    successMessage: `Moved load to ${capitalize(nextStatus)}`,
-    failedMessage: 'Could not update laundry load — restored',
-    blockedMessage: 'Laundry action blocked — live connection needs recovery',
-    optimisticRollback: () => {
-      upsertLocalLoad(previousLoad);
-      renderAfterLocalLoadChange();
-    },
-    request: async () => {
-      const { error } = await appState.supabase.from('laundry_loads').update(payload).eq('id', load.id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      finishIoOperation('writes', 'laundry_loads', ioStartedAt, { ok: true, reason: 'advanceLoad' });
-      pulseButton(button);
-      setStatus(`Laundry load moved to ${nextStatus}.`);
-    },
-    onError: (error) => {
-      finishIoOperation('writes', 'laundry_loads', ioStartedAt, { ok: false, reason: 'advanceLoad', error: error?.message || String(error) });
-      console.error(error);
-      setStatus(`Could not update load: ${error.message}`);
-    },
-  });
+  const writeGuard = getRemoteWriteGuard('laundry_loads');
+  if (!writeGuard.allowed) {
+    showToast(writeGuard.reason || 'Live connection is degraded. Load not updated.', 'warning', { durationMs: 2400 });
+    setStatus(`Blocked laundry action: ${writeGuard.reason || 'write path not ready'}`);
+    return;
+  }
+  try {
+    const nextStatus = LOAD_STATUS_ORDER[Math.min(LOAD_STATUS_ORDER.indexOf(load.status) + 1, LOAD_STATUS_ORDER.length - 1)];
+    const payload = {
+      status: nextStatus,
+      last_transition_at: new Date().toISOString(),
+      completed_at: nextStatus === 'done' ? new Date().toISOString() : null,
+      machine: nextStatus === 'drying' || nextStatus === 'ready' ? 'dryer' : 'washer',
+    };
+    const { error } = await appState.supabase.from('laundry_loads').update(payload).eq('id', load.id);
+    if (error) throw error;
+    upsertLocalLoad({ ...load, ...payload, id: load.id });
+    renderAfterLocalLoadChange();
+    pulseButton(button);
+    showToast(`Moved load to ${capitalize(nextStatus)}`, 'success');
+    setStatus(`Laundry load moved to ${nextStatus}.`);
+  } catch (error) {
+    console.error(error);
+    showToast('Could not update laundry load', 'error');
+    setStatus(`Could not update load: ${error.message}`);
+  }
 }
 
 function setupVersionUi() {
@@ -5567,9 +5405,10 @@ function normalizeLocalConfig(config = {}) {
   normalized.weatherLatitude = String(normalized.weatherLatitude || '').trim();
   normalized.weatherLongitude = String(normalized.weatherLongitude || '').trim();
   normalized.weatherTimezone = String(normalized.weatherTimezone || '').trim();
-  normalized.taskCompletedField = normalizeTaskCompletedFieldName(normalized.taskCompletedField);
   normalized.uiRefreshSeconds = Math.max(15, Number(normalized.uiRefreshSeconds) || DEFAULT_CONFIG.uiRefreshSeconds);
   normalized.keepScreenAwake = !!normalized.keepScreenAwake;
+  normalized.taskCompletedField = String(normalized.taskCompletedField || '').trim();
+  if (normalized.taskCompletedField.toLowerCase() === 'completed') normalized.taskCompletedField = '';
   return normalized;
 }
 
