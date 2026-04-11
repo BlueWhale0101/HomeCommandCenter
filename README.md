@@ -1,8 +1,8 @@
-# Home Command Center v2.7.5
+# Home Command Center v2.7.6
 
 ## Overview
 
-v2.7.5 starts **Phase E — Visual Polish**. This build does not add new logic, signals, or backend behavior. It tightens the visual hierarchy so the screen reads faster from a distance and fits a little more useful content into the same space.
+v2.7.6 starts **Phase E — Visual Polish**. This build does not add new logic, signals, or backend behavior. It tightens the visual hierarchy so the screen reads faster from a distance and fits a little more useful content into the same space.
 
 This build was patched from the stable v2.6.3 startup-hotfix line.
 
@@ -72,7 +72,7 @@ Signals still stand out, but info/notice rows are calmer than before. Warning ro
 This is the first Phase E build and is intentionally conservative. It improves readability and density without redesigning the layout or adding new interaction complexity.
 
 
-## What changed in 2.7.5
+## What changed in 2.7.6
 
 ### 1. Kitchen quick actions back to a single row
 - quick action buttons now size to fit exactly one row in kitchen view
@@ -92,7 +92,7 @@ The next layout-focused refinement round should explicitly include:
 
 These are layout feedback items, not logic issues.
 
-## Files updated in 2.7.5
+## Files updated in 2.7.6
 - `app.js`
 - `index.html`
 - `sw.js`
