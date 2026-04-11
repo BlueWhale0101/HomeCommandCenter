@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.3';
+const APP_VERSION = '2.7.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -360,6 +360,7 @@ function attachServiceWorkerListeners(registration) {
 const statusLine = document.getElementById('status-line');
 const settingsButton = document.getElementById('settings-button');
 const refreshButton = document.getElementById('refresh-button');
+const trustIndicator = document.getElementById('trust-indicator');
 const settingsDialog = document.getElementById('settings-dialog');
 const saveSettingsButton = document.getElementById('save-settings');
 const versionTag = document.getElementById('version-tag');
@@ -877,6 +878,7 @@ async function loadDeviceProfile() {
 
 function renderRuntimeUi(options = {}) {
   if (options.renderMode !== false) renderMode();
+  renderTrustIndicator();
   if (options.renderDevConsole !== false) renderDevConsole();
 }
 
@@ -1617,7 +1619,7 @@ const SURFACE_DEFINITIONS = {
   tv: {
     bodyClasses: ['widget-surface', 'tv-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvSignals', 'tvToday', 'tvMotion'],
+    widgets: ['tvHero', 'tvSignals', 'tvToday', 'tvMotion', 'tvForget'],
   },
   laundry: {
     bodyClasses: ['widget-surface', 'laundry-surface'],
@@ -1689,7 +1691,7 @@ function renderModeLayout(mode, context) {
   screenEl.className = layout.screenClass;
   screenEl.replaceChildren();
 
-  const ambientHealthBanner = mode !== 'mobile' ? buildAmbientHealthBanner() : null;
+  const ambientFooter = mode !== 'mobile' ? buildAmbientFooter() : null;
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
@@ -1699,7 +1701,7 @@ function renderModeLayout(mode, context) {
       if (node) tvWrap.append(node);
     }
     screenEl.append(tvWrap);
-    if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
+    if (ambientFooter) screenEl.append(ambientFooter);
     return;
   }
 
@@ -1708,7 +1710,7 @@ function renderModeLayout(mode, context) {
     if (node) screenEl.append(node);
   }
 
-  if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
+  if (ambientFooter) screenEl.append(ambientFooter);
 }
 
 function renderWidget(widgetId, context) {
@@ -1734,6 +1736,7 @@ const WIDGETS = {
   tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-today-card'),
   tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card panel-card panel-signals-card'),
   tvMotion: (context) => buildCard('In Motion', context.digest.counts.inMotion ? `${context.digest.counts.inMotion} active` : '', renderTaskList(context.digest.inMotionTasks.slice(0, 5), 'Nothing is actively in motion right now.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-focus-card'),
+  tvForget: (context) => buildCard('Don’t Forget', 'Tomorrow and coming up soon', renderTaskList(context.forgetItems.slice(0, 4), 'Nothing important is coming up soon.', { compact: true, showPills: true }), 'tv-card tv-bottom-card panel-card panel-reminders-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
@@ -5606,6 +5609,7 @@ function setupWakeLockHooks() {
 function setupButtons() {
   pushDevLog('info', 'Button handlers attached.');
   settingsButton.onclick = openSettingsDialog;
+  if (trustIndicator) trustIndicator.onclick = () => { document.querySelector('.ambient-footer')?.scrollIntoView({ behavior: 'smooth', block: 'end' }); };
   refreshButton.onclick = async () => {
     try {
       await refreshAll('manual refresh button', { includeSlowState: true });
@@ -6122,43 +6126,67 @@ function getAmbientHealthState() {
   };
 }
 
-function buildAmbientHealthBanner() {
+function buildAmbientFooter() {
   const health = getAmbientHealthState();
-  if (!health || health.level === 'ok') return null;
-
-  const banner = document.createElement('section');
-  banner.className = `ambient-health-banner ${health.level}`;
+  const footer = document.createElement('section');
+  footer.className = `ambient-footer ${health.level}`;
 
   const left = document.createElement('div');
-  left.className = 'ambient-health-copy';
+  left.className = 'ambient-footer-copy';
 
   const title = document.createElement('div');
-  title.className = 'ambient-health-title';
-  title.textContent = health.title;
+  title.className = 'ambient-footer-title';
+  title.textContent = health.level === 'ok' ? 'Trust details' : health.title;
 
   const detail = document.createElement('div');
-  detail.className = 'ambient-health-detail';
-  const issueBits = health.issues.slice(0, 3).map((issue) => issue.title);
-  detail.textContent = [health.message, issueBits.length > 1 ? issueBits.slice(1).join(' · ') : '']
-    .filter(Boolean)
-    .join(' · ');
+  detail.className = 'ambient-footer-detail';
+  const issueBits = (health.issues || []).slice(0, 3).map((issue) => issue.title);
+  const statusText = (statusLine?.textContent || '').trim();
+  if (health.level === 'ok') {
+    detail.textContent = statusText || 'Live view is healthy.';
+  } else {
+    detail.textContent = [health.message, issueBits.length > 1 ? issueBits.slice(1).join(' · ') : '', statusText].filter(Boolean).join(' · ');
+  }
 
   left.append(title, detail);
-  banner.append(left);
+  footer.append(left);
 
-  if (health.pills.length) {
+  const right = document.createElement('div');
+  right.className = 'ambient-footer-actions';
+
+  if (health.pills?.length) {
     const pills = document.createElement('div');
-    pills.className = 'ambient-health-pills';
+    pills.className = 'ambient-footer-pills';
     for (const label of health.pills.slice(0, 3)) {
       const pill = document.createElement('span');
       pill.className = `pill ${health.level === 'degraded' ? 'warning' : ''}`.trim();
       pill.textContent = label;
       pills.append(pill);
     }
-    banner.append(pills);
+    right.append(pills);
   }
 
-  return banner;
+  const controls = document.createElement('div');
+  controls.className = 'ambient-footer-controls';
+  controls.append(
+    buildSecondaryButton('Refresh', () => refreshButton?.click(), 'mini-button footer-button'),
+    buildSecondaryButton('Settings', () => settingsButton?.click(), 'mini-button footer-button'),
+  );
+  right.append(controls);
+
+  footer.append(right);
+  return footer;
+}
+
+function renderTrustIndicator() {
+  if (!trustIndicator) return;
+  const health = getAmbientHealthState();
+  const level = health?.level || 'ok';
+  const degraded = level === 'degraded' || level === 'aging';
+  trustIndicator.className = `trust-indicator ${degraded ? 'degraded' : 'healthy'}`;
+  trustIndicator.textContent = degraded ? '!' : '✓';
+  trustIndicator.setAttribute('aria-label', degraded ? 'Trust degraded' : 'Trust healthy');
+  trustIndicator.setAttribute('title', degraded ? `${health.title}: ${health.message}` : 'Live view healthy');
 }
 
 function buildSnapshotStatusItems() {
