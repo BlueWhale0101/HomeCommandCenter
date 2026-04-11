@@ -1,4 +1,4 @@
-const APP_VERSION = '2.4.16';
+const APP_VERSION = '2.5.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1657,7 +1657,7 @@ const WIDGETS = {
   signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.')),
   upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true })),
   quickActions: () => buildQuickActionsCard(),
-  forget: (context) => buildCard('Don’t Forget', 'Short and important', renderTaskList(context.digest.overdueTasks.slice(0, 4).concat(context.forgetItems.slice(0, 2)), 'Nothing critical is waiting.', { showPills: true })),
+  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true })),
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
@@ -1669,7 +1669,7 @@ const WIDGETS = {
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
   bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
   bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
-  bedroomForget: (context) => buildCard('Don’t Forget', 'Gentle reminders', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
+  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
 
@@ -4373,13 +4373,126 @@ function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
   return evaluateLaundrySignals(normalizedRules.laundry);
 }
 
+
+function dedupeSignals(signals = []) {
+  const seen = new Set();
+  const items = [];
+  for (const signal of signals || []) {
+    if (!signal) continue;
+    const key = signal.id || `${signal.signal_type || 'signal'}|${signal.title || ''}|${signal.description || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(signal);
+  }
+  return items;
+}
+
+function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSignalEvalContext(), baseSignals = []) {
+  const items = [];
+  const now = context?.now || getNowDate();
+  const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
+  const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
+  const inMotionTasks = tasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion');
+  const hasOtherSignals = Array.isArray(baseSignals) && baseSignals.length > 0;
+  const hasDbSignals = activeDbSignals(now).length > 0;
+  const freshnessItems = getDataFreshnessItems();
+  const taskFreshness = freshnessItems.find((item) => item.title === 'Tasks');
+  const tasksAreStale = taskFreshness && ['Stale', 'Aging'].includes(String(taskFreshness.pill || ''));
+
+  if (tasksAreStale) {
+    items.push({
+      id: `derived-stale-tasks-${String(taskFreshness.pill || '').toLowerCase()}`,
+      signal_type: 'derived_stale_tasks',
+      title: taskFreshness.pill === 'Stale' ? 'Display may be stale' : 'Live data is aging',
+      description: taskFreshness.meta || 'Task data has not refreshed recently',
+      severity: taskFreshness.pill === 'Stale' ? 'warning' : 'notice',
+      location: 'system',
+      metadata: { synthetic: true, derived: true, rule: 'derived_stale_tasks', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (overdueTasks.length) {
+    const oldestOverdueDays = overdueTasks.reduce((maxDays, task) => {
+      if (!task?.dueDate) return maxDays;
+      const diffDays = Math.max(1, Math.floor((startOfDay(now).getTime() - startOfDay(task.dueDate).getTime()) / 86400000));
+      return Math.max(maxDays, diffDays);
+    }, 1);
+
+    items.push({
+      id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
+      signal_type: 'derived_overdue_pressure',
+      title: overdueTasks.length === 1 ? 'Overdue task needs attention' : `${overdueTasks.length} overdue tasks`,
+      description: overdueTasks.length === 1
+        ? `${overdueTasks[0]?.title || 'Task'} is overdue`
+        : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
+      severity: overdueTasks.length >= 2 || oldestOverdueDays >= 3 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: { synthetic: true, derived: true, rule: 'derived_overdue_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (todayTasks.length >= 7) {
+    items.push({
+      id: `derived-today-load-${todayTasks.length}`,
+      signal_type: 'derived_today_load',
+      title: todayTasks.length >= 10 ? 'Very full day' : 'Heavy day',
+      description: `${todayTasks.length} tasks are due today`,
+      severity: todayTasks.length >= 10 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: { synthetic: true, derived: true, rule: 'derived_today_load', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (inMotionTasks.length >= 5) {
+    items.push({
+      id: `derived-in-motion-${inMotionTasks.length}`,
+      signal_type: 'derived_in_motion_pressure',
+      title: 'A lot is already in motion',
+      description: `${inMotionTasks.length} tasks are currently in motion`,
+      severity: inMotionTasks.length >= 7 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: { synthetic: true, derived: true, rule: 'derived_in_motion_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (!overdueTasks.length && !todayTasks.length && !hasDbSignals && !hasOtherSignals) {
+    items.push({
+      id: 'derived-all-clear',
+      signal_type: 'derived_all_clear',
+      title: 'All clear',
+      description: tasks.length ? 'No tasks are due today or overdue' : 'No active tasks or reminders right now',
+      severity: 'info',
+      location: 'system',
+      metadata: { synthetic: true, derived: true, rule: 'derived_all_clear', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  const priority = {
+    derived_stale_tasks: 0,
+    derived_overdue_pressure: 1,
+    derived_today_load: 2,
+    derived_in_motion_pressure: 3,
+    derived_all_clear: 4,
+  };
+
+  return items
+    .sort((a, b) => {
+      const priorityDelta = (priority[a.signal_type] ?? 99) - (priority[b.signal_type] ?? 99);
+      if (priorityDelta) return priorityDelta;
+      return SEVERITY_ORDER.indexOf(a.severity || 'info') - SEVERITY_ORDER.indexOf(b.severity || 'info');
+    })
+    .slice(0, 1);
+}
+
 function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const normalizedRules = normalizeSignalRules(rules);
-  return [
+  const baseSignals = [
     ...evaluateLaundrySignals(normalizedRules.laundry),
     ...buildSyntheticRuleSignals(normalizedRules, context),
     ...buildSyntheticCustomSignals(normalizedRules, context),
   ];
+  const derivedSignals = buildDerivedTaskSignals(normalizeTaskRows(), context, baseSignals);
+  return dedupeSignals([...baseSignals, ...derivedSignals]);
 }
 
 function sortSignalsForDisplay(signals = []) {
@@ -4392,10 +4505,10 @@ function sortSignalsForDisplay(signals = []) {
 }
 
 function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
-  return sortSignalsForDisplay([
+  return sortSignalsForDisplay(dedupeSignals([
     ...activeDbSignals(context.now),
     ...buildSyntheticSignals(rules, context),
-  ].filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
+  ]).filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
 }
 
 function buildForgetItems() {
@@ -4407,10 +4520,20 @@ function buildForgetItems() {
 
 function buildForgetItemsFromSignals(signals, tomorrowItems = [], digest = null) {
   const items = [];
-  const topSignals = (signals || []).slice(0, 3);
-  for (const signal of topSignals) items.push(signalToItem(signal));
-  if (!items.length && tomorrowItems[0]) items.push(tomorrowItems[0]);
-  if (!items.length && digest?.overdueTasks?.[0]) items.push(digest.overdueTasks[0]);
+  const seen = new Set();
+  const pushUnique = (item) => {
+    if (!item || items.length >= 4) return;
+    const key = getDisplayItemKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(item);
+  };
+
+  // Keep Don’t Forget distinct from Needs Attention.
+  // This panel is now for gentle forward-looking reminders, not active signals.
+  for (const item of (tomorrowItems || []).slice(0, 3)) pushUnique(item);
+  for (const item of (digest?.upcomingTasks || []).slice(0, 3)) pushUnique(item);
+
   return items.slice(0, 4);
 }
 

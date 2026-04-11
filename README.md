@@ -1,199 +1,90 @@
-# Home Command Center
+# Home Command Center v2.5.2
 
-Home Command Center is the ambient half of a shared household system. It is designed for TVs, wall tablets, and always-on displays that need to stay calm, readable, and trustworthy while still supporting a small set of high-value actions.
+Phase: C — Signals
 
-It works alongside **Garden Board**, which remains the primary place for active task creation and full task editing.
+## Build summary
+v2.5.2 is the short closeout build for the current Command Center–only Phase C work. It expands the derived client-side signals layer without adding queries, schema changes, or backend complexity.
 
-## Core goals
+This build was patched from the provided v2.5.0 full file set baseline and includes a panel usefulness review for **Needs Attention** vs **Don’t Forget**.
 
-- ambient visibility for the household
-- realtime-first behavior with minimal polling
-- low backend IO for always-on devices
-- trust through clear health surfaces
-- light interaction without turning the display into a heavy app
+## What changed
 
-## Current architecture
+### 1. New derived signals
+This build adds two higher-value derived signals:
 
-### Frontend
-- Vanilla HTML, CSS, and JavaScript
-- Progressive Web App deployed through GitHub Pages
-- Service worker caching for installability and resilience
+- **Display may be stale / Live data is aging**
+  - Uses existing task freshness diagnostics
+  - Surfaces when task data is stale or aging
+  - Helps catch screens that look healthy but are no longer fresh
 
-### Backend
-- Supabase
-- Shared Postgres database
-- Realtime subscriptions
+- **A lot is already in motion**
+  - Triggers when many tasks are already in the `In Motion` panel
+  - Helps surface work-in-progress pressure before more work is started
 
-### Shared data model
-Primary table: `tasks`
+### 2. Calmer derived signal tuning
+This build also carries forward the calmer thresholds intended for 2.5.1:
 
-Expected task fields:
-- `id`
-- `household_id`
-- `title`
-- `owner`
-- `due_text`
-- `panel`
-- `archived`
-- `archived_at`
-- `completed_at`
-- `created_at`
-- `updated_at`
+- **Heavy day** now starts at **7** due-today tasks
+- **Very full day** now starts at **10** due-today tasks
+- A single overdue item usually stays **notice**
+- Overdue escalates to **warning** at **2+ overdue tasks** or **3+ days old**
+- Only the **single highest-priority derived signal** is shown at a time
 
-Other tables in active use:
-- `context_snapshots`
-- `household_signals`
-- `household_config`
-- `device_profiles`
-- `household_logs`
-- `laundry_loads`
+Current derived signal priority:
+1. stale tasks
+2. overdue pressure
+3. today load
+4. in-motion pressure
+5. all clear
 
-## System state by roadmap phase
+### 3. Panel usefulness review: Needs Attention vs Don’t Forget
+Review result: the two panels were functionally overlapping.
 
-### Phase A — Stabilize Baseline
-Completed in the `2.3.x` era.
+Before this build:
+- **Needs Attention** showed active signals
+- **Don’t Forget** also reused top active signals, so the content often repeated
 
-Key outcomes:
-- startup stabilized
-- realtime behavior normalized
-- runaway query sources reduced
-- IO monitoring added
+After this build:
+- **Needs Attention** remains the place for active signals and warnings
+- **Don’t Forget** now focuses on gentle, forward-looking reminders:
+  - tomorrow items
+  - coming-up-soon items
+- **Don’t Forget no longer mirrors active signals**
 
-### Phase A2 — Data Efficiency and Retention
-Also part of the `2.3.x` era.
+This makes the panels meaningfully distinct:
+- **Needs Attention** = act or check now
+- **Don’t Forget** = keep this in mind soon
 
-Current behavior:
-- archived tasks are excluded from default queries
-- archive loading is explicit and on-demand
-- older completed tasks are trimmed from default live fetches
-- query discipline is tighter across surfaces
+## Files included
+- `app.js`
+- `index.html`
+- `sw.js`
+- `README.md`
 
-### G-lite — Reliability Surfaces
-Completed first pass in the `2.3.x` era.
+## Versioning
+- `APP_VERSION = '2.5.2'`
+- `<meta name="app-version" content="2.5.2">`
+- `CACHE_VERSION = '2.5.2'`
 
-Current trust surfaces include:
-- realtime state clarity
-- stale client and version mismatch visibility
-- publisher health
-- freshness states for major data classes
-- degraded-state UX for ambient screens
-- housekeeping results by table
-
-### Phase B — Action and Trust
-Starts in the `2.4.x` era.
-
-Current Phase B progress:
-- `2.4.0` one-tap task completion
-- `2.4.1` completion undo
-- `2.4.2` task detail entry via long press
-
-## Interaction model
-
-### Tasks
-- **Tap**: mark task complete
-- **Undo toast**: available for a short window after completion
-- **Long press**: open task details quickly on the command surface
-
-This keeps the command center useful for quick action while avoiding a heavy full-edit workflow.
-
-## Versioning strategy
-
-Each roadmap phase maps to the second version number:
-
-- `2.3.x` — stabilization, A2, and G-lite
-- `2.4.x` — Phase B: Action and Trust
-- `2.5.x` — Phase C: Frictionless Input
-- `2.6.x` — Phase D: Intelligence v2
-- `2.7.x` — Phase E: Visual Polish
-- `2.8.x` — Phase F: Household Clarity
-- `2.9.x` — Phase G: Full Reliability
-
-## Release discipline
-
-Every behavior patch must update all of the following together:
-
-### App version
-In `app.js`:
-
-```js
-const APP_VERSION = '2.4.2';
-```
-
-### HTML version
-In `index.html`:
-
-```html
-<meta name="app-version" content="2.4.2" />
-```
-
-And the visible version badge should match.
-
-### Service worker cache version
-In `sw.js`:
-
-```js
-const CACHE_VERSION = 'v2.4.2';
-```
-
-The service worker should continue to use immediate activation behavior so stale always-on displays do not linger on old logic:
-
-```js
-self.skipWaiting();
-self.clients.claim();
-```
-
-## Reliability and degraded state
-
-The UI should make it obvious when something is off without making the screen noisy.
-
-Healthy state:
-- no banner
-- freshness reads as healthy
-- realtime status is connected
-
-Aging state:
-- soft warning surfaces
-- data is still usable, but attention may be needed
-
-Degraded state:
-- ambient banner appears
-- cause is summarized briefly
-- recovery hint is shown where possible
-
-## Development guidance
-
-Prefer:
-- minimal high-impact changes
-- reuse of existing data flow
-- realtime over new polling
-- explicit loading for old or low-value data
-
-Avoid:
-- backend redesign unless clearly necessary
-- duplicate logic across apps
-- loading archived or stale data by default
-- changes that make always-on devices noisier
+Service worker behavior remains:
+- `self.skipWaiting()`
+- `clients.claim()`
 
 ## Testing checklist
 
-For each release:
-- confirm visible version badge matches the release
-- confirm service worker cache version matches
-- verify stale-client mismatch detection still works
-- verify task completion still writes cleanly
-- verify undo still restores cleanly
-- verify long press opens task details without accidental completion
-- verify degraded-state UX stays calm on ambient displays
+### Derived signals
+- one overdue task → overdue signal appears as notice
+- 2+ overdue tasks → overdue signal escalates to warning
+- 7 due-today tasks and no overdue → heavy day appears
+- 10 due-today tasks and no overdue → very full day warning appears
+- 5+ tasks in `In Motion` and no higher-priority condition → in-motion pressure appears
+- stale or aging task freshness → stale/aging signal appears and overrides lower-priority derived signals
+- no due-today or overdue tasks and no other signals → all clear appears
 
-## Near-term roadmap
+### Panel distinction
+- **Needs Attention** should show active signals only
+- **Don’t Forget** should show tomorrow / coming-up reminders
+- the same signal should no longer appear in both panels just because it is the top signal
 
-Phase B still open:
-- faster edit flow
-- signal dismiss or snooze
-- clearer degraded-state interaction handling
-
-Phase C later:
-- better voice and GPT input flows
-- improved tagging and natural language dates
-
-Longer-term phases remain focused on intelligence, polish, and clearer shared household coordination.
+## Recommendation after this build
+Phase C can reasonably be treated as complete after validation, unless you want one more very small signal-only pass. The current signal set should now be strong enough to move on to another phase without growing the Command Center into a noisy dashboard.
