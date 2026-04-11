@@ -1,0 +1,95 @@
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
+
+CREATE TABLE public.context_snapshots (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  context_type text NOT NULL,
+  payload jsonb NOT NULL,
+  valid_until timestamp with time zone,
+  source text,
+  CONSTRAINT context_snapshots_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.device_profiles (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  device_name text NOT NULL,
+  device_key text NOT NULL,
+  mode text NOT NULL CHECK (mode = ANY (ARRAY['tv'::text, 'kitchen'::text, 'laundry'::text, 'bedroom'::text, 'mobile'::text])),
+  location text,
+  settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+  is_active boolean NOT NULL DEFAULT true,
+  CONSTRAINT device_profiles_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.household_config (
+  key text NOT NULL,
+  value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT household_config_pkey PRIMARY KEY (key)
+);
+CREATE TABLE public.household_logs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  event_type text NOT NULL,
+  location text,
+  actor text,
+  details jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source text,
+  CONSTRAINT household_logs_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.household_signals (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  signal_type text NOT NULL,
+  title text NOT NULL,
+  description text,
+  severity text NOT NULL DEFAULT 'info'::text CHECK (severity = ANY (ARRAY['info'::text, 'notice'::text, 'warning'::text])),
+  status text NOT NULL DEFAULT 'active'::text CHECK (status = ANY (ARRAY['active'::text, 'dismissed'::text, 'resolved'::text])),
+  location text,
+  related_task_id uuid,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  expires_at timestamp with time zone,
+  CONSTRAINT household_signals_pkey PRIMARY KEY (id),
+  CONSTRAINT household_signals_related_task_id_fkey FOREIGN KEY (related_task_id) REFERENCES public.tasks(id)
+);
+CREATE TABLE public.households (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT households_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.laundry_loads (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  label text,
+  status text NOT NULL CHECK (status = ANY (ARRAY['washing'::text, 'drying'::text, 'ready'::text, 'done'::text])),
+  started_by text,
+  last_transition_at timestamp with time zone NOT NULL DEFAULT now(),
+  machine text,
+  notes text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  completed_at timestamp with time zone,
+  archived_at timestamp with time zone,
+  CONSTRAINT laundry_loads_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.tasks (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  household_id uuid,
+  title text NOT NULL,
+  owner text,
+  panel text,
+  due_text text,
+  tag text,
+  description text,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  completed_at timestamp with time zone,
+  archived boolean DEFAULT false,
+  archived_at timestamp with time zone,
+  recurrence text DEFAULT ''::text,
+  CONSTRAINT tasks_pkey PRIMARY KEY (id),
+  CONSTRAINT tasks_household_id_fkey FOREIGN KEY (household_id) REFERENCES public.households(id)
+);

@@ -1,0 +1,113 @@
+Development Roadmap (UPDATED)
+
+Phase A — Stabilize Baseline ✅ (COMPLETE)
+	•	Fix startup issues
+	•	Normalize realtime behavior
+	•	Remove redundant polling
+	•	Align both apps on shared backend usage
+	•	Add IO monitoring
+	•	Eliminate runaway query sources
+
+⸻
+
+Phase A2 — Data Efficiency & Retention (CURRENT FOCUS)
+
+Goals
+Reduce long-term IO, DB size, and unnecessary reads
+
+Work Items
+	•	Load archived tasks on-demand only
+	•	Ensure all default task queries exclude archived tasks
+	•	Optionally limit older “done” tasks from live queries
+	•	Add pagination or limits to task fetches
+	•	Standardize task query patterns across both apps
+	•	Define retention windows:
+	•	context_snapshots
+	•	household_logs
+	•	resolved household_signals
+	•	laundry_loads
+	•	Improve housekeeping visibility (rows pruned, last run)
+	•	(Optional later) export + purge archived tasks
+
+⸻
+
+Phase G-lite — Reliability Surfaces
+
+Goals
+Make system state visible and prevent silent failures
+
+Work Items
+	•	Realtime status clarity:
+	•	connecting / connected / slow / degraded
+	•	Publisher health:
+	•	last attempt
+	•	last success
+	•	last error
+	•	Housekeeping visibility:
+	•	last run time
+	•	rows cleaned per table
+	•	Stale client detection:
+	•	app version mismatch
+	•	service worker mismatch
+	•	Data freshness indicators:
+	•	tasks
+	•	snapshots
+	•	config
+
+⸻
+
+Phase B — Action & Trust
+	•	One-tap task completion
+	•	Fast edit flow
+	•	Signal dismiss / snooze
+	•	Clear degraded-state behavior
+
+⸻
+
+Phase C — Frictionless Input
+	•	Improved voice parsing
+	•	Better GPT batch task creation
+	•	Tagging improvements
+	•	Natural language date handling
+
+⸻
+
+Phase D — Intelligence v2
+	•	smarter signals
+	•	prioritization
+	•	context-aware suggestions
+
+⸻
+
+Phase E — Visual Polish
+	•	layout improvements
+	•	density tuning
+	•	readability modes
+
+⸻
+
+Phase F — Household Clarity
+	•	ownership clarity
+	•	workload balance
+	•	shared visibility improvements
+
+⸻
+
+Phase G — Full Reliability (later expansion)
+	•	publisher device model
+	•	deeper health diagnostics
+	•	offline/degraded strategies
+
+⸻
+
+Phase H — Ambient Intelligence
+	•	proactive system behavior
+	•	smart surfacing of tasks/signals
+
+⸻
+
+Phase I — Dev Power Tools
+	•	advanced debug tools
+	•	data inspection
+	•	admin controls
+
