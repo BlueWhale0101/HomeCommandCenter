@@ -1,90 +1,78 @@
-# Home Command Center v2.5.2
 
-Phase: C — Signals
+# Home Command Center v2.6.3
 
-## Build summary
-v2.5.2 is the short closeout build for the current Command Center–only Phase C work. It expands the derived client-side signals layer without adding queries, schema changes, or backend complexity.
+## Overview
 
-This build was patched from the provided v2.5.0 full file set baseline and includes a panel usefulness review for **Needs Attention** vs **Don’t Forget**.
+v2.6.3 is the third Phase D build for the Command Center. It keeps the priority engine and cooldown layer from 2.6.0–2.6.1, then adds a small contextual-intelligence pass so the top derived signal is not just important, but more informative.
+
+This build was patched from the provided v2.6.0/2.6.1 full file set baseline.
 
 ## What changed
 
-### 1. New derived signals
-This build adds two higher-value derived signals:
+### 1. Combined backlog-pressure signal
+A new derived signal can now surface when overdue work and in-motion work are both elevated at the same time:
 
-- **Display may be stale / Live data is aging**
-  - Uses existing task freshness diagnostics
-  - Surfaces when task data is stale or aging
-  - Helps catch screens that look healthy but are no longer fresh
+- title: `Work is starting to back up`
+- trigger: at least 2 overdue tasks and 4 in-motion tasks
+- purpose: detect spreading work, not just isolated overdue load
 
-- **A lot is already in motion**
-  - Triggers when many tasks are already in the `In Motion` panel
-  - Helps surface work-in-progress pressure before more work is started
+This gives the system a better way to describe real pressure states than showing a generic overdue or in-motion message alone.
 
-### 2. Calmer derived signal tuning
-This build also carries forward the calmer thresholds intended for 2.5.1:
+### 2. Owner-aware pressure descriptions
+Existing task-pressure signals are now more contextual in their descriptions. When one owner clearly dominates a pressure state, the signal will say so in a restrained way, for example:
 
-- **Heavy day** now starts at **7** due-today tasks
-- **Very full day** now starts at **10** due-today tasks
-- A single overdue item usually stays **notice**
-- Overdue escalates to **warning** at **2+ overdue tasks** or **3+ days old**
-- Only the **single highest-priority derived signal** is shown at a time
+- `Mostly Wes's items.`
+- `Mostly Skye's items.`
 
-Current derived signal priority:
-1. stale tasks
-2. overdue pressure
-3. today load
-4. in-motion pressure
-5. all clear
+This does **not** add new owner-ranking UI or change task ownership logic. It only improves the wording of the existing derived signals.
 
-### 3. Panel usefulness review: Needs Attention vs Don’t Forget
-Review result: the two panels were functionally overlapping.
+### 3. Cooldown winner selection is now shared
+The derived-signal chooser is now explicit instead of being embedded inline in the task-signal builder. This keeps the 2.6.1 calmness behavior while making it easier to add smarter derived signals without reintroducing flicker.
 
-Before this build:
-- **Needs Attention** showed active signals
-- **Don’t Forget** also reused top active signals, so the content often repeated
+## What did not change
 
-After this build:
-- **Needs Attention** remains the place for active signals and warnings
-- **Don’t Forget** now focuses on gentle, forward-looking reminders:
-  - tomorrow items
-  - coming-up-soon items
-- **Don’t Forget no longer mirrors active signals**
+- no new queries
+- no polling changes
+- no schema changes
+- no backend writes for intelligence logic
+- only one derived signal is still shown at a time
+- Garden Board remains untouched
 
-This makes the panels meaningfully distinct:
-- **Needs Attention** = act or check now
-- **Don’t Forget** = keep this in mind soon
+## Files updated
 
-## Files included
 - `app.js`
 - `index.html`
 - `sw.js`
 - `README.md`
 
-## Versioning
-- `APP_VERSION = '2.5.2'`
-- `<meta name="app-version" content="2.5.2">`
-- `CACHE_VERSION = '2.5.2'`
+## Version updates
 
-Service worker behavior remains:
-- `self.skipWaiting()`
-- `clients.claim()`
+- `APP_VERSION = '2.6.2'`
+- `<meta name="app-version" content="2.6.2">`
+- `CACHE_VERSION = '2.6.2'`
 
-## Testing checklist
+## Suggested test pass
 
-### Derived signals
-- one overdue task → overdue signal appears as notice
-- 2+ overdue tasks → overdue signal escalates to warning
-- 7 due-today tasks and no overdue → heavy day appears
-- 10 due-today tasks and no overdue → very full day warning appears
-- 5+ tasks in `In Motion` and no higher-priority condition → in-motion pressure appears
-- stale or aging task freshness → stale/aging signal appears and overrides lower-priority derived signals
-- no due-today or overdue tasks and no other signals → all clear appears
+### Combined pressure
+- create at least 2 overdue tasks and 4 in-motion tasks
+- confirm `Work is starting to back up` can win over milder derived signals
 
-### Panel distinction
-- **Needs Attention** should show active signals only
-- **Don’t Forget** should show tomorrow / coming-up reminders
-- the same signal should no longer appear in both panels just because it is the top signal
+### Owner-aware descriptions
+- create a pressure state where one owner clearly dominates the overdue or in-motion tasks
+- confirm the description includes `Mostly <owner>'s items.`
+- confirm mixed-owner pressure states stay neutral
 
-## Recommendation after this build
-Phase C can reasonably be treated as complete after validation, unless you want one more very small signal-only pass. The current signal set should now be strong enough to move on to another phase without growing the Command Center into a noisy dashboard.
+### Calmness regression
+- while a derived signal is held, introduce a slightly stronger one and confirm the cooldown still prevents jitter
+- introduce a clearly stronger signal and confirm it can still take over
+
+## Phase D status
+
+This build adds the first restrained contextual layer to the priority engine. The next likely step is either a very small suggestion-style signal pass or a stop point, depending on whether this added context feels useful in real household use.
+
+
+## v2.6.3 startup hotfix
+
+- Fixed a startup error where `chooseVisibleDerivedSignals()` called missing helper functions (`getDerivedSignalMemory` / `updateDerivedSignalMemory`).
+- Routed derived-signal selection back through the existing cooldown/suppression memory path so 2.6.2 contextual-pressure behavior still works without introducing a second memory system.
+- No schema changes, no extra queries, no polling changes.
