@@ -1,4 +1,4 @@
-const APP_VERSION = '2.5.2';
+const APP_VERSION = '2.6.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4387,6 +4387,26 @@ function dedupeSignals(signals = []) {
   return items;
 }
 
+function scoreSignalPriority(signal, options = {}) {
+  if (!signal) return -Infinity;
+  const metadata = signal.metadata || {};
+  if (Number.isFinite(metadata.priorityScore)) return metadata.priorityScore;
+
+  const severityBase = { warning: 90, notice: 60, info: 25 };
+  let score = severityBase[String(signal.severity || 'info').toLowerCase()] ?? 20;
+  const type = String(signal.signal_type || '');
+  const location = String(signal.location || '');
+
+  if (signal.related_task_id) score += 18;
+  if (metadata.synthetic) score += 6;
+  if (location === 'tasks') score += 8;
+  if (location === 'system') score += 4;
+  if (type === 'laundry_active') score += 10;
+  if (type === 'big_event_tomorrow') score += 12;
+  if (type === 'derived_all_clear') score -= 40;
+  return score;
+}
+
 function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSignalEvalContext(), baseSignals = []) {
   const items = [];
   const now = context?.now || getNowDate();
@@ -4398,26 +4418,33 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
   const freshnessItems = getDataFreshnessItems();
   const taskFreshness = freshnessItems.find((item) => item.title === 'Tasks');
   const tasksAreStale = taskFreshness && ['Stale', 'Aging'].includes(String(taskFreshness.pill || ''));
+  const oldestOverdueDays = overdueTasks.reduce((maxDays, task) => {
+    if (!task?.dueDate) return maxDays;
+    const diffDays = Math.max(1, Math.floor((startOfDay(now).getTime() - startOfDay(task.dueDate).getTime()) / 86400000));
+    return Math.max(maxDays, diffDays);
+  }, 1);
 
   if (tasksAreStale) {
+    const isStale = taskFreshness.pill === 'Stale';
     items.push({
       id: `derived-stale-tasks-${String(taskFreshness.pill || '').toLowerCase()}`,
       signal_type: 'derived_stale_tasks',
-      title: taskFreshness.pill === 'Stale' ? 'Display may be stale' : 'Live data is aging',
+      title: isStale ? 'Display may be stale' : 'Live data is aging',
       description: taskFreshness.meta || 'Task data has not refreshed recently',
-      severity: taskFreshness.pill === 'Stale' ? 'warning' : 'notice',
+      severity: isStale ? 'warning' : 'notice',
       location: 'system',
-      metadata: { synthetic: true, derived: true, rule: 'derived_stale_tasks', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_stale_tasks',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: isStale ? 142 : 108,
+      },
     });
   }
 
   if (overdueTasks.length) {
-    const oldestOverdueDays = overdueTasks.reduce((maxDays, task) => {
-      if (!task?.dueDate) return maxDays;
-      const diffDays = Math.max(1, Math.floor((startOfDay(now).getTime() - startOfDay(task.dueDate).getTime()) / 86400000));
-      return Math.max(maxDays, diffDays);
-    }, 1);
-
+    const overduePriority = 96 + (overdueTasks.length * 10) + (oldestOverdueDays * 5);
     items.push({
       id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
       signal_type: 'derived_overdue_pressure',
@@ -4427,23 +4454,37 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
         : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
       severity: overdueTasks.length >= 2 || oldestOverdueDays >= 3 ? 'warning' : 'notice',
       location: 'tasks',
-      metadata: { synthetic: true, derived: true, rule: 'derived_overdue_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_overdue_pressure',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: overduePriority,
+      },
     });
   }
 
   if (todayTasks.length >= 7) {
+    const isVeryFull = todayTasks.length >= 10;
     items.push({
       id: `derived-today-load-${todayTasks.length}`,
       signal_type: 'derived_today_load',
-      title: todayTasks.length >= 10 ? 'Very full day' : 'Heavy day',
+      title: isVeryFull ? 'Very full day' : 'Heavy day',
       description: `${todayTasks.length} tasks are due today`,
-      severity: todayTasks.length >= 10 ? 'warning' : 'notice',
+      severity: isVeryFull ? 'warning' : 'notice',
       location: 'tasks',
-      metadata: { synthetic: true, derived: true, rule: 'derived_today_load', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_today_load',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: (isVeryFull ? 94 : 72) + todayTasks.length,
+      },
     });
   }
 
   if (inMotionTasks.length >= 5) {
+    const inMotionPriority = 62 + (inMotionTasks.length * 5) + (overdueTasks.length ? 18 : 0);
     items.push({
       id: `derived-in-motion-${inMotionTasks.length}`,
       signal_type: 'derived_in_motion_pressure',
@@ -4451,7 +4492,13 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
       description: `${inMotionTasks.length} tasks are currently in motion`,
       severity: inMotionTasks.length >= 7 ? 'warning' : 'notice',
       location: 'tasks',
-      metadata: { synthetic: true, derived: true, rule: 'derived_in_motion_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_in_motion_pressure',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: inMotionPriority,
+      },
     });
   }
 
@@ -4463,23 +4510,21 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
       description: tasks.length ? 'No tasks are due today or overdue' : 'No active tasks or reminders right now',
       severity: 'info',
       location: 'system',
-      metadata: { synthetic: true, derived: true, rule: 'derived_all_clear', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_all_clear',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: 5,
+      },
     });
   }
 
-  const priority = {
-    derived_stale_tasks: 0,
-    derived_overdue_pressure: 1,
-    derived_today_load: 2,
-    derived_in_motion_pressure: 3,
-    derived_all_clear: 4,
-  };
-
   return items
     .sort((a, b) => {
-      const priorityDelta = (priority[a.signal_type] ?? 99) - (priority[b.signal_type] ?? 99);
-      if (priorityDelta) return priorityDelta;
-      return SEVERITY_ORDER.indexOf(a.severity || 'info') - SEVERITY_ORDER.indexOf(b.severity || 'info');
+      const scoreDelta = scoreSignalPriority(b, { now }) - scoreSignalPriority(a, { now });
+      if (scoreDelta) return scoreDelta;
+      return String(a.title || '').localeCompare(String(b.title || ''));
     })
     .slice(0, 1);
 }
@@ -4495,11 +4540,10 @@ function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buil
   return dedupeSignals([...baseSignals, ...derivedSignals]);
 }
 
-function sortSignalsForDisplay(signals = []) {
-  const severityRank = { warning: 0, notice: 1, info: 2 };
+function sortSignalsForDisplay(signals = [], options = {}) {
   return [...signals].sort((a, b) => {
-    const severityDelta = (severityRank[a?.severity] ?? 3) - (severityRank[b?.severity] ?? 3);
-    if (severityDelta) return severityDelta;
+    const scoreDelta = scoreSignalPriority(b, options) - scoreSignalPriority(a, options);
+    if (scoreDelta) return scoreDelta;
     return String(a?.title || '').localeCompare(String(b?.title || ''));
   });
 }
@@ -4508,7 +4552,7 @@ function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalE
   return sortSignalsForDisplay(dedupeSignals([
     ...activeDbSignals(context.now),
     ...buildSyntheticSignals(rules, context),
-  ]).filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
+  ]).filter((signal) => !isSignalLocallySnoozed(signal, context.now)), { now: context.now });
 }
 
 function buildForgetItems() {

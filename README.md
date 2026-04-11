@@ -1,90 +1,67 @@
-# Home Command Center v2.5.2
+# Home Command Center v2.6.0
 
-Phase: C — Signals
+## Overview
 
-## Build summary
-v2.5.2 is the short closeout build for the current Command Center–only Phase C work. It expands the derived client-side signals layer without adding queries, schema changes, or backend complexity.
+v2.6.0 is the first Phase D build for the Command Center. It adds a lightweight, fully client-side priority engine for signal ordering so the system does a better job choosing what matters most right now without adding IO, schema changes, or backend complexity.
 
-This build was patched from the provided v2.5.0 full file set baseline and includes a panel usefulness review for **Needs Attention** vs **Don’t Forget**.
+This build was patched from the provided v2.5.2 full file set baseline.
 
 ## What changed
 
-### 1. New derived signals
-This build adds two higher-value derived signals:
+### 1. Signal priority scoring
+A new `scoreSignalPriority()` helper gives each visible signal a deterministic priority score. The score is intentionally simple and explainable. It favors:
 
-- **Display may be stale / Live data is aging**
-  - Uses existing task freshness diagnostics
-  - Surfaces when task data is stale or aging
-  - Helps catch screens that look healthy but are no longer fresh
+- warning severity over notice/info
+- task-linked and task-located signals over ambient low-value reminders
+- stale-data warnings when freshness is truly at risk
+- older / larger overdue pressure over milder load reminders
+- `All clear` only when nothing more important is visible
 
-- **A lot is already in motion**
-  - Triggers when many tasks are already in the `In Motion` panel
-  - Helps surface work-in-progress pressure before more work is started
+### 2. Smarter derived-signal winner selection
+Phase C showed only one derived signal at a time using fixed precedence. In 2.6.0 that choice is now score-based. This means:
 
-### 2. Calmer derived signal tuning
-This build also carries forward the calmer thresholds intended for 2.5.1:
+- stronger overdue pressure can outrank a generic stale notice
+- a truly stale display warning can still outrank weaker task reminders
+- very full day beats a milder heavy-day state
+- in-motion pressure becomes more prominent when overdue work already exists
 
-- **Heavy day** now starts at **7** due-today tasks
-- **Very full day** now starts at **10** due-today tasks
-- A single overdue item usually stays **notice**
-- Overdue escalates to **warning** at **2+ overdue tasks** or **3+ days old**
-- Only the **single highest-priority derived signal** is shown at a time
+### 3. Better Needs Attention ordering
+The visible signal list is now sorted by the same scoring model, not severity-only alphabetical order. This keeps the most important signal at the top more reliably.
 
-Current derived signal priority:
-1. stale tasks
-2. overdue pressure
-3. today load
-4. in-motion pressure
-5. all clear
+## What did not change
 
-### 3. Panel usefulness review: Needs Attention vs Don’t Forget
-Review result: the two panels were functionally overlapping.
+- no new queries
+- no polling changes
+- no schema changes
+- no new panels
+- no Garden Board changes
 
-Before this build:
-- **Needs Attention** showed active signals
-- **Don’t Forget** also reused top active signals, so the content often repeated
+## Files updated
 
-After this build:
-- **Needs Attention** remains the place for active signals and warnings
-- **Don’t Forget** now focuses on gentle, forward-looking reminders:
-  - tomorrow items
-  - coming-up-soon items
-- **Don’t Forget no longer mirrors active signals**
-
-This makes the panels meaningfully distinct:
-- **Needs Attention** = act or check now
-- **Don’t Forget** = keep this in mind soon
-
-## Files included
 - `app.js`
 - `index.html`
 - `sw.js`
 - `README.md`
 
-## Versioning
-- `APP_VERSION = '2.5.2'`
-- `<meta name="app-version" content="2.5.2">`
-- `CACHE_VERSION = '2.5.2'`
+## Version updates
 
-Service worker behavior remains:
-- `self.skipWaiting()`
-- `clients.claim()`
+- `APP_VERSION = '2.6.0'`
+- `<meta name="app-version" content="2.6.0">`
+- `CACHE_VERSION = '2.6.0'`
 
-## Testing checklist
+## Suggested test pass
 
-### Derived signals
-- one overdue task → overdue signal appears as notice
-- 2+ overdue tasks → overdue signal escalates to warning
-- 7 due-today tasks and no overdue → heavy day appears
-- 10 due-today tasks and no overdue → very full day warning appears
-- 5+ tasks in `In Motion` and no higher-priority condition → in-motion pressure appears
-- stale or aging task freshness → stale/aging signal appears and overrides lower-priority derived signals
-- no due-today or overdue tasks and no other signals → all clear appears
+### Signal ordering
+- one stale freshness condition plus one overdue task → the more important one should surface first
+- several overdue tasks → overdue pressure should rise above milder reminders
+- 10+ today tasks and no overdue → `Very full day` should outrank low-value notices
+- 5+ in-motion tasks with overdue work also present → in-motion pressure should become more competitive
 
-### Panel distinction
-- **Needs Attention** should show active signals only
-- **Don’t Forget** should show tomorrow / coming-up reminders
-- the same signal should no longer appear in both panels just because it is the top signal
+### Calmness
+- only one derived signal should still appear at a time
+- `All clear` should only appear when nothing more important is active
+- existing synthetic and DB-backed signals should still render and snooze/dismiss as before
 
-## Recommendation after this build
-Phase C can reasonably be treated as complete after validation, unless you want one more very small signal-only pass. The current signal set should now be strong enough to move on to another phase without growing the Command Center into a noisy dashboard.
+## Phase D status
+
+This is the foundation build for Phase D. The next likely step is cooldown/suppression logic so the highest-priority signal stays useful without becoming repetitive.
