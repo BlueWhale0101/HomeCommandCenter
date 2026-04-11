@@ -1,1 +1,225 @@
-<meta name='app-version' content='2.7.1'>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#16351f" />
+  <meta name="app-version" content="2.7.1" />
+  <title>Household Command Center</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-180x180.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192x192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="calendar-auth-banner" class="calendar-auth-banner-slot"></div>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="title-row">
+          <h1>Household Command Center</h1>
+        </div>
+        <div id="status-line" class="status-line">Starting up…</div>
+      </div>
+      <div class="topbar-actions">
+        <button id="refresh-button" class="secondary-button">Refresh</button>
+        <button id="settings-button" class="secondary-button">Settings</button>
+      </div>
+    </header>
+
+    <main id="screen" class="screen"></main>
+  </div>
+
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v2.7.1</button>
+
+  <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
+    <div class="dev-console-header">
+      <div>
+        <strong>Developer Console</strong>
+        <div id="dev-console-meta" class="muted">Waiting for app state…</div>
+      </div>
+      <div class="dev-console-actions">
+        <button id="copy-diagnostics-button" class="secondary-button">Copy diagnostics</button>
+        <button id="clear-console-button" class="secondary-button">Clear</button>
+        <button id="close-console-button" class="secondary-button">Close</button>
+      </div>
+    </div>
+    
+<div class="dev-console-tools">
+  <label class="dev-console-tool">
+    <span>Set test time</span>
+    <input id="test-time-input" type="datetime-local" />
+  </label>
+  <button id="set-test-time-button" class="secondary-button">Use test time</button>
+  <button id="clear-test-time-button" class="secondary-button">Use real time</button>
+</div>
+<div id="dev-console-log" class="dev-console-log"></div>
+  </aside>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <div class="dialog-header">
+        <h2>Settings</h2>
+        <button value="cancel" class="secondary-button">Close</button>
+      </div>
+
+      <section>
+        <label for="supabase-url">Supabase URL</label>
+        <input id="supabase-url" type="url" placeholder="https://your-project.supabase.co" />
+      </section>
+
+      <section>
+        <label for="supabase-key">Supabase anon key</label>
+        <textarea id="supabase-key" rows="3" placeholder="Paste your anon key"></textarea>
+      </section>
+
+      <section>
+        <label for="device-name">Device name</label>
+        <input id="device-name" type="text" placeholder="Kitchen iPad" />
+      </section>
+
+      <section>
+        <label for="mode-select">Mode</label>
+        <select id="mode-select">
+          <option value="tv">TV</option>
+          <option value="kitchen">Kitchen</option>
+          <option value="laundry">Laundry</option>
+          <option value="bedroom">Bedroom</option>
+          <option value="mobile">Mobile</option>
+        </select>
+      </section>
+
+      <section>
+        <label for="location-input">Location</label>
+        <input id="location-input" type="text" placeholder="kitchen" />
+      </section>
+
+      <section>
+        <label class="checkbox-row" for="keep-screen-awake">
+          <input id="keep-screen-awake" type="checkbox" />
+          <span>Keep screen awake on this device</span>
+        </label>
+        <div class="muted">Useful for dedicated Kitchen, Laundry, and Bedroom displays. Works best when the app stays visible.</div>
+      </section>
+
+      <section>
+        <div class="settings-section-heading">Weather</div>
+        <label for="weather-location-input">Weather location</label>
+        <input id="weather-location-input" type="text" placeholder="Adelaide, South Australia" />
+        <div class="muted">Used for shared household weather. This can be a city or suburb.</div>
+      </section>
+
+      <section>
+        <label for="task-date-field">Task due date field</label>
+        <input id="task-date-field" type="text" placeholder="due_date" />
+      </section>
+
+      <section>
+        <label for="task-owner-field">Task owner field</label>
+        <input id="task-owner-field" type="text" placeholder="owner" />
+      </section>
+
+      <section>
+        <label for="task-title-field">Task title field</label>
+        <input id="task-title-field" type="text" placeholder="task" />
+      </section>
+
+      <section>
+        <label for="task-completed-field">Task completed field</label>
+        <input id="task-completed-field" type="text" placeholder="completed" />
+      </section>
+
+      <section>
+        <label for="task-completed-value">Completed value</label>
+        <input id="task-completed-value" type="text" placeholder="true" />
+      </section>
+
+      <section class="checkbox-row">
+        <input id="use-string-completed" type="checkbox" />
+        <label for="use-string-completed">Compare completed field as a string value</label>
+      </section>
+
+      <section>
+        <label for="ui-refresh-seconds">UI refresh seconds</label>
+        <input id="ui-refresh-seconds" type="number" min="15" step="5" placeholder="60" />
+      </section>
+
+      <section class="calendar-settings-section">
+        <div class="settings-section-heading">Google Calendar</div>
+        <label for="google-client-id">Google OAuth client ID</label>
+        <input id="google-client-id" type="text" placeholder="Paste your Google web client ID" />
+        <div class="calendar-settings-actions">
+          <button id="connect-google-account-button" type="button" class="secondary-button">Add Google account</button>
+        </div>
+        <div class="muted">Connect one account at a time, then choose which calendars should appear in the household views.</div>
+        <div id="google-calendar-accounts" class="google-calendar-accounts"></div>
+      </section>
+
+      <section class="settings-status-panel">
+        <div class="settings-status-header">
+          <div>
+            <strong>Connection status</strong>
+            <div class="muted">Quick check of config and key tables</div>
+          </div>
+          <button id="test-connection-button" type="button" class="secondary-button">Run test</button>
+        </div>
+        <div id="connection-status-grid" class="connection-status-grid">
+          <div class="status-chip unknown"><span>Supabase</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Tasks</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Device profile</span><strong>Not tested</strong></div>
+          <div class="status-chip unknown"><span>Realtime</span><strong>Not tested</strong></div>
+        </div>
+      </section>
+
+      <menu class="dialog-actions">
+        <button id="save-settings" type="button" value="default">Save settings</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <template id="card-template">
+    <section class="card">
+      <div class="card-header">
+        <h2></h2>
+        <span class="card-subtitle"></span>
+      </div>
+      <div class="card-body"></div>
+    </section>
+  </template>
+
+  <script>
+    window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'inline-preboot', errors: [] };
+    window.addEventListener('error', function (event) {
+      try {
+        var statusEl = document.getElementById('status-line');
+        window.__hccBootState.errors.push(String(event.message || 'Unknown boot error'));
+        if (statusEl && !window.__hccBootState.finished) {
+          statusEl.textContent = 'Startup error before app init';
+        }
+      } catch (e) {}
+    });
+    window.setTimeout(function () {
+      try {
+        var statusEl = document.getElementById('status-line');
+        var state = window.__hccBootState || {};
+        if (!state.started && typeof window.__HCC_FORCE_BOOT === 'function') {
+          if (statusEl) statusEl.textContent = 'Pre-boot recovery…';
+          window.__HCC_FORCE_BOOT();
+        }
+      } catch (e) {}
+    }, 1500);
+    window.setTimeout(function () {
+      try {
+        var statusEl = document.getElementById('status-line');
+        var state = window.__hccBootState || {};
+        if (!state.finished && statusEl && statusEl.textContent === 'Initializing app shell…') {
+          statusEl.textContent = 'Boot paused in app shell';
+        }
+      } catch (e) {}
+    }, 4000);
+  </script>
+  <script id="supabase-cdn" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="window.__hccSupabaseLoadError=true;"></script>
+  <script id="google-gis-cdn" src="https://accounts.google.com/gsi/client" async defer onerror="window.__hccGoogleLoadError=true;"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
