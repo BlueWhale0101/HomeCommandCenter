@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.8';
+const APP_VERSION = 'v2.4.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -12,7 +12,7 @@ const DEFAULT_CONFIG = {
   taskTable: 'tasks',
   taskDateField: 'due_text',
   taskOwnerField: 'owner',
-  taskTitleField: 'task',
+  taskTitleField: 'title',
   taskCompletedField: 'completed',
   taskCompletedValue: 'true',
   useStringCompleted: false,
@@ -4113,15 +4113,16 @@ function normalizeTaskRows() {
   return appState.tasks
     .filter((task) => !isTaskExcluded(task))
     .map((task) => {
-      const dueSource = task[dateField] || task.due_text || task.due_date || task.due || '';
-      const dueDate = normalizeDate(dueSource);
+      const configuredDueValue = dateField ? task[dateField] : undefined;
+      const dueText = configuredDueValue || task.due_text || task.due_date || task.due || '';
+      const dueDate = normalizeDate(configuredDueValue || task.due_text || task.due_date || task.due);
       const owner = task[ownerField] || '';
       return {
         id: task.id,
         title: String(task[titleField] || task.title || 'Untitled task'),
         owner,
         dueDate,
-        dueText: dueSource || '',
+        dueText,
         tag: task.tag || '',
         recurrence: task.recurrence || '',
         description: task.description || '',
@@ -4142,7 +4143,7 @@ function normalizeTaskRows() {
 function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
   return tasks.map((task) => {
     if (task.signal_type || task.severity) return signalToItem(task);
-    const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : 'No due date';
+    const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : (task.dueText || 'No due date');
     const owner = task.owner || '';
     const canComplete = !!task.id && !pendingTaskCompletions.has(task.id);
     return {
@@ -5930,10 +5931,100 @@ function snapshotMetaLabel(prefix, snapshot) {
   return `${prefix} · ${relativeTime(snapshot.created_at)}`;
 }
 
-function normalizeDate(value) {
+function normalizeDate(value, now = getNowDate()) {
   if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : new Date(value);
+  if (typeof value === 'number') {
+    const fromNumber = new Date(value);
+    return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const direct = new Date(raw);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  return parseFlexibleDueText(raw, now);
+}
+
+function parseFlexibleDueText(value, now = getNowDate()) {
+  const source = String(value || '').trim();
+  if (!source) return null;
+
+  const text = source.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  const base = startOfDay(now);
+  const result = new Date(base);
+
+  const weekdays = { sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2, wednesday: 3, wed: 3, thursday: 4, thu: 4, thurs: 4, friday: 5, fri: 5, saturday: 6, sat: 6 };
+
+  if (/^(today|this morning|this afternoon|this evening|tonight)$/.test(text)) return result;
+  if (/^(tomorrow|tomorrow morning|tomorrow afternoon|tomorrow evening|tomorrow night)$/.test(text)) {
+    result.setDate(result.getDate() + 1);
+    return result;
+  }
+  if (text === 'day after tomorrow') {
+    result.setDate(result.getDate() + 2);
+    return result;
+  }
+  if (text === 'yesterday') {
+    result.setDate(result.getDate() - 1);
+    return result;
+  }
+
+  let match = text.match(/^in (\d+) days?$/);
+  if (match) {
+    result.setDate(result.getDate() + Number(match[1]));
+    return result;
+  }
+  match = text.match(/^in (\d+) weeks?$/);
+  if (match) {
+    result.setDate(result.getDate() + (Number(match[1]) * 7));
+    return result;
+  }
+  if (text === 'next week') {
+    result.setDate(result.getDate() + 7);
+    return result;
+  }
+  if (text === 'this week') return result;
+  if (text === 'week after next') {
+    result.setDate(result.getDate() + 14);
+    return result;
+  }
+  if (text === 'next month') {
+    result.setMonth(result.getMonth() + 1);
+    return result;
+  }
+
+  match = text.match(/^(next )?(sun|sunday|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thurs|thursday|fri|friday|sat|saturday)(?: (morning|afternoon|evening|night))?$/);
+  if (match) {
+    const isNext = !!match[1];
+    const target = weekdays[match[2]];
+    if (typeof target === 'number') {
+      let delta = (target - result.getDay() + 7) % 7;
+      if (delta === 0 || isNext) delta += 7;
+      result.setDate(result.getDate() + delta);
+      return result;
+    }
+  }
+
+  match = text.match(/^(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december) (\d{1,2})(?:st|nd|rd|th)?(?: (\d{4}))?$/);
+  if (match) {
+    const parsed = new Date(`${match[1]} ${match[2]} ${match[3] || now.getFullYear()}`);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  match = text.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+  if (match) {
+    const month = Number(match[1]) - 1;
+    const day = Number(match[2]);
+    let year = match[3] ? Number(match[3]) : now.getFullYear();
+    if (year < 100) year += 2000;
+    const parsed = new Date(year, month, day);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  return null;
 }
 
 function formatDate(date) {
