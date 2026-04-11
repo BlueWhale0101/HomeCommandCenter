@@ -1,8 +1,8 @@
-# Home Command Center v2.7.1
+# Home Command Center v2.7.2
 
 ## Overview
 
-v2.7.1 starts **Phase E — Visual Polish**. This build does not add new logic, signals, or backend behavior. It tightens the visual hierarchy so the screen reads faster from a distance and fits a little more useful content into the same space.
+v2.7.2 starts **Phase E — Visual Polish**. This build does not add new logic, signals, or backend behavior. It tightens the visual hierarchy so the screen reads faster from a distance and fits a little more useful content into the same space.
 
 This build was patched from the stable v2.6.3 startup-hotfix line.
 
@@ -70,3 +70,31 @@ Signals still stand out, but info/notice rows are calmer than before. Warning ro
 ## Phase E status
 
 This is the first Phase E build and is intentionally conservative. It improves readability and density without redesigning the layout or adding new interaction complexity.
+
+
+## What changed in 2.7.2
+
+### 1. Kitchen quick actions back to a single row
+- quick action buttons now size to fit exactly one row in kitchen view
+- spacing and text sizing were tightened so all four actions stay visible together
+- buttons still remain large enough for ambient tap use
+
+### 2. Trust info moved to the bottom of ambient layouts
+- the ambient health / trust banner now renders after the main content instead of above it
+- this keeps trust information available without making it the first thing the eye lands on
+- banner typography was softened slightly so it reads more like footer diagnostics than a primary card
+
+### 3. Roadmap notes from live-use feedback
+The next layout-focused refinement round should explicitly include:
+- **Kitchen**: another pass after a few days of real-world use
+- **Bedroom**: keep the current direction, then refine from usage feedback
+- **TV**: dedicated layout refinement, likely moving to a **3-column layout** for better space use
+
+These are layout feedback items, not logic issues.
+
+## Files updated in 2.7.2
+- `app.js`
+- `index.html`
+- `sw.js`
+- `styles.css`
+- `README.md`

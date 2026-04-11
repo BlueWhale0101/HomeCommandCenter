@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.1';
+const APP_VERSION = '2.7.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1692,7 +1692,6 @@ function renderModeLayout(mode, context) {
   const ambientHealthBanner = mode !== 'mobile' ? buildAmbientHealthBanner() : null;
 
   if (mode === 'tv') {
-    if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
     const tvWrap = document.createElement('div');
     tvWrap.className = 'tv-layout';
     for (const widgetId of layout.widgets) {
@@ -1700,15 +1699,16 @@ function renderModeLayout(mode, context) {
       if (node) tvWrap.append(node);
     }
     screenEl.append(tvWrap);
+    if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
     return;
   }
-
-  if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
 
   for (const widgetId of layout.widgets) {
     const node = renderWidget(widgetId, context);
     if (node) screenEl.append(node);
   }
+
+  if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
 }
 
 function renderWidget(widgetId, context) {

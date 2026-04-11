@@ -759,16 +759,19 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
 }
 
 .widget-layout-kitchen .quick-button {
-  min-height: 58px;
-  border-radius: 16px;
+  min-height: 54px;
+  border-radius: 15px;
   text-align: center;
-  font-size: 0.94rem;
-  padding: 0.72rem 0.7rem;
+  font-size: 0.88rem;
+  padding: 0.66rem 0.45rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kitchen-quick-actions-card .card-body {
@@ -1579,4 +1582,40 @@ body.mobile-mode .topbar {
     padding-top: 0.44rem;
     padding-bottom: 0.44rem;
   }
+}
+
+
+/* v2.7.2 kitchen quick actions + lower-profile trust banner */
+.widget-layout-kitchen .kitchen-quick-actions-card .card-body {
+  padding-top: 0.9rem;
+}
+
+.ambient-health-banner {
+  margin-top: 0.85rem;
+  opacity: 0.9;
+}
+
+.widget-layout-kitchen .ambient-health-banner,
+.widget-layout-bedroom .ambient-health-banner,
+.widget-layout-tv .ambient-health-banner {
+  align-self: end;
+}
+
+.widget-layout-kitchen .ambient-health-banner .ambient-health-title,
+.widget-layout-bedroom .ambient-health-banner .ambient-health-title,
+.widget-layout-tv .ambient-health-banner .ambient-health-title {
+  font-size: 0.95rem;
+}
+
+.widget-layout-kitchen .ambient-health-banner .ambient-health-detail,
+.widget-layout-bedroom .ambient-health-banner .ambient-health-detail,
+.widget-layout-tv .ambient-health-banner .ambient-health-detail {
+  font-size: 0.82rem;
+}
+
+.widget-layout-kitchen .ambient-health-banner .pill,
+.widget-layout-bedroom .ambient-health-banner .pill,
+.widget-layout-tv .ambient-health-banner .pill {
+  font-size: 0.76rem;
+  padding: 0.28rem 0.5rem;
 }
