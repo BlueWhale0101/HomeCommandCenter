@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.7';
+const APP_VERSION = '2.7.8';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1840,12 +1840,15 @@ function buildListItem(item, options = {}) {
 function buildCardSectionHeader(titleText, subtitleText = '') {
   const wrap = document.createElement('div');
   wrap.className = 'card-header';
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'card-title-wrap';
   const title = document.createElement('h2');
   title.textContent = titleText;
   const subtitle = document.createElement('span');
   subtitle.className = 'card-subtitle';
   subtitle.textContent = subtitleText || '';
-  wrap.append(title, subtitle);
+  titleWrap.append(title, subtitle);
+  wrap.append(titleWrap);
   return wrap;
 }
 
