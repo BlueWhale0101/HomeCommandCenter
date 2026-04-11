@@ -1,9 +1,9 @@
 
-# Home Command Center v2.6.2
+# Home Command Center v2.6.3
 
 ## Overview
 
-v2.6.2 is the third Phase D build for the Command Center. It keeps the priority engine and cooldown layer from 2.6.0–2.6.1, then adds a small contextual-intelligence pass so the top derived signal is not just important, but more informative.
+v2.6.3 is the third Phase D build for the Command Center. It keeps the priority engine and cooldown layer from 2.6.0–2.6.1, then adds a small contextual-intelligence pass so the top derived signal is not just important, but more informative.
 
 This build was patched from the provided v2.6.0/2.6.1 full file set baseline.
 
@@ -69,3 +69,10 @@ The derived-signal chooser is now explicit instead of being embedded inline in t
 ## Phase D status
 
 This build adds the first restrained contextual layer to the priority engine. The next likely step is either a very small suggestion-style signal pass or a stop point, depending on whether this added context feels useful in real household use.
+
+
+## v2.6.3 startup hotfix
+
+- Fixed a startup error where `chooseVisibleDerivedSignals()` called missing helper functions (`getDerivedSignalMemory` / `updateDerivedSignalMemory`).
+- Routed derived-signal selection back through the existing cooldown/suppression memory path so 2.6.2 contextual-pressure behavior still works without introducing a second memory system.
+- No schema changes, no extra queries, no polling changes.

@@ -1,4 +1,4 @@
-const APP_VERSION = '2.6.2';
+const APP_VERSION = '2.6.3';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4484,37 +4484,7 @@ function scoreSignalPriority(signal, options = {}) {
 
 function chooseVisibleDerivedSignals(items = [], options = {}) {
   const now = options?.now || getNowDate();
-  const nowMs = now.getTime();
-  const sorted = [...items].sort((a, b) => {
-    const scoreDelta = scoreSignalPriority(b, { now }) - scoreSignalPriority(a, { now });
-    if (scoreDelta) return scoreDelta;
-    return String(a.title || '').localeCompare(String(b.title || ''));
-  });
-  if (!sorted.length) {
-    updateDerivedSignalMemory(null, now);
-    return [];
-  }
-
-  const memory = getDerivedSignalMemory();
-  const currentType = String(memory.currentType || '');
-  const currentUntil = Number(memory.currentUntil || 0);
-  const top = sorted[0];
-  const held = currentType && currentUntil > nowMs
-    ? sorted.find((signal) => String(signal.signal_type || '') === currentType)
-    : null;
-
-  let chosen = top;
-  if (held) {
-    const heldScore = scoreSignalPriority(held, { now });
-    const topScore = scoreSignalPriority(top, { now });
-    const takeoverMargin = held.severity === 'warning' ? 18 : 12;
-    if (topScore < heldScore + takeoverMargin) {
-      chosen = held;
-    }
-  }
-
-  updateDerivedSignalMemory(chosen, now);
-  return chosen ? [chosen] : [];
+  return selectDerivedSignalWithMemory(items, now);
 }
 
 function summarizeOwnerPressure(tasks = []) {
