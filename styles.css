@@ -22,6 +22,9 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   background: linear-gradient(180deg, #102116 0%, #0b140f 100%);
   color: var(--text);
 }
@@ -60,6 +63,7 @@ button {
 }
 
 #app {
+  width: 100%;
   max-width: 1280px;
   margin: 0 auto;
   padding: 1rem;
@@ -68,9 +72,10 @@ button {
 .topbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 1rem;
   padding: 0.75rem 0;
+  min-width: 0;
 }
 
 .topbar h1 {
@@ -86,8 +91,8 @@ button {
   flex-wrap: wrap;
 }
 
-.version-tag {
-  position: fixed !important;
+ .version-tag {
+  position: static !important;
   user-select: none !important;
   -webkit-user-select: none !important;
   -webkit-touch-callout: none !important;
@@ -96,20 +101,20 @@ button {
   outline: none;
   caret-color: transparent;
 
-  inset: auto 1rem 1rem auto !important;
   z-index: 1200;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.5rem;
-  min-width: 5.5rem;
+  min-height: 2rem;
+  min-width: 4.8rem;
   margin: 0 !important;
+  flex: 0 0 auto;
   border-radius: 999px;
-  padding: 0.45rem 0.95rem;
+  padding: 0.42rem 0.72rem;
   background: rgba(8, 15, 11, 0.96);
   border: 1px solid rgba(181, 220, 189, 0.24);
   color: var(--accent);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 700;
   line-height: 1;
   box-shadow: 0 16px 36px rgba(0,0,0,0.34);
@@ -119,13 +124,13 @@ button {
   -ms-user-select: none !important;
   -webkit-touch-callout: none !important;
   -webkit-tap-highlight-color: transparent;
-  touch-action: none;
+  touch-action: manipulation;
   -webkit-user-drag: none;
   -webkit-touch-callout: none;
 }
 
-.title-row .version-tag {
-  position: fixed !important;
+.title-row  .version-tag {
+  position: static !important;
   user-select: none !important;
   -webkit-user-select: none !important;
   -webkit-touch-callout: none !important;
@@ -216,6 +221,7 @@ body, button, .version-tag, .version-tag * {
 .topbar-actions {
   display: flex;
   gap: 0.75rem;
+  min-width: 0;
 }
 
 .secondary-button,
@@ -242,10 +248,19 @@ body, button, .version-tag, .version-tag * {
 .screen {
   display: grid;
   gap: 1rem;
+  min-width: 0;
+}
+
+.screen > *,
+.tv-layout > *,
+.widget-layout-kitchen > *,
+.widget-layout-bedroom > *,
+.widget-layout-laundry > * {
+  min-width: 0;
 }
 
 .screen.two-columns {
-  grid-template-columns: 1.3fr 1fr;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
 }
 
 .screen.single-column {
@@ -654,7 +669,7 @@ body.version-pressing, body.version-pressing * {
 
 .status-chip span {
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 .status-chip strong {
@@ -1702,6 +1717,7 @@ body.tv-mode #app {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-width: 0;
   gap: 0.75rem;
   margin-top: 0.8rem;
   padding: 0.55rem 0.75rem;
@@ -1713,6 +1729,7 @@ body.tv-mode #app {
 
 .ambient-footer-copy {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .ambient-footer-title {
@@ -1723,9 +1740,8 @@ body.tv-mode #app {
 
 .ambient-footer-detail {
   font-size: 0.76rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .ambient-footer-actions {
@@ -1733,6 +1749,8 @@ body.tv-mode #app {
   align-items: center;
   gap: 0.6rem;
   margin-left: auto;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .ambient-footer-pills {
@@ -1740,12 +1758,15 @@ body.tv-mode #app {
   gap: 0.35rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .ambient-footer-controls {
   display: flex;
   gap: 0.45rem;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .footer-button {

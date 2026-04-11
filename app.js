@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.4';
+const APP_VERSION = '2.7.5';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -6172,6 +6172,7 @@ function buildAmbientFooter() {
     buildSecondaryButton('Refresh', () => refreshButton?.click(), 'mini-button footer-button'),
     buildSecondaryButton('Settings', () => settingsButton?.click(), 'mini-button footer-button'),
   );
+  if (versionTag) controls.append(versionTag);
   right.append(controls);
 
   footer.append(right);
