@@ -453,6 +453,19 @@ body, button, .version-tag, .version-tag * {
   gap: 1.25rem;
 }
 
+.tv-hero-right {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.7rem;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.tv-header-trust {
+  flex: 0 0 auto;
+}
+
 .tv-context-row {
   display: flex;
   justify-content: space-between;
@@ -1862,7 +1875,7 @@ body.tv-mode .screen {
 .ui-anchors.hidden { display:none !important; }
 
 
-/* v2.7.8 tv alignment and trust header fix */
+/* v2.7.9 tv alignment and trust header fix */
 .widget-surface #app {
   position: relative;
 }
@@ -1878,7 +1891,7 @@ body.tv-mode .screen {
 }
 
 
-/* v2.7.8 tv alignment refinements */
+/* v2.7.9 tv alignment refinements */
 .tv-layout.tv-layout-wide > :nth-child(2),
 .tv-layout.tv-layout-wide > :nth-child(3),
 .tv-layout.tv-layout-wide > :nth-child(4) {

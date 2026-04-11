@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.8';
+const APP_VERSION = '2.7.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -2638,11 +2638,23 @@ function buildTvHero() {
   date.className = 'tv-date';
   date.textContent = getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
+  const topRight = document.createElement('div');
+  topRight.className = 'tv-hero-right';
+
+  if (trustIndicator) {
+    const headerTrust = trustIndicator.cloneNode(true);
+    headerTrust.id = '';
+    headerTrust.classList.add('tv-header-trust');
+    headerTrust.onclick = () => trustIndicator.click();
+    topRight.append(headerTrust);
+  }
+
   const timeEl = document.createElement('div');
   timeEl.className = 'tv-clock';
   timeEl.textContent = getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-  topRow.append(date, timeEl);
+  topRight.append(timeEl);
+  topRow.append(date, topRight);
 
   const contextRow = document.createElement('div');
   contextRow.className = 'tv-context-row';
@@ -6133,7 +6145,7 @@ function getAmbientHealthState() {
 
 function placeInlineTrustIndicator() {
   document.querySelectorAll('.inline-trust-indicator').forEach((node) => node.remove());
-  if (appState.config.mode === 'mobile' || !trustIndicator) return;
+  if (appState.config.mode === 'mobile' || appState.config.mode === 'tv' || !trustIndicator) return;
   const firstHeader = screenEl.querySelector('.card .card-header');
   if (!firstHeader) return;
   const inlineButton = trustIndicator.cloneNode(true);
