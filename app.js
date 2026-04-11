@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.13';
+const APP_VERSION = 'v2.4.14';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -116,6 +116,8 @@ let housekeepingTimer = null;
 let pendingTaskCompletions = new Set();
 let pendingSignalActions = new Set();
 const actionRetryHandlers = new Map();
+const TASK_COMPLETE_ARM_WINDOW_MS = 3200;
+let armedTaskCompletion = { taskId: '', expiresAt: 0, timerId: null };
 
 const HEALTHY_AUTO_REFRESH_SECONDS = 600;
 const DEGRADED_AUTO_REFRESH_SECONDS = 90;
@@ -1108,9 +1110,51 @@ function registerActionRetry(key, handler) {
   actionRetryHandlers.set(key, handler);
 }
 
-function clearActionRetry(key) {
-  if (!key) return;
-  actionRetryHandlers.delete(key);
+function clearArmedTaskCompletion(options = {}) {
+  const shouldRender = options.render !== false;
+  if (armedTaskCompletion.timerId) {
+    window.clearTimeout(armedTaskCompletion.timerId);
+  }
+  const hadArmedTask = !!armedTaskCompletion.taskId;
+  armedTaskCompletion = { taskId: '', expiresAt: 0, timerId: null };
+  if (shouldRender && hadArmedTask) {
+    renderRuntimeUi({ renderDevConsole: false });
+  }
+}
+
+function isTaskCompletionArmed(taskId) {
+  return !!taskId && armedTaskCompletion.taskId === taskId && armedTaskCompletion.expiresAt > Date.now();
+}
+
+function armTaskCompletion(task) {
+  const taskId = task?.id;
+  if (!taskId) return false;
+  const isSameTask = armedTaskCompletion.taskId === taskId && armedTaskCompletion.expiresAt > Date.now();
+  if (isSameTask) return true;
+  if (armedTaskCompletion.timerId) {
+    window.clearTimeout(armedTaskCompletion.timerId);
+  }
+  armedTaskCompletion = {
+    taskId,
+    expiresAt: Date.now() + TASK_COMPLETE_ARM_WINDOW_MS,
+    timerId: window.setTimeout(() => clearArmedTaskCompletion(), TASK_COMPLETE_ARM_WINDOW_MS + 40),
+  };
+  showToast(`Tap again to complete: ${task.title || 'Task'}`, 'info', { dismissAfterMs: 2400 });
+  setStatus(`Armed completion for ${task.title || 'task'}`);
+  renderRuntimeUi({ renderDevConsole: false });
+  return false;
+}
+
+function handleTaskActivation(task) {
+  const taskId = task?.id;
+  if (!taskId || pendingTaskCompletions.has(taskId)) return;
+  if (taskIsArchived(task) || taskIsCompleted(task)) return;
+  if (!isTaskCompletionArmed(taskId)) {
+    armTaskCompletion(task);
+    return;
+  }
+  clearArmedTaskCompletion({ render: false });
+  completeTask(task);
 }
 
 async function runRegisteredRetry(key) {
@@ -1795,7 +1839,7 @@ function buildPill(text, extraClass = '') {
 function buildListItem(item, options = {}) {
   const rowTag = options.tagName || 'div';
   const row = document.createElement(rowTag);
-  row.className = options.rowClassName || 'list-item';
+  row.className = ['list-item', options.rowClassName || '', item.rowClassName || ''].filter(Boolean).join(' ').trim();
 
   const left = document.createElement('div');
   left.className = options.leftClassName || 'list-item-left';
@@ -1822,6 +1866,11 @@ function buildListItem(item, options = {}) {
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
     row.style.cursor = 'pointer';
+    if (item.isArmed) {
+      row.style.borderColor = 'rgba(244, 208, 63, 0.85)';
+      row.style.boxShadow = '0 0 0 1px rgba(244, 208, 63, 0.28) inset';
+      row.style.background = 'rgba(244, 208, 63, 0.10)';
+    }
     if (item.actionHint) row.title = item.actionHint;
     row.addEventListener('click', (event) => {
       event.preventDefault();
@@ -4286,13 +4335,16 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
     const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : (task.dueText || 'No due date');
     const owner = task.owner || '';
     const canComplete = !!task.id && !pendingTaskCompletions.has(task.id);
+    const armed = canComplete && isTaskCompletionArmed(task.id);
     return {
       title: task.title,
-      meta: [owner, dueMeta].filter(Boolean).join(' · '),
-      pill: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
-      pillClass: task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : '',
-      actionHint: canComplete ? 'Tap to mark complete' : '',
-      onActivate: canComplete ? () => completeTask(task.raw || task) : null,
+      meta: [owner, dueMeta, armed ? 'Tap again to complete' : ''].filter(Boolean).join(' · '),
+      pill: armed ? 'Ready' : task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill,
+      pillClass: armed ? 'warning' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : ''),
+      actionHint: canComplete ? (armed ? 'Tap again to mark complete' : 'Tap twice to mark complete') : '',
+      rowClassName: armed ? 'list-item-armed' : '',
+      isArmed: armed,
+      onActivate: canComplete ? () => handleTaskActivation(task.raw || task) : null,
     };
   });
 }
@@ -4564,7 +4616,7 @@ function showToast(message, type = 'info', options = {}) {
 
   host.append(toast);
   requestAnimationFrame(() => toast.classList.add('toast-show'));
-  const dismissAfterMs = options.retryKey ? 4200 : 1700;
+  const dismissAfterMs = Number(options.dismissAfterMs) > 0 ? Number(options.dismissAfterMs) : (options.retryKey ? 4200 : 1700);
   window.setTimeout(() => {
     toast.classList.remove('toast-show');
     toast.classList.add('toast-hide');
@@ -4633,6 +4685,7 @@ async function completeTask(task) {
   if (!taskId || pendingTaskCompletions.has(taskId)) return;
   if (taskIsArchived(task) || taskIsCompleted(task)) return;
 
+  clearArmedTaskCompletion({ render: false });
   pendingTaskCompletions.add(taskId);
   const previousTask = removeLocalTask(taskId) || task;
   const optimisticApply = () => {
