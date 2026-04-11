@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.6';
+const APP_VERSION = '2.7.7';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -879,6 +879,7 @@ async function loadDeviceProfile() {
 function renderRuntimeUi(options = {}) {
   if (options.renderMode !== false) renderMode();
   renderTrustIndicator();
+  placeInlineTrustIndicator();
   if (options.renderDevConsole !== false) renderDevConsole();
 }
 
@@ -6124,6 +6125,19 @@ function getAmbientHealthState() {
     issues,
     pills,
   };
+}
+
+
+function placeInlineTrustIndicator() {
+  document.querySelectorAll('.inline-trust-indicator').forEach((node) => node.remove());
+  if (appState.config.mode === 'mobile' || !trustIndicator) return;
+  const firstHeader = screenEl.querySelector('.card .card-header');
+  if (!firstHeader) return;
+  const inlineButton = trustIndicator.cloneNode(true);
+  inlineButton.id = '';
+  inlineButton.classList.add('inline-trust-indicator');
+  inlineButton.onclick = () => trustIndicator.click();
+  firstHeader.append(inlineButton);
 }
 
 function buildAmbientFooter() {
