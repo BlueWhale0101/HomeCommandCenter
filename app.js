@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.2';
+const APP_VERSION = '2.7.3';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1617,7 +1617,7 @@ const SURFACE_DEFINITIONS = {
   tv: {
     bodyClasses: ['widget-surface', 'tv-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
+    widgets: ['tvHero', 'tvSignals', 'tvToday', 'tvMotion'],
   },
   laundry: {
     bodyClasses: ['widget-surface', 'laundry-surface'],
@@ -1693,7 +1693,7 @@ function renderModeLayout(mode, context) {
 
   if (mode === 'tv') {
     const tvWrap = document.createElement('div');
-    tvWrap.className = 'tv-layout';
+    tvWrap.className = 'tv-layout tv-layout-wide';
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
@@ -1733,7 +1733,7 @@ const WIDGETS = {
   tvHero: () => buildTvHero(),
   tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-today-card'),
   tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card panel-card panel-signals-card'),
-  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
+  tvMotion: (context) => buildCard('In Motion', context.digest.counts.inMotion ? `${context.digest.counts.inMotion} active` : '', renderTaskList(context.digest.inMotionTasks.slice(0, 5), 'Nothing is actively in motion right now.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-focus-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
@@ -4156,6 +4156,7 @@ function buildTaskDigest() {
   const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
   const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
   const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
+  const inMotionTasks = rankedTodayTasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion').slice(0, 6);
   const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
   const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
@@ -4169,6 +4170,7 @@ function buildTaskDigest() {
   const todayTaskItems = toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today');
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
+  const inMotionTaskItems = toDisplayTaskItems(inMotionTasks, 'In Motion');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
   const tomorrowWindowTasks = selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext);
   const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
@@ -4183,6 +4185,7 @@ function buildTaskDigest() {
     todayBlend,
     overdueTasks: overdueTaskItems,
     upcomingTasks: upcomingTaskItems,
+    inMotionTasks: inMotionTaskItems,
     tomorrowTasks: tomorrowTaskItems,
     rankedTodayTasks,
     rankedTomorrowTasks,
@@ -4195,6 +4198,7 @@ function buildTaskDigest() {
       today: todayTasks.length,
       overdue: overdueTasks.length,
       upcoming: upcomingTasks.length,
+      inMotion: inMotionTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
       tomorrow: tomorrowOnlyTasks.length,

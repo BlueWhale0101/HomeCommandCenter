@@ -700,9 +700,9 @@ body.version-pressing, body.version-pressing * {
 
 
 .widget-layout-kitchen {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.92fr);
+  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
   align-items: start;
-  overflow-y: auto;
+  overflow: visible;
   padding-right: 0.2rem;
 }
 
@@ -715,23 +715,23 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen > :nth-child(3) {
-  grid-column: 1 / -1;
+  grid-column: 1;
 }
 
 .widget-layout-kitchen > :nth-child(4) {
-  grid-column: 1;
+  grid-column: 2;
 }
 
 .widget-layout-kitchen > :nth-child(5) {
-  grid-column: 2;
-}
-
-.widget-layout-kitchen > :nth-child(6) {
   grid-column: 1;
 }
 
-.widget-layout-kitchen > :nth-child(7) {
+.widget-layout-kitchen > :nth-child(6) {
   grid-column: 2;
+}
+
+.widget-layout-kitchen > :nth-child(7) {
+  grid-column: 1 / -1;
 }
 
 .widget-layout-kitchen .card {
@@ -1585,7 +1585,7 @@ body.mobile-mode .topbar {
 }
 
 
-/* v2.7.2 kitchen quick actions + lower-profile trust banner */
+/* v2.7.3 kitchen quick actions + lower-profile trust banner */
 .widget-layout-kitchen .kitchen-quick-actions-card .card-body {
   padding-top: 0.9rem;
 }
@@ -1618,4 +1618,38 @@ body.mobile-mode .topbar {
 .widget-layout-tv .ambient-health-banner .pill {
   font-size: 0.76rem;
   padding: 0.28rem 0.5rem;
+}
+
+
+/* v2.7.3 per-view layout refinement */
+body.kitchen-surface,
+body.bedroom-surface,
+body.laundry-surface {
+  overflow-y: auto;
+}
+
+body.kitchen-surface #app,
+body.bedroom-surface #app,
+body.laundry-surface #app {
+  min-height: 100vh;
+}
+
+.widget-layout-kitchen .ambient-health-banner {
+  grid-column: 1 / -1;
+}
+
+.tv-layout.tv-layout-wide {
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.18fr) minmax(280px, 0.92fr);
+}
+
+.tv-layout.tv-layout-wide > :nth-child(2) {
+  grid-column: 1 / 2;
+}
+
+.tv-layout.tv-layout-wide > :nth-child(3) {
+  grid-column: 2 / 3;
+}
+
+.tv-layout.tv-layout-wide > :nth-child(4) {
+  grid-column: 3 / 4;
 }
