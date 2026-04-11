@@ -1,4 +1,4 @@
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.6.1';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -35,6 +35,7 @@ const CONFIG_STORAGE = 'household-command-center-config';
 const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
 const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const SIGNAL_SNOOZE_STORAGE = 'household-command-center-signal-snoozes';
+const DERIVED_SIGNAL_MEMORY_STORAGE = 'household-command-center-derived-signal-memory';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
 const SHARED_CONFIG_TABLE = 'household_config';
 const SHARED_CONFIG_KEYS = {
@@ -1182,6 +1183,75 @@ function locallySnoozeSignal(signal, minutes = 120) {
   const until = new Date(getNowDate().getTime() + minutes * 60000).toISOString();
   snoozes[id] = until;
   persistSignalSnoozes(snoozes);
+}
+
+
+function readDerivedSignalMemory() {
+  try {
+    const raw = localStorage.getItem(DERIVED_SIGNAL_MEMORY_STORAGE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function persistDerivedSignalMemory(memory) {
+  try {
+    localStorage.setItem(DERIVED_SIGNAL_MEMORY_STORAGE, JSON.stringify(memory || {}));
+  } catch (_) {}
+}
+
+function selectDerivedSignalWithMemory(candidates = [], now = getNowDate()) {
+  const sorted = [...(Array.isArray(candidates) ? candidates : [])].sort((a, b) => {
+    const scoreDelta = scoreSignalPriority(b, { now }) - scoreSignalPriority(a, { now });
+    if (scoreDelta) return scoreDelta;
+    return String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+  if (!sorted.length) {
+    persistDerivedSignalMemory({});
+    return [];
+  }
+
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  const memory = readDerivedSignalMemory();
+  const suppressAllClearUntil = Number(memory.suppressAllClearUntil || 0);
+  const eligible = sorted.filter((signal) => {
+    if (String(signal?.signal_type || '') !== 'derived_all_clear') return true;
+    return suppressAllClearUntil <= nowMs;
+  });
+  const withoutAllClear = sorted.filter((signal) => String(signal?.signal_type || '') !== 'derived_all_clear');
+  const visible = eligible.length ? eligible : (withoutAllClear.length ? withoutAllClear : sorted);
+  if (!visible.length) return [];
+
+  let chosen = visible[0];
+  const previousType = String(memory.lastSignalType || '');
+  const holdUntil = Number(memory.holdUntil || 0);
+  const previous = visible.find((signal) => String(signal?.signal_type || '') === previousType);
+
+  if (previous && holdUntil > nowMs) {
+    const previousScore = scoreSignalPriority(previous, { now });
+    const currentScore = scoreSignalPriority(visible[0], { now });
+    const scoreGap = currentScore - previousScore;
+    if (scoreGap <= 18) chosen = previous;
+  }
+
+  const chosenType = String(chosen?.signal_type || '');
+  const currentHold = Number(memory.holdUntil || 0);
+  const isWarning = String(chosen?.severity || '').toLowerCase() === 'warning';
+  const defaultHoldMs = isWarning ? (10 * 60 * 1000) : (15 * 60 * 1000);
+  const nextMemory = {
+    lastSignalType: chosenType,
+    lastSignalId: String(chosen?.id || ''),
+    shownAt: chosenType === previousType ? Number(memory.shownAt || nowMs) : nowMs,
+    holdUntil: chosenType === previousType && currentHold > nowMs ? currentHold : (nowMs + defaultHoldMs),
+    suppressAllClearUntil: chosenType === 'derived_all_clear'
+      ? suppressAllClearUntil
+      : Math.max(suppressAllClearUntil, nowMs + (20 * 60 * 1000)),
+  };
+  persistDerivedSignalMemory(nextMemory);
+  return [chosen];
 }
 
 function getRemoteWriteGuard(tableName = '') {
@@ -4520,13 +4590,7 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
     });
   }
 
-  return items
-    .sort((a, b) => {
-      const scoreDelta = scoreSignalPriority(b, { now }) - scoreSignalPriority(a, { now });
-      if (scoreDelta) return scoreDelta;
-      return String(a.title || '').localeCompare(String(b.title || ''));
-    })
-    .slice(0, 1);
+  return selectDerivedSignalWithMemory(items, now);
 }
 
 function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
