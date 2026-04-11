@@ -1,4 +1,4 @@
-const APP_VERSION = '2.6.3';
+const APP_VERSION = '2.7.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -360,6 +360,7 @@ function attachServiceWorkerListeners(registration) {
 const statusLine = document.getElementById('status-line');
 const settingsButton = document.getElementById('settings-button');
 const refreshButton = document.getElementById('refresh-button');
+const trustIndicator = document.getElementById('trust-indicator');
 const settingsDialog = document.getElementById('settings-dialog');
 const saveSettingsButton = document.getElementById('save-settings');
 const versionTag = document.getElementById('version-tag');
@@ -877,6 +878,8 @@ async function loadDeviceProfile() {
 
 function renderRuntimeUi(options = {}) {
   if (options.renderMode !== false) renderMode();
+  renderTrustIndicator();
+  placeInlineTrustIndicator();
   if (options.renderDevConsole !== false) renderDevConsole();
 }
 
@@ -1617,7 +1620,7 @@ const SURFACE_DEFINITIONS = {
   tv: {
     bodyClasses: ['widget-surface', 'tv-surface'],
     screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvToday', 'tvSignals', 'tvFocus'],
+    widgets: ['tvHero', 'tvSignals', 'tvToday', 'tvMotion', 'tvForget'],
   },
   laundry: {
     bodyClasses: ['widget-surface', 'laundry-surface'],
@@ -1689,26 +1692,26 @@ function renderModeLayout(mode, context) {
   screenEl.className = layout.screenClass;
   screenEl.replaceChildren();
 
-  const ambientHealthBanner = mode !== 'mobile' ? buildAmbientHealthBanner() : null;
+  const ambientFooter = mode !== 'mobile' ? buildAmbientFooter() : null;
 
   if (mode === 'tv') {
-    if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
     const tvWrap = document.createElement('div');
-    tvWrap.className = 'tv-layout';
+    tvWrap.className = 'tv-layout tv-layout-wide';
     for (const widgetId of layout.widgets) {
       const node = renderWidget(widgetId, context);
       if (node) tvWrap.append(node);
     }
     screenEl.append(tvWrap);
+    if (ambientFooter) screenEl.append(ambientFooter);
     return;
   }
-
-  if (ambientHealthBanner) screenEl.append(ambientHealthBanner);
 
   for (const widgetId of layout.widgets) {
     const node = renderWidget(widgetId, context);
     if (node) screenEl.append(node);
   }
+
+  if (ambientFooter) screenEl.append(ambientFooter);
 }
 
 function renderWidget(widgetId, context) {
@@ -1722,24 +1725,25 @@ function renderWidget(widgetId, context) {
 
 const WIDGETS = {
   kitchenHeader: (context) => buildKitchenTodayCard(context),
-  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true })),
+  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true }), 'panel-card panel-today-card'),
   spotlight: (context) => buildCard('Best Next Move', 'Most useful thing to do next', renderSpotlightCard(context.digest.spotlightTask)),
-  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.')),
-  upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true })),
+  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.'), 'panel-card panel-signals-card'),
+  upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true }), 'panel-card panel-upcoming-card'),
   quickActions: () => buildQuickActionsCard(),
-  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true })),
+  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true }), 'panel-card panel-reminders-card'),
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
-  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
-  tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
+  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-today-card'),
+  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card panel-card panel-signals-card'),
+  tvMotion: (context) => buildCard('In Motion', context.digest.counts.inMotion ? `${context.digest.counts.inMotion} active` : '', renderTaskList(context.digest.inMotionTasks.slice(0, 5), 'Nothing is actively in motion right now.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-focus-card'),
+  tvForget: (context) => buildCard('Don’t Forget', 'Tomorrow and coming up soon', renderTaskList(context.forgetItems.slice(0, 4), 'Nothing important is coming up soon.', { compact: true, showPills: true }), 'tv-card tv-bottom-card panel-card panel-reminders-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
-  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true }), 'panel-card panel-today-card'),
   bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
-  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
+  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true }), 'panel-card panel-reminders-card'),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
 
@@ -1785,6 +1789,12 @@ function buildListItem(item, options = {}) {
   const rowTag = options.tagName || 'div';
   const row = document.createElement(rowTag);
   row.className = options.rowClassName || 'list-item';
+  if (item?.rowClass) row.classList.add(...String(item.rowClass).split(/\s+/).filter(Boolean));
+  if (item?.ownerKey) {
+    row.dataset.owner = item.ownerKey;
+    row.classList.add(`owner-${item.ownerKey}`);
+  }
+  if (item?.emphasis) row.dataset.emphasis = item.emphasis;
 
   const left = document.createElement('div');
   left.className = options.leftClassName || 'list-item-left';
@@ -1830,12 +1840,15 @@ function buildListItem(item, options = {}) {
 function buildCardSectionHeader(titleText, subtitleText = '') {
   const wrap = document.createElement('div');
   wrap.className = 'card-header';
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'card-title-wrap';
   const title = document.createElement('h2');
   title.textContent = titleText;
   const subtitle = document.createElement('span');
   subtitle.className = 'card-subtitle';
   subtitle.textContent = subtitleText || '';
-  wrap.append(title, subtitle);
+  titleWrap.append(title, subtitle);
+  wrap.append(titleWrap);
   return wrap;
 }
 
@@ -2625,11 +2638,23 @@ function buildTvHero() {
   date.className = 'tv-date';
   date.textContent = getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
+  const topRight = document.createElement('div');
+  topRight.className = 'tv-hero-right';
+
+  if (trustIndicator) {
+    const headerTrust = trustIndicator.cloneNode(true);
+    headerTrust.id = '';
+    headerTrust.classList.add('tv-header-trust');
+    headerTrust.onclick = () => trustIndicator.click();
+    topRight.append(headerTrust);
+  }
+
   const timeEl = document.createElement('div');
   timeEl.className = 'tv-clock';
   timeEl.textContent = getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-  topRow.append(date, timeEl);
+  topRight.append(timeEl);
+  topRow.append(date, topRight);
 
   const contextRow = document.createElement('div');
   contextRow.className = 'tv-context-row';
@@ -4150,6 +4175,7 @@ function buildTaskDigest() {
   const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
   const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
   const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
+  const inMotionTasks = rankedTodayTasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion').slice(0, 6);
   const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
   const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
@@ -4163,6 +4189,7 @@ function buildTaskDigest() {
   const todayTaskItems = toDisplayTaskItems(todayTasks.length ? todayTasks : undatedTasks.slice(0, 6), 'Today');
   const overdueTaskItems = toDisplayTaskItems(overdueTasks, 'Overdue');
   const upcomingTaskItems = toDisplayTaskItems(upcomingTasks, 'Upcoming');
+  const inMotionTaskItems = toDisplayTaskItems(inMotionTasks, 'In Motion');
   const allTaskItems = toDisplayTaskItems(tasks, 'Task');
   const tomorrowWindowTasks = selectTomorrowWindowTasks(rankedTomorrowTasks, intelligenceContext);
   const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
@@ -4177,6 +4204,7 @@ function buildTaskDigest() {
     todayBlend,
     overdueTasks: overdueTaskItems,
     upcomingTasks: upcomingTaskItems,
+    inMotionTasks: inMotionTaskItems,
     tomorrowTasks: tomorrowTaskItems,
     rankedTodayTasks,
     rankedTomorrowTasks,
@@ -4189,6 +4217,7 @@ function buildTaskDigest() {
       today: todayTasks.length,
       overdue: overdueTasks.length,
       upcoming: upcomingTasks.length,
+      inMotion: inMotionTasks.length,
       undated: undatedTasks.length,
       eventsToday: calendarTodayItems.length,
       tomorrow: tomorrowOnlyTasks.length,
@@ -4280,6 +4309,23 @@ function normalizeTaskRows() {
     });
 }
 
+
+function normalizeOwnerKey(owner) {
+  const value = String(owner || '').trim().toLowerCase();
+  if (!value) return '';
+  if (value === 'wes') return 'wes';
+  if (value === 'skye') return 'skye';
+  return 'shared';
+}
+
+function taskRowClass(task, armed = false) {
+  const classes = ['task-list-item'];
+  const bucket = getTaskDueBucket(task, getNowDate());
+  classes.push(`task-bucket-${bucket}`);
+  if (armed) classes.push('task-armed');
+  return classes.join(' ');
+}
+
 function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
   return tasks.map((task) => {
     if (task.signal_type || task.severity) return signalToItem(task);
@@ -4294,6 +4340,9 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
       meta: [owner, armed ? 'Ready to complete' : dueMeta].filter(Boolean).join(' · '),
       pill: armed ? 'Ready' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill),
       pillClass: armed ? 'warning' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : ''),
+      ownerKey: normalizeOwnerKey(owner),
+      emphasis: armed ? 'armed' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'high' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'medium' : 'normal'),
+      rowClass: taskRowClass(task, armed),
       actionHint: canComplete ? (armed ? 'Tap again to complete' : 'Tap once to arm completion') : '',
       onActivate: canComplete ? () => completeTask(task.raw || task) : null,
     };
@@ -4742,11 +4791,14 @@ function buildTomorrowItemsFromDigest(digest) {
 }
 
 function signalToItem(signal) {
+  const severity = signal.severity || 'info';
   return {
     title: signal.title,
     meta: signal.description || signal.location || '',
-    pill: capitalize(signal.severity),
-    pillClass: signal.severity === 'warning' ? 'warning' : '',
+    pill: capitalize(severity),
+    pillClass: severity === 'warning' ? 'warning' : severity === 'notice' ? 'notice' : '',
+    rowClass: `signal-list-item signal-severity-${severity}`,
+    emphasis: severity === 'warning' ? 'high' : severity === 'notice' ? 'medium' : 'normal',
     raw: signal,
   };
 }
@@ -5573,6 +5625,7 @@ function setupWakeLockHooks() {
 function setupButtons() {
   pushDevLog('info', 'Button handlers attached.');
   settingsButton.onclick = openSettingsDialog;
+  if (trustIndicator) trustIndicator.onclick = () => { document.querySelector('.ambient-footer')?.scrollIntoView({ behavior: 'smooth', block: 'end' }); };
   refreshButton.onclick = async () => {
     try {
       await refreshAll('manual refresh button', { includeSlowState: true });
@@ -6089,43 +6142,81 @@ function getAmbientHealthState() {
   };
 }
 
-function buildAmbientHealthBanner() {
-  const health = getAmbientHealthState();
-  if (!health || health.level === 'ok') return null;
 
-  const banner = document.createElement('section');
-  banner.className = `ambient-health-banner ${health.level}`;
+function placeInlineTrustIndicator() {
+  document.querySelectorAll('.inline-trust-indicator').forEach((node) => node.remove());
+  if (appState.config.mode === 'mobile' || appState.config.mode === 'tv' || !trustIndicator) return;
+  const firstHeader = screenEl.querySelector('.card .card-header');
+  if (!firstHeader) return;
+  const inlineButton = trustIndicator.cloneNode(true);
+  inlineButton.id = '';
+  inlineButton.classList.add('inline-trust-indicator');
+  inlineButton.onclick = () => trustIndicator.click();
+  firstHeader.append(inlineButton);
+}
+
+function buildAmbientFooter() {
+  const health = getAmbientHealthState();
+  const footer = document.createElement('section');
+  footer.className = `ambient-footer ${health.level}`;
 
   const left = document.createElement('div');
-  left.className = 'ambient-health-copy';
+  left.className = 'ambient-footer-copy';
 
   const title = document.createElement('div');
-  title.className = 'ambient-health-title';
-  title.textContent = health.title;
+  title.className = 'ambient-footer-title';
+  title.textContent = health.level === 'ok' ? 'Trust details' : health.title;
 
   const detail = document.createElement('div');
-  detail.className = 'ambient-health-detail';
-  const issueBits = health.issues.slice(0, 3).map((issue) => issue.title);
-  detail.textContent = [health.message, issueBits.length > 1 ? issueBits.slice(1).join(' · ') : '']
-    .filter(Boolean)
-    .join(' · ');
+  detail.className = 'ambient-footer-detail';
+  const issueBits = (health.issues || []).slice(0, 3).map((issue) => issue.title);
+  const statusText = (statusLine?.textContent || '').trim();
+  if (health.level === 'ok') {
+    detail.textContent = statusText || 'Live view is healthy.';
+  } else {
+    detail.textContent = [health.message, issueBits.length > 1 ? issueBits.slice(1).join(' · ') : '', statusText].filter(Boolean).join(' · ');
+  }
 
   left.append(title, detail);
-  banner.append(left);
+  footer.append(left);
 
-  if (health.pills.length) {
+  const right = document.createElement('div');
+  right.className = 'ambient-footer-actions';
+
+  if (health.pills?.length) {
     const pills = document.createElement('div');
-    pills.className = 'ambient-health-pills';
+    pills.className = 'ambient-footer-pills';
     for (const label of health.pills.slice(0, 3)) {
       const pill = document.createElement('span');
       pill.className = `pill ${health.level === 'degraded' ? 'warning' : ''}`.trim();
       pill.textContent = label;
       pills.append(pill);
     }
-    banner.append(pills);
+    right.append(pills);
   }
 
-  return banner;
+  const controls = document.createElement('div');
+  controls.className = 'ambient-footer-controls';
+  controls.append(
+    buildSecondaryButton('Refresh', () => refreshButton?.click(), 'mini-button footer-button'),
+    buildSecondaryButton('Settings', () => settingsButton?.click(), 'mini-button footer-button'),
+  );
+  if (versionTag) controls.append(versionTag);
+  right.append(controls);
+
+  footer.append(right);
+  return footer;
+}
+
+function renderTrustIndicator() {
+  if (!trustIndicator) return;
+  const health = getAmbientHealthState();
+  const level = health?.level || 'ok';
+  const degraded = level === 'degraded' || level === 'aging';
+  trustIndicator.className = `trust-indicator ${degraded ? 'degraded' : 'healthy'}`;
+  trustIndicator.textContent = degraded ? '!' : '✓';
+  trustIndicator.setAttribute('aria-label', degraded ? 'Trust degraded' : 'Trust healthy');
+  trustIndicator.setAttribute('title', degraded ? `${health.title}: ${health.message}` : 'Live view healthy');
 }
 
 function buildSnapshotStatusItems() {
