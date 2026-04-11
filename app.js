@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.7';
+const APP_VERSION = 'v2.4.8';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4113,14 +4113,15 @@ function normalizeTaskRows() {
   return appState.tasks
     .filter((task) => !isTaskExcluded(task))
     .map((task) => {
-      const dueDate = normalizeDate(task[dateField]);
+      const dueSource = task[dateField] || task.due_text || task.due_date || task.due || '';
+      const dueDate = normalizeDate(dueSource);
       const owner = task[ownerField] || '';
       return {
         id: task.id,
-        title: String(task[titleField] || 'Untitled task'),
+        title: String(task[titleField] || task.title || 'Untitled task'),
         owner,
         dueDate,
-        dueText: task[dateField] || '',
+        dueText: dueSource || '',
         tag: task.tag || '',
         recurrence: task.recurrence || '',
         description: task.description || '',
