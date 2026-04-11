@@ -1,4 +1,4 @@
-const APP_VERSION = '2.4.16';
+const APP_VERSION = '2.5.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4373,13 +4373,84 @@ function buildSyntheticLaundrySignals(rules = getEffectiveSignalRules()) {
   return evaluateLaundrySignals(normalizedRules.laundry);
 }
 
+
+function dedupeSignals(signals = []) {
+  const seen = new Set();
+  const items = [];
+  for (const signal of signals || []) {
+    if (!signal) continue;
+    const key = signal.id || `${signal.signal_type || 'signal'}|${signal.title || ''}|${signal.description || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(signal);
+  }
+  return items;
+}
+
+function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSignalEvalContext(), baseSignals = []) {
+  const items = [];
+  const now = context?.now || getNowDate();
+  const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
+  const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
+  const hasOtherSignals = Array.isArray(baseSignals) && baseSignals.length > 0;
+  const hasDbSignals = activeDbSignals(now).length > 0;
+
+  if (overdueTasks.length) {
+    const oldestOverdueDays = overdueTasks.reduce((maxDays, task) => {
+      if (!task?.dueDate) return maxDays;
+      const diffDays = Math.max(1, Math.floor((startOfDay(now).getTime() - startOfDay(task.dueDate).getTime()) / 86400000));
+      return Math.max(maxDays, diffDays);
+    }, 1);
+
+    items.push({
+      id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
+      signal_type: 'derived_overdue_pressure',
+      title: overdueTasks.length === 1 ? 'Overdue task needs attention' : `${overdueTasks.length} overdue tasks`,
+      description: overdueTasks.length === 1
+        ? `${overdueTasks[0]?.title || 'Task'} is overdue`
+        : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
+      severity: overdueTasks.length >= 3 || oldestOverdueDays >= 2 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: { synthetic: true, derived: true, rule: 'derived_overdue_pressure', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (todayTasks.length >= 6) {
+    items.push({
+      id: `derived-today-load-${todayTasks.length}`,
+      signal_type: 'derived_today_load',
+      title: todayTasks.length >= 9 ? 'Very full day' : 'Heavy day',
+      description: `${todayTasks.length} tasks are due today`,
+      severity: todayTasks.length >= 9 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: { synthetic: true, derived: true, rule: 'derived_today_load', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  if (!overdueTasks.length && !todayTasks.length && !hasDbSignals && !hasOtherSignals) {
+    items.push({
+      id: 'derived-all-clear',
+      signal_type: 'derived_all_clear',
+      title: 'All clear',
+      description: tasks.length ? 'No tasks are due today or overdue' : 'No active tasks or reminders right now',
+      severity: 'info',
+      location: 'system',
+      metadata: { synthetic: true, derived: true, rule: 'derived_all_clear', visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'] },
+    });
+  }
+
+  return items.slice(0, 2);
+}
+
 function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
   const normalizedRules = normalizeSignalRules(rules);
-  return [
+  const baseSignals = [
     ...evaluateLaundrySignals(normalizedRules.laundry),
     ...buildSyntheticRuleSignals(normalizedRules, context),
     ...buildSyntheticCustomSignals(normalizedRules, context),
   ];
+  const derivedSignals = buildDerivedTaskSignals(normalizeTaskRows(), context, baseSignals);
+  return dedupeSignals([...baseSignals, ...derivedSignals]);
 }
 
 function sortSignalsForDisplay(signals = []) {
@@ -4392,10 +4463,10 @@ function sortSignalsForDisplay(signals = []) {
 }
 
 function activeSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
-  return sortSignalsForDisplay([
+  return sortSignalsForDisplay(dedupeSignals([
     ...activeDbSignals(context.now),
     ...buildSyntheticSignals(rules, context),
-  ].filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
+  ]).filter((signal) => !isSignalLocallySnoozed(signal, context.now)));
 }
 
 function buildForgetItems() {
