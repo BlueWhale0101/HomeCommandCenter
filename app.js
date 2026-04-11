@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.6';
+const APP_VERSION = 'v2.4.7';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
   mode: 'tv',
   location: 'kitchen',
   taskTable: 'tasks',
-  taskDateField: 'due_date',
+  taskDateField: 'due_text',
   taskOwnerField: 'owner',
   taskTitleField: 'task',
   taskCompletedField: 'completed',
@@ -62,7 +62,7 @@ const LOCAL_ONLY_CONFIG_KEYS = [
 const TASK_FIELD_CANDIDATES = {
   taskTitleField: ['task', 'title', 'name', 'label'],
   taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
-  taskDateField: ['due_date', 'due', 'due_at', 'scheduled_for', 'date'],
+  taskDateField: ['due_text', 'due_date', 'due', 'due_at', 'scheduled_for', 'date'],
   taskCompletedField: ['completed', 'done', 'is_completed', 'is_done', 'complete'],
 };
 const QUICK_LOGS = [
@@ -124,7 +124,6 @@ const SNAPSHOT_RETENTION_DAYS = 7;
 const LOG_RETENTION_DAYS = 30;
 const RESOLVED_SIGNAL_RETENTION_DAYS = 30;
 const LOAD_RETENTION_DAYS = 30;
-const RECENT_DONE_WINDOW_DAYS = 7;
 const HOUSEKEEPING_LAST_RUN_STORAGE = 'household-command-center-housekeeping-last-run';
 const HOUSEKEEPING_REPORT_STORAGE = 'household-command-center-housekeeping-report';
 
@@ -874,10 +873,6 @@ async function loadDeviceProfile() {
 function renderRuntimeUi(options = {}) {
   if (options.renderMode !== false) renderMode();
   if (options.renderDevConsole !== false) renderDevConsole();
-}
-
-function renderApp() {
-  renderRuntimeUi();
 }
 
 async function refreshBaseState(includeSlowState = false) {
