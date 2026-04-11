@@ -2,9 +2,34 @@
 <html>
 <head>
 <meta name="app-version" content="2.4.12">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body { font-family: sans-serif; background:#08100b; color:white; }
+.task { padding:16px; border-bottom:1px solid #333; cursor:pointer; }
+.toast {
+  position:fixed;
+  bottom:20px;
+  left:20px;
+  background:#222;
+  padding:10px 16px;
+  border-radius:8px;
+  opacity:0;
+  transition:opacity 0.3s;
+}
+.toast.success { background:green; }
+.toast.error { background:red; }
+.toast.blocked { background:orange; }
+.toast.pending { background:#555; }
+</style>
+
 </head>
 <body>
+
 <div id="app"></div>
+<div id="toast" class="toast"></div>
+
 <script src="app.js"></script>
+
 </body>
 </html>
