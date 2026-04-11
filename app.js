@@ -1,4 +1,4 @@
-const APP_VERSION = 'v2.4.9';
+const APP_VERSION = 'v2.4.10';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -12,7 +12,7 @@ const DEFAULT_CONFIG = {
   taskTable: 'tasks',
   taskDateField: 'due_text',
   taskOwnerField: 'owner',
-  taskTitleField: 'title',
+  taskTitleField: 'task',
   taskCompletedField: 'completed',
   taskCompletedValue: 'true',
   useStringCompleted: false,
@@ -4113,16 +4113,14 @@ function normalizeTaskRows() {
   return appState.tasks
     .filter((task) => !isTaskExcluded(task))
     .map((task) => {
-      const configuredDueValue = dateField ? task[dateField] : undefined;
-      const dueText = configuredDueValue || task.due_text || task.due_date || task.due || '';
-      const dueDate = normalizeDate(configuredDueValue || task.due_text || task.due_date || task.due);
+      const dueDate = normalizeDate(task[dateField] || task.due_text || task.due_date || task.due, task.created_at);
       const owner = task[ownerField] || '';
       return {
         id: task.id,
-        title: String(task[titleField] || task.title || 'Untitled task'),
+        title: String(task[titleField] || 'Untitled task'),
         owner,
         dueDate,
-        dueText,
+        dueText: task[dateField] || task.due_text || task.due_date || task.due || '',
         tag: task.tag || '',
         recurrence: task.recurrence || '',
         description: task.description || '',
@@ -5931,97 +5929,65 @@ function snapshotMetaLabel(prefix, snapshot) {
   return `${prefix} · ${relativeTime(snapshot.created_at)}`;
 }
 
-function normalizeDate(value, now = getNowDate()) {
+function normalizeDate(value, anchorDate = null) {
   if (!value) return null;
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : new Date(value);
-  if (typeof value === 'number') {
-    const fromNumber = new Date(value);
-    return Number.isNaN(fromNumber.getTime()) ? null : fromNumber;
-  }
-
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   const raw = String(value).trim();
   if (!raw) return null;
 
   const direct = new Date(raw);
   if (!Number.isNaN(direct.getTime())) return direct;
 
-  return parseFlexibleDueText(raw, now);
-}
+  const base = anchorDate ? new Date(anchorDate) : getNowDate();
+  if (Number.isNaN(base.getTime())) return null;
+  const lower = raw.toLowerCase();
+  const baseDay = startOfDay(base);
 
-function parseFlexibleDueText(value, now = getNowDate()) {
-  const source = String(value || '').trim();
-  if (!source) return null;
-
-  const text = source.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
-  const base = startOfDay(now);
-  const result = new Date(base);
-
-  const weekdays = { sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2, wednesday: 3, wed: 3, thursday: 4, thu: 4, thurs: 4, friday: 5, fri: 5, saturday: 6, sat: 6 };
-
-  if (/^(today|this morning|this afternoon|this evening|tonight)$/.test(text)) return result;
-  if (/^(tomorrow|tomorrow morning|tomorrow afternoon|tomorrow evening|tomorrow night)$/.test(text)) {
-    result.setDate(result.getDate() + 1);
-    return result;
+  if (lower === 'today') return baseDay;
+  if (lower === 'tomorrow') {
+    const d = new Date(baseDay);
+    d.setDate(d.getDate() + 1);
+    return d;
   }
-  if (text === 'day after tomorrow') {
-    result.setDate(result.getDate() + 2);
-    return result;
-  }
-  if (text === 'yesterday') {
-    result.setDate(result.getDate() - 1);
-    return result;
+  if (lower === 'next week') {
+    const d = new Date(baseDay);
+    d.setDate(d.getDate() + 7);
+    return d;
   }
 
-  let match = text.match(/^in (\d+) days?$/);
-  if (match) {
-    result.setDate(result.getDate() + Number(match[1]));
-    return result;
-  }
-  match = text.match(/^in (\d+) weeks?$/);
-  if (match) {
-    result.setDate(result.getDate() + (Number(match[1]) * 7));
-    return result;
-  }
-  if (text === 'next week') {
-    result.setDate(result.getDate() + 7);
-    return result;
-  }
-  if (text === 'this week') return result;
-  if (text === 'week after next') {
-    result.setDate(result.getDate() + 14);
-    return result;
-  }
-  if (text === 'next month') {
-    result.setMonth(result.getMonth() + 1);
-    return result;
+  const weekdayMap = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+  if (weekdayMap[lower] !== undefined) {
+    const d = new Date(baseDay);
+    const current = d.getDay();
+    let delta = (weekdayMap[lower] - current + 7) % 7;
+    if (delta == 0) delta = 7;
+    d.setDate(d.getDate() + delta);
+    return d;
   }
 
-  match = text.match(/^(next )?(sun|sunday|mon|monday|tue|tues|tuesday|wed|wednesday|thu|thurs|thursday|fri|friday|sat|saturday)(?: (morning|afternoon|evening|night))?$/);
-  if (match) {
-    const isNext = !!match[1];
-    const target = weekdays[match[2]];
-    if (typeof target === 'number') {
-      let delta = (target - result.getDay() + 7) % 7;
-      if (delta === 0 || isNext) delta += 7;
-      result.setDate(result.getDate() + delta);
-      return result;
-    }
+  const inDaysMatch = lower.match(/^in\s+(\d+)\s+days?$/);
+  if (inDaysMatch) {
+    const d = new Date(baseDay);
+    d.setDate(d.getDate() + Number(inDaysMatch[1]));
+    return d;
   }
 
-  match = text.match(/^(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december) (\d{1,2})(?:st|nd|rd|th)?(?: (\d{4}))?$/);
-  if (match) {
-    const parsed = new Date(`${match[1]} ${match[2]} ${match[3] || now.getFullYear()}`);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
-  }
-
-  match = text.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
-  if (match) {
-    const month = Number(match[1]) - 1;
-    const day = Number(match[2]);
-    let year = match[3] ? Number(match[3]) : now.getFullYear();
-    if (year < 100) year += 2000;
-    const parsed = new Date(year, month, day);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
+  const nextWeekdayMatch = lower.match(/^next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/);
+  if (nextWeekdayMatch) {
+    const d = new Date(baseDay);
+    const target = weekdayMap[nextWeekdayMatch[1]];
+    let delta = (target - d.getDay() + 7) % 7;
+    delta += delta === 0 ? 7 : 7;
+    d.setDate(d.getDate() + delta);
+    return d;
   }
 
   return null;
