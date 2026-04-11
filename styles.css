@@ -330,10 +330,6 @@ body, button, .version-tag, .version-tag * {
   color: var(--warning);
 }
 
-.notice {
-  color: #cde7ff;
-}
-
 .danger {
   color: var(--danger);
 }
@@ -469,8 +465,6 @@ body, button, .version-tag, .version-tag * {
 
 .tv-freshness {
   font-size: 0.82rem;
-  line-height: 1.35;
-  white-space: normal;
 }
 
 
@@ -765,30 +759,20 @@ body.version-pressing, body.version-pressing * {
 }
 
 .widget-layout-kitchen .quick-grid {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 0.45rem;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 0.15rem;
-  scroll-snap-type: x proximity;
-  -webkit-overflow-scrolling: touch;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
 }
 
 .widget-layout-kitchen .quick-button {
-  flex: 0 0 auto;
-  min-height: 42px;
-  border-radius: 999px;
+  min-height: 58px;
+  border-radius: 16px;
   text-align: center;
-  font-size: 0.84rem;
-  line-height: 1.1;
-  padding: 0.52rem 0.78rem;
-  white-space: nowrap;
-  scroll-snap-align: start;
+  font-size: 0.94rem;
+  padding: 0.72rem 0.7rem;
 }
 
 .kitchen-quick-actions-card .card-body {
-  overflow: hidden;
+  overflow: visible;
 }
 
 @media (max-width: 900px) {
@@ -1381,319 +1365,218 @@ body.mobile-mode .topbar {
 }
 
 
-/* v2.0.1 signal config controls */
-.mobile-field-stack {
-  display: grid;
-  gap: 0.35rem;
+/* v2.7.0 readability + hierarchy */
+:root {
+  --owner-wes: rgba(125, 215, 154, 0.44);
+  --owner-skye: rgba(125, 174, 255, 0.42);
+  --owner-shared: rgba(255, 213, 124, 0.34);
+  --panel-signals-accent: rgba(255, 213, 124, 0.16);
+  --panel-today-accent: rgba(125, 215, 154, 0.12);
+  --panel-reminders-accent: rgba(125, 174, 255, 0.11);
 }
 
-.mobile-field-stack select,
-.mobile-field-stack input {
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: #0d1b13;
-  color: var(--text);
-  padding: 0.8rem 0.9rem;
-}
-
-.mobile-checkbox-row {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.signal-config-card-body {
-  gap: 0.7rem;
-}
-
-
-/* v2.0.2 custom signal rules */
-.custom-signal-rule {
-  display: grid;
-  gap: 0.7rem;
-  padding: 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: rgba(255,255,255,0.02);
-}
-
-.custom-signal-rule-header {
-  display: grid;
-  gap: 0.2rem;
-}
-
-
-/* v2.0.3 stabilization */
-.inline-error-card {
-  display: grid;
-  gap: 0.5rem;
-  padding: 0.9rem 1rem;
-  border: 1px solid rgba(255, 164, 164, 0.35);
-  border-radius: 14px;
-  background: rgba(120, 24, 24, 0.18);
-}
-
-.inline-error-title {
-  font-weight: 700;
-}
-
-.inline-error-detail {
+.status-line {
   font-size: 0.95rem;
-  color: rgba(255, 231, 231, 0.92);
-  word-break: break-word;
+  letter-spacing: 0.01em;
 }
 
-
-/* v2.1.1 signal summary cards + modal */
-.signal-rule-summary-list {
-  display: grid;
-  gap: 0.75rem;
+.panel-card {
+  position: relative;
 }
 
-.signal-summary-card {
-  display: grid;
-  gap: 0.55rem;
-  width: 100%;
-  text-align: left;
-  padding: 0.9rem;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
-  color: var(--text);
+.panel-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 24px 0 0 24px;
+  background: rgba(181, 220, 189, 0.12);
 }
 
-.signal-summary-card.is-disabled {
-  opacity: 0.72;
+.panel-signals-card::before { background: rgba(255, 213, 124, 0.34); }
+.panel-today-card::before { background: rgba(125, 215, 154, 0.34); }
+.panel-reminders-card::before,
+.panel-upcoming-card::before { background: rgba(125, 174, 255, 0.28); }
+
+.card-header h2 {
+  letter-spacing: 0.01em;
+  font-weight: 800;
 }
 
-.signal-summary-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
+.card-subtitle {
+  font-size: 0.88rem;
 }
 
-.signal-summary-copy {
-  display: grid;
-  gap: 0.18rem;
-}
-
-.signal-summary-title {
-  font-weight: 700;
-}
-
-.signal-summary-meta,
-.signal-summary-detail,
-.signal-modal-subtitle {
-  color: var(--muted);
-  font-size: 0.92rem;
-  line-height: 1.35;
-}
-
-.signal-summary-actions,
-.signal-modal-footer {
-  display: flex;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-
-.small-button {
-  padding: 0.55rem 0.8rem;
-  font-size: 0.9rem;
-}
-
-.muted-pill {
-  opacity: 0.78;
-}
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: rgba(2, 8, 5, 0.72);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-}
-
-.signal-modal-panel {
-  width: min(680px, 100%);
-  max-height: min(88vh, 920px);
-  overflow: auto;
-  border-radius: 22px;
-  border: 1px solid var(--border);
-  background: #0c1510;
-  padding: 1rem;
-  display: grid;
-  gap: 1rem;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.35);
-}
-
-.signal-modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.75rem;
-}
-
-.signal-modal-title {
-  font-size: 1.15rem;
-  font-weight: 700;
-}
-
-.signal-detail-list {
-  display: grid;
-  gap: 0.55rem;
-}
-
-.signal-detail-value {
-  text-align: right;
-  max-width: 60%;
-}
-
-.danger-button {
-  border-color: rgba(255, 135, 135, 0.35);
-  color: #ffd0d0;
-}
-
-
-.widget-layout-kitchen .quick-grid::-webkit-scrollbar {
-  height: 6px;
-}
-
-.widget-layout-kitchen .quick-grid::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.16);
-  border-radius: 999px;
-}
-
-
-.signal-action-list {
-  gap: 0.5rem;
-}
-
-.signal-action-item {
-  align-items: stretch;
-}
-
-.signal-action-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.38rem;
-  align-items: stretch;
-  flex: 0 0 auto;
-}
-
-.signal-action-button {
-  min-height: 2rem;
-  padding: 0.48rem 0.72rem;
-  border-radius: 999px;
-  box-shadow: none;
-  white-space: nowrap;
-  font-size: 0.82rem;
-}
-
-.signal-dismiss-button {
-  border-color: rgba(255, 213, 124, 0.18);
-}
-
-.ambient-health-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  border-radius: 18px;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,0.04);
-}
-
-.ambient-health-banner.degraded {
-  border-color: rgba(255, 213, 124, 0.28);
-  background: rgba(255, 213, 124, 0.08);
-}
-
-.ambient-health-banner.aging {
-  border-color: rgba(125, 215, 154, 0.2);
-  background: rgba(125, 215, 154, 0.07);
-}
-
-.ambient-health-copy {
-  min-width: 0;
-  display: grid;
-  gap: 0.2rem;
-  flex: 1 1 auto;
-}
-
-.ambient-health-title {
-  font-weight: 700;
-}
-
-.ambient-health-detail {
-  color: var(--muted);
-}
-
-.ambient-health-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.35rem;
-  flex: 0 0 auto;
-}
-
-.widget-layout-kitchen .ambient-health-banner {
-  padding: 0.48rem 0.72rem;
-  gap: 0.55rem;
+.list-item,
+.load-row,
+.meta-row {
+  padding: 0.72rem 0.82rem;
   border-radius: 14px;
+  border: 1px solid rgba(181, 220, 189, 0.08);
+  background: rgba(255,255,255,0.025);
 }
 
-.widget-layout-kitchen .ambient-health-copy {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
+.list-item-left {
+  display: grid;
+  gap: 0.14rem;
 }
 
-.widget-layout-kitchen .ambient-health-title,
-.widget-layout-kitchen .ambient-health-detail {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.list-item-title {
+  font-weight: 750;
+  font-size: 1rem;
+  line-height: 1.2;
+  letter-spacing: 0.005em;
 }
 
-.widget-layout-kitchen .ambient-health-title {
-  font-size: 0.9rem;
-  flex: 0 1 auto;
+.list-item-meta {
+  font-size: 0.83rem;
+  line-height: 1.2;
+  color: rgba(233, 244, 235, 0.66);
 }
 
-.widget-layout-kitchen .ambient-health-detail {
+.task-list-item[data-emphasis='high'] .list-item-title,
+.signal-severity-warning .list-item-title {
+  color: #fff3f3;
+}
+
+.task-bucket-overdue .list-item-title {
+  color: #ffe6e6;
+}
+
+.task-bucket-overdue {
+  background: rgba(255, 139, 139, 0.06);
+  border-color: rgba(255, 139, 139, 0.14);
+}
+
+.task-bucket-today {
+  background: rgba(125, 215, 154, 0.045);
+}
+
+.task-armed {
+  box-shadow: inset 0 0 0 1px rgba(255, 213, 124, 0.24);
+}
+
+.owner-wes {
+  box-shadow: inset 3px 0 0 var(--owner-wes);
+}
+
+.owner-skye {
+  box-shadow: inset 3px 0 0 var(--owner-skye);
+}
+
+.owner-shared {
+  box-shadow: inset 3px 0 0 var(--owner-shared);
+}
+
+.pill {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0.24rem 0.62rem;
+}
+
+.pill.notice {
+  background: rgba(125, 174, 255, 0.14);
+  color: #cfe0ff;
+}
+
+.signal-severity-warning {
+  background: rgba(255, 213, 124, 0.07);
+}
+
+.signal-severity-notice {
+  background: rgba(125, 174, 255, 0.04);
+}
+
+.signal-severity-info .pill {
+  opacity: 0.8;
+}
+
+.tv-card {
+  padding: 0.84rem 0.88rem 0.8rem;
+}
+
+.tv-card .card-header {
+  margin-bottom: 0.34rem;
+}
+
+.tv-card .card-header h2 {
+  font-size: clamp(1.18rem, 1.7vw, 1.55rem);
+}
+
+.tv-card .card-subtitle {
   font-size: 0.82rem;
-  flex: 1 1 auto;
 }
 
-.widget-layout-kitchen .ambient-health-pills {
-  flex-wrap: nowrap;
-  gap: 0.28rem;
+.tv-card .list {
+  gap: 0.34rem;
 }
 
-.widget-layout-kitchen .ambient-health-banner .pill {
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
+.tv-card .list-item {
+  padding: 0.48rem 0.64rem;
+  border-radius: 13px;
 }
 
-.widget-layout-kitchen .signal-action-item {
-  gap: 0.6rem;
+.tv-card .list-item-title {
+  font-size: clamp(0.98rem, 1.12vw, 1.08rem);
+  font-weight: 800;
+}
+
+.tv-card .list-item-meta {
+  font-size: clamp(0.78rem, 0.9vw, 0.88rem);
+}
+
+.widget-layout-kitchen .card,
+.widget-layout-bedroom .card {
+  border-color: rgba(181, 220, 189, 0.12);
+}
+
+.widget-layout-kitchen .card-header h2,
+.widget-layout-bedroom .card-header h2 {
+  font-size: 1.16rem;
+}
+
+.widget-layout-kitchen .card-subtitle,
+.widget-layout-bedroom .card-subtitle {
+  font-size: 0.84rem;
+}
+
+.widget-layout-kitchen .list {
+  gap: 0.42rem;
+}
+
+.widget-layout-kitchen .list-item,
+.widget-layout-bedroom .list-item {
   padding: 0.68rem 0.78rem;
 }
 
-.widget-layout-kitchen .signal-action-row {
-  flex-direction: row;
-  gap: 0.32rem;
+.widget-layout-kitchen .list-item-title,
+.widget-layout-bedroom .list-item-title {
+  font-size: 0.98rem;
 }
 
-.widget-layout-kitchen .signal-action-button {
-  min-height: 1.8rem;
-  padding: 0.42rem 0.6rem;
-  font-size: 0.76rem;
+.widget-layout-kitchen .list-item-meta,
+.widget-layout-bedroom .list-item-meta {
+  font-size: 0.81rem;
+}
+
+.widget-layout-kitchen .quick-button {
+  min-height: 54px;
+  font-size: 0.9rem;
+}
+
+.screen.two-columns {
+  gap: 0.82rem;
+}
+
+.tv-layout {
+  gap: 0.78rem;
+}
+
+@media (min-width: 1200px) {
+  .tv-layout.tv-layout-wide .tv-card .list-item,
+  .tv-layout.tv-layout-wide .list-item {
+    padding-top: 0.44rem;
+    padding-bottom: 0.44rem;
+  }
 }

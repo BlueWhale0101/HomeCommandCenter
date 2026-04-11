@@ -1,4 +1,4 @@
-const APP_VERSION = '2.6.3';
+const APP_VERSION = '2.7.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -1722,24 +1722,24 @@ function renderWidget(widgetId, context) {
 
 const WIDGETS = {
   kitchenHeader: (context) => buildKitchenTodayCard(context),
-  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true })),
+  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true }), 'panel-card panel-today-card'),
   spotlight: (context) => buildCard('Best Next Move', 'Most useful thing to do next', renderSpotlightCard(context.digest.spotlightTask)),
-  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.')),
-  upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true })),
+  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.'), 'panel-card panel-signals-card'),
+  upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true }), 'panel-card panel-upcoming-card'),
   quickActions: () => buildQuickActionsCard(),
-  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true })),
+  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true }), 'panel-card panel-reminders-card'),
   context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
   taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
   tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card'),
-  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card'),
+  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-today-card'),
+  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card panel-card panel-signals-card'),
   tvFocus: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Focus', '', context.isEvening ? renderTaskList(context.tomorrowItems.slice(0, 3), 'Tomorrow is still open.', { compact: true, showPills: true }) : renderFocusBlock(context.focusItem), 'tv-card tv-bottom-card'),
   laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
   laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
   laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
-  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true })),
+  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true }), 'panel-card panel-today-card'),
   bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
-  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true })),
+  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true }), 'panel-card panel-reminders-card'),
   recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
 };
 
@@ -1785,6 +1785,12 @@ function buildListItem(item, options = {}) {
   const rowTag = options.tagName || 'div';
   const row = document.createElement(rowTag);
   row.className = options.rowClassName || 'list-item';
+  if (item?.rowClass) row.classList.add(...String(item.rowClass).split(/\s+/).filter(Boolean));
+  if (item?.ownerKey) {
+    row.dataset.owner = item.ownerKey;
+    row.classList.add(`owner-${item.ownerKey}`);
+  }
+  if (item?.emphasis) row.dataset.emphasis = item.emphasis;
 
   const left = document.createElement('div');
   left.className = options.leftClassName || 'list-item-left';
@@ -4280,6 +4286,23 @@ function normalizeTaskRows() {
     });
 }
 
+
+function normalizeOwnerKey(owner) {
+  const value = String(owner || '').trim().toLowerCase();
+  if (!value) return '';
+  if (value === 'wes') return 'wes';
+  if (value === 'skye') return 'skye';
+  return 'shared';
+}
+
+function taskRowClass(task, armed = false) {
+  const classes = ['task-list-item'];
+  const bucket = getTaskDueBucket(task, getNowDate());
+  classes.push(`task-bucket-${bucket}`);
+  if (armed) classes.push('task-armed');
+  return classes.join(' ');
+}
+
 function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
   return tasks.map((task) => {
     if (task.signal_type || task.severity) return signalToItem(task);
@@ -4294,6 +4317,9 @@ function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
       meta: [owner, armed ? 'Ready to complete' : dueMeta].filter(Boolean).join(' · '),
       pill: armed ? 'Ready' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill),
       pillClass: armed ? 'warning' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : ''),
+      ownerKey: normalizeOwnerKey(owner),
+      emphasis: armed ? 'armed' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'high' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'medium' : 'normal'),
+      rowClass: taskRowClass(task, armed),
       actionHint: canComplete ? (armed ? 'Tap again to complete' : 'Tap once to arm completion') : '',
       onActivate: canComplete ? () => completeTask(task.raw || task) : null,
     };
@@ -4742,11 +4768,14 @@ function buildTomorrowItemsFromDigest(digest) {
 }
 
 function signalToItem(signal) {
+  const severity = signal.severity || 'info';
   return {
     title: signal.title,
     meta: signal.description || signal.location || '',
-    pill: capitalize(signal.severity),
-    pillClass: signal.severity === 'warning' ? 'warning' : '',
+    pill: capitalize(severity),
+    pillClass: severity === 'warning' ? 'warning' : severity === 'notice' ? 'notice' : '',
+    rowClass: `signal-list-item signal-severity-${severity}`,
+    emphasis: severity === 'warning' ? 'high' : severity === 'notice' ? 'medium' : 'normal',
     raw: signal,
   };
 }

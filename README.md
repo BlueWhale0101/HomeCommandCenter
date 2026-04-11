@@ -1,78 +1,72 @@
-
-# Home Command Center v2.6.3
+# Home Command Center v2.7.0
 
 ## Overview
 
-v2.6.3 is the third Phase D build for the Command Center. It keeps the priority engine and cooldown layer from 2.6.0–2.6.1, then adds a small contextual-intelligence pass so the top derived signal is not just important, but more informative.
+v2.7.0 starts **Phase E — Visual Polish**. This build does not add new logic, signals, or backend behavior. It tightens the visual hierarchy so the screen reads faster from a distance and fits a little more useful content into the same space.
 
-This build was patched from the provided v2.6.0/2.6.1 full file set baseline.
+This build was patched from the stable v2.6.3 startup-hotfix line.
 
 ## What changed
 
-### 1. Combined backlog-pressure signal
-A new derived signal can now surface when overdue work and in-motion work are both elevated at the same time:
+### 1. Stronger reading hierarchy
+- task titles are heavier and slightly clearer
+- metadata is smaller and dimmer
+- card subtitles are quieter
+- warning rows and overdue rows stand out more clearly
 
-- title: `Work is starting to back up`
-- trigger: at least 2 overdue tasks and 4 in-motion tasks
-- purpose: detect spreading work, not just isolated overdue load
+### 2. Denser task rows for ambient displays
+- reduced list item padding slightly across TV, kitchen, and bedroom layouts
+- tightened card header spacing and list gaps
+- reduced quick-action button height slightly in kitchen mode
 
-This gives the system a better way to describe real pressure states than showing a generic overdue or in-motion message alone.
+The goal is to show a bit more real content without redesigning the layout.
 
-### 2. Owner-aware pressure descriptions
-Existing task-pressure signals are now more contextual in their descriptions. When one owner clearly dominates a pressure state, the signal will say so in a restrained way, for example:
+### 3. Cleaner panel separation
+Cards now have subtle left-edge accents so major regions are easier to distinguish at a glance:
+- **Needs Attention / Attention** → warm accent
+- **Today** → green accent
+- **Don’t Forget / Coming Up** → cooler reminder accent
 
-- `Mostly Wes's items.`
-- `Mostly Skye's items.`
+### 4. Subtle owner recognition
+Task rows now add a light owner tint using the row edge:
+- **Wes** → green tint
+- **Skye** → blue tint
+- **shared/other** → neutral warm tint
 
-This does **not** add new owner-ranking UI or change task ownership logic. It only improves the wording of the existing derived signals.
+This is intentionally light so it helps scanning without turning the screen into a dashboard of badges.
 
-### 3. Cooldown winner selection is now shared
-The derived-signal chooser is now explicit instead of being embedded inline in the task-signal builder. This keeps the 2.6.1 calmness behavior while making it easier to add smarter derived signals without reintroducing flicker.
-
-## What did not change
-
-- no new queries
-- no polling changes
-- no schema changes
-- no backend writes for intelligence logic
-- only one derived signal is still shown at a time
-- Garden Board remains untouched
+### 5. Softer signal emphasis
+Signals still stand out, but info/notice rows are calmer than before. Warning rows remain the strongest signal treatment.
 
 ## Files updated
-
 - `app.js`
 - `index.html`
 - `sw.js`
+- `styles.css`
 - `README.md`
 
 ## Version updates
-
-- `APP_VERSION = '2.6.2'`
-- `<meta name="app-version" content="2.6.2">`
-- `CACHE_VERSION = '2.6.2'`
+- `APP_VERSION = '2.7.0'`
+- `<meta name="app-version" content="2.7.0">`
+- `CACHE_VERSION = '2.7.0'`
 
 ## Suggested test pass
 
-### Combined pressure
-- create at least 2 overdue tasks and 4 in-motion tasks
-- confirm `Work is starting to back up` can win over milder derived signals
+### Distance readability
+- stand a few metres away from the kitchen or bedroom display
+- confirm the main task titles read faster than before
+- confirm metadata feels less visually dominant
 
-### Owner-aware descriptions
-- create a pressure state where one owner clearly dominates the overdue or in-motion tasks
-- confirm the description includes `Mostly <owner>'s items.`
-- confirm mixed-owner pressure states stay neutral
+### Panel separation
+- confirm **Needs Attention**, **Today**, and **Don’t Forget** are easier to distinguish at a glance
 
-### Calmness regression
-- while a derived signal is held, introduce a slightly stronger one and confirm the cooldown still prevents jitter
-- introduce a clearly stronger signal and confirm it can still take over
+### Density
+- compare how many rows are visible in kitchen and bedroom views
+- confirm nothing feels cramped or harder to tap
 
-## Phase D status
+### Owner recognition
+- confirm Wes and Skye tasks are easier to tell apart without reading the owner text first
 
-This build adds the first restrained contextual layer to the priority engine. The next likely step is either a very small suggestion-style signal pass or a stop point, depending on whether this added context feels useful in real household use.
+## Phase E status
 
-
-## v2.6.3 startup hotfix
-
-- Fixed a startup error where `chooseVisibleDerivedSignals()` called missing helper functions (`getDerivedSignalMemory` / `updateDerivedSignalMemory`).
-- Routed derived-signal selection back through the existing cooldown/suppression memory path so 2.6.2 contextual-pressure behavior still works without introducing a second memory system.
-- No schema changes, no extra queries, no polling changes.
+This is the first Phase E build and is intentionally conservative. It improves readability and density without redesigning the layout or adding new interaction complexity.
