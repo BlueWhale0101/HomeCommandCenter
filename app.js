@@ -1,7 +1,8 @@
-const APP_VERSION = 'v2.4.4';
+const APP_VERSION = 'v2.4.5';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
+const RECENT_DONE_WINDOW_DAYS = 7;
 
 const DEFAULT_CONFIG = {
   supabaseUrl: '',
