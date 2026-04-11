@@ -1,40 +1,41 @@
 
-# Home Command Center v2.6.1
+# Home Command Center v2.6.2
 
 ## Overview
 
-v2.6.1 is the second Phase D build for the Command Center. It keeps the v2.6.0 priority engine, then adds a lightweight cooldown and suppression layer so the top derived signal stays useful without bouncing around too quickly.
+v2.6.2 is the third Phase D build for the Command Center. It keeps the priority engine and cooldown layer from 2.6.0–2.6.1, then adds a small contextual-intelligence pass so the top derived signal is not just important, but more informative.
 
-This build was patched from the provided v2.6.0 full file set baseline.
+This build was patched from the provided v2.6.0/2.6.1 full file set baseline.
 
 ## What changed
 
-### 1. Derived-signal cooldown
-The highest-priority derived signal now gets a short hold window after it becomes visible:
+### 1. Combined backlog-pressure signal
+A new derived signal can now surface when overdue work and in-motion work are both elevated at the same time:
 
-- warning-level derived signals hold for about 10 minutes
-- notice/info derived signals hold for about 15 minutes
+- title: `Work is starting to back up`
+- trigger: at least 2 overdue tasks and 4 in-motion tasks
+- purpose: detect spreading work, not just isolated overdue load
 
-If another derived signal appears during that hold window but is only slightly stronger, the current visible derived signal stays in place. This makes the system feel calmer and less twitchy.
+This gives the system a better way to describe real pressure states than showing a generic overdue or in-motion message alone.
 
-### 2. `All clear` suppression
-`All clear` is now deliberately quieter. After a meaningful derived signal has surfaced, `All clear` is suppressed for a while instead of immediately replacing it the moment conditions dip below a threshold.
+### 2. Owner-aware pressure descriptions
+Existing task-pressure signals are now more contextual in their descriptions. When one owner clearly dominates a pressure state, the signal will say so in a restrained way, for example:
 
-This avoids the awkward pattern where the system flips from a warning/notice to `All clear` too fast.
+- `Mostly Wes's items.`
+- `Mostly Skye's items.`
 
-### 3. No change to DB or IO behavior
-The cooldown memory is stored locally in browser storage only. There are:
+This does **not** add new owner-ranking UI or change task ownership logic. It only improves the wording of the existing derived signals.
+
+### 3. Cooldown winner selection is now shared
+The derived-signal chooser is now explicit instead of being embedded inline in the task-signal builder. This keeps the 2.6.1 calmness behavior while making it easier to add smarter derived signals without reintroducing flicker.
+
+## What did not change
 
 - no new queries
 - no polling changes
 - no schema changes
-- no backend writes for the memory layer
-
-## What did not change
-
-- signal scoring still uses the v2.6.0 priority model
+- no backend writes for intelligence logic
 - only one derived signal is still shown at a time
-- DB-backed and existing synthetic signals still render normally
 - Garden Board remains untouched
 
 ## Files updated
@@ -46,29 +47,25 @@ The cooldown memory is stored locally in browser storage only. There are:
 
 ## Version updates
 
-- `APP_VERSION = '2.6.1'`
-- `<meta name="app-version" content="2.6.1">`
-- `CACHE_VERSION = '2.6.1'`
+- `APP_VERSION = '2.6.2'`
+- `<meta name="app-version" content="2.6.2">`
+- `CACHE_VERSION = '2.6.2'`
 
 ## Suggested test pass
 
-### Cooldown feel
-- create two nearby derived conditions, such as a heavy day plus mild stale freshness
-- confirm the visible derived signal does not keep swapping back and forth quickly
+### Combined pressure
+- create at least 2 overdue tasks and 4 in-motion tasks
+- confirm `Work is starting to back up` can win over milder derived signals
 
-### Stronger signal takeover
-- while a milder derived signal is visible, create a clearly stronger condition such as multiple overdue tasks
-- confirm the stronger signal can still take over
+### Owner-aware descriptions
+- create a pressure state where one owner clearly dominates the overdue or in-motion tasks
+- confirm the description includes `Mostly <owner>'s items.`
+- confirm mixed-owner pressure states stay neutral
 
-### All clear calmness
-- clear a warning/notice condition
-- confirm `All clear` does not instantly replace it in a jarring way
-
-### Regression check
-- existing signal snooze/dismiss still works
-- Needs Attention ordering still feels sensible
-- Don’t Forget remains distinct from Needs Attention
+### Calmness regression
+- while a derived signal is held, introduce a slightly stronger one and confirm the cooldown still prevents jitter
+- introduce a clearly stronger signal and confirm it can still take over
 
 ## Phase D status
 
-This build makes the new intelligence layer calmer. The next likely Phase D step is restrained contextual escalation or suggestion-style summaries, but only if testing shows they add value without increasing noise.
+This build adds the first restrained contextual layer to the priority engine. The next likely step is either a very small suggestion-style signal pass or a stop point, depending on whether this added context feels useful in real household use.

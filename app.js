@@ -1,4 +1,4 @@
-const APP_VERSION = '2.6.1';
+const APP_VERSION = '2.6.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4473,15 +4473,87 @@ function scoreSignalPriority(signal, options = {}) {
   if (location === 'system') score += 4;
   if (type === 'laundry_active') score += 10;
   if (type === 'big_event_tomorrow') score += 12;
+  if (type === 'derived_backlog_pressure') score += 16;
+  if (type === 'derived_overdue_pressure') score += 8;
+  if (type === 'derived_stale_tasks' && String(signal.severity || '').toLowerCase() === 'warning') score += 10;
   if (type === 'derived_all_clear') score -= 40;
   return score;
 }
+
+
+
+function chooseVisibleDerivedSignals(items = [], options = {}) {
+  const now = options?.now || getNowDate();
+  const nowMs = now.getTime();
+  const sorted = [...items].sort((a, b) => {
+    const scoreDelta = scoreSignalPriority(b, { now }) - scoreSignalPriority(a, { now });
+    if (scoreDelta) return scoreDelta;
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+  if (!sorted.length) {
+    updateDerivedSignalMemory(null, now);
+    return [];
+  }
+
+  const memory = getDerivedSignalMemory();
+  const currentType = String(memory.currentType || '');
+  const currentUntil = Number(memory.currentUntil || 0);
+  const top = sorted[0];
+  const held = currentType && currentUntil > nowMs
+    ? sorted.find((signal) => String(signal.signal_type || '') === currentType)
+    : null;
+
+  let chosen = top;
+  if (held) {
+    const heldScore = scoreSignalPriority(held, { now });
+    const topScore = scoreSignalPriority(top, { now });
+    const takeoverMargin = held.severity === 'warning' ? 18 : 12;
+    if (topScore < heldScore + takeoverMargin) {
+      chosen = held;
+    }
+  }
+
+  updateDerivedSignalMemory(chosen, now);
+  return chosen ? [chosen] : [];
+}
+
+function summarizeOwnerPressure(tasks = []) {
+  const counts = new Map();
+  for (const task of tasks || []) {
+    const owner = String(task?.owner || '').trim();
+    if (!owner) continue;
+    counts.set(owner, (counts.get(owner) || 0) + 1);
+  }
+  let topOwner = '';
+  let topCount = 0;
+  for (const [owner, count] of counts.entries()) {
+    if (count > topCount) {
+      topOwner = owner;
+      topCount = count;
+    }
+  }
+  const totalOwned = Array.from(counts.values()).reduce((sum, value) => sum + value, 0);
+  const dominant = topOwner && topCount >= 2 && topCount >= Math.ceil((tasks || []).length / 2);
+  return {
+    topOwner,
+    topCount,
+    totalOwned,
+    dominant,
+  };
+}
+
+function formatOwnerPressureSuffix(summary) {
+  if (!summary?.dominant || !summary?.topOwner) return '';
+  return ` Mostly ${summary.topOwner}'s items.`;
+}
+
 
 function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSignalEvalContext(), baseSignals = []) {
   const items = [];
   const now = context?.now || getNowDate();
   const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
   const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
+  const tomorrowTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'tomorrow');
   const inMotionTasks = tasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion');
   const hasOtherSignals = Array.isArray(baseSignals) && baseSignals.length > 0;
   const hasDbSignals = activeDbSignals(now).length > 0;
@@ -4493,6 +4565,9 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
     const diffDays = Math.max(1, Math.floor((startOfDay(now).getTime() - startOfDay(task.dueDate).getTime()) / 86400000));
     return Math.max(maxDays, diffDays);
   }, 1);
+  const overdueOwnerSummary = summarizeOwnerPressure(overdueTasks);
+  const todayOwnerSummary = summarizeOwnerPressure(todayTasks);
+  const inMotionOwnerSummary = summarizeOwnerPressure(inMotionTasks);
 
   if (tasksAreStale) {
     const isStale = taskFreshness.pill === 'Stale';
@@ -4513,15 +4588,36 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
     });
   }
 
+  if (overdueTasks.length >= 2 && inMotionTasks.length >= 4) {
+    const combinedPriority = 118 + (overdueTasks.length * 8) + (inMotionTasks.length * 4) + (oldestOverdueDays * 3);
+    const tomorrowHint = tomorrowTasks.length >= 3 ? ` Tomorrow also has ${tomorrowTasks.length} item${tomorrowTasks.length === 1 ? '' : 's'} queued.` : '';
+    items.push({
+      id: `derived-backlog-pressure-${overdueTasks.length}-${inMotionTasks.length}-${oldestOverdueDays}`,
+      signal_type: 'derived_backlog_pressure',
+      title: 'Work is starting to back up',
+      description: `${overdueTasks.length} overdue and ${inMotionTasks.length} in motion.${formatOwnerPressureSuffix(overdueOwnerSummary)}${tomorrowHint}`.trim(),
+      severity: overdueTasks.length >= 3 || oldestOverdueDays >= 3 || inMotionTasks.length >= 6 ? 'warning' : 'notice',
+      location: 'tasks',
+      metadata: {
+        synthetic: true,
+        derived: true,
+        rule: 'derived_backlog_pressure',
+        visible_in: ['tv', 'bedroom', 'kitchen', 'mobile'],
+        priorityScore: combinedPriority,
+      },
+    });
+  }
+
   if (overdueTasks.length) {
     const overduePriority = 96 + (overdueTasks.length * 10) + (oldestOverdueDays * 5);
+    const ownerSuffix = formatOwnerPressureSuffix(overdueOwnerSummary);
     items.push({
       id: `derived-overdue-${overdueTasks.length}-${oldestOverdueDays}`,
       signal_type: 'derived_overdue_pressure',
       title: overdueTasks.length === 1 ? 'Overdue task needs attention' : `${overdueTasks.length} overdue tasks`,
       description: overdueTasks.length === 1
         ? `${overdueTasks[0]?.title || 'Task'} is overdue`
-        : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue`,
+        : `Oldest item is ${oldestOverdueDays} day${oldestOverdueDays === 1 ? '' : 's'} overdue.${ownerSuffix}`.trim(),
       severity: overdueTasks.length >= 2 || oldestOverdueDays >= 3 ? 'warning' : 'notice',
       location: 'tasks',
       metadata: {
@@ -4536,11 +4632,12 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
 
   if (todayTasks.length >= 7) {
     const isVeryFull = todayTasks.length >= 10;
+    const ownerSuffix = formatOwnerPressureSuffix(todayOwnerSummary);
     items.push({
       id: `derived-today-load-${todayTasks.length}`,
       signal_type: 'derived_today_load',
       title: isVeryFull ? 'Very full day' : 'Heavy day',
-      description: `${todayTasks.length} tasks are due today`,
+      description: `${todayTasks.length} tasks are due today.${ownerSuffix}`.trim(),
       severity: isVeryFull ? 'warning' : 'notice',
       location: 'tasks',
       metadata: {
@@ -4555,11 +4652,12 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
 
   if (inMotionTasks.length >= 5) {
     const inMotionPriority = 62 + (inMotionTasks.length * 5) + (overdueTasks.length ? 18 : 0);
+    const ownerSuffix = formatOwnerPressureSuffix(inMotionOwnerSummary);
     items.push({
       id: `derived-in-motion-${inMotionTasks.length}`,
       signal_type: 'derived_in_motion_pressure',
       title: 'A lot is already in motion',
-      description: `${inMotionTasks.length} tasks are currently in motion`,
+      description: `${inMotionTasks.length} tasks are currently in motion.${ownerSuffix}`.trim(),
       severity: inMotionTasks.length >= 7 ? 'warning' : 'notice',
       location: 'tasks',
       metadata: {
@@ -4590,7 +4688,7 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
     });
   }
 
-  return selectDerivedSignalWithMemory(items, now);
+  return chooseVisibleDerivedSignals(items, { now });
 }
 
 function buildSyntheticSignals(rules = getEffectiveSignalRules(), context = buildSignalEvalContext()) {
