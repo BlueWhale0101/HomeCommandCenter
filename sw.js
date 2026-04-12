@@ -1,4 +1,4 @@
-const CACHE_VERSION = '2.8.7';
+const CACHE_VERSION = '2.8.8';
 const CACHE_NAME = `household-command-center-${CACHE_VERSION}`;
 const ASSETS = [
   './',

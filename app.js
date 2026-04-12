@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.7';
+const APP_VERSION = '2.8.8';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3390,21 +3390,6 @@ async function exchangeGoogleCalendarAuthCode(code) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     console.error('Google auth exchange failed:', payload);
-    throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
-  }
-  return payload || {};
-});
-
-const data = await res.json();
-
-if (!res.ok) {
-  console.error("Google auth exchange failed:", data);
-  throw new Error("Google auth exchange failed");
-}
-
-console.log("Google auth exchange success:", data);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
     throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
   }
   return payload || {};
