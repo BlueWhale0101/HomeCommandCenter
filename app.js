@@ -1,4 +1,4 @@
-const APP_VERSION = '2.7.9';
+const APP_VERSION = '2.8.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -37,6 +37,33 @@ const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
 const SIGNAL_SNOOZE_STORAGE = 'household-command-center-signal-snoozes';
 const DERIVED_SIGNAL_MEMORY_STORAGE = 'household-command-center-derived-signal-memory';
 const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
+
+const GOOGLE_AUTH_REDIRECT_STATE_STORAGE = 'household-command-center-google-auth-state';
+
+function getGoogleRedirectUri() {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+function createGoogleAuthState() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function saveGoogleAuthRedirectState(state) {
+  try { localStorage.setItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE, state); } catch {}
+}
+
+function consumeGoogleAuthRedirectState() {
+  try {
+    const state = localStorage.getItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE) || '';
+    localStorage.removeItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE);
+    return state;
+  } catch {
+    return '';
+  }
+}
 const SHARED_CONFIG_TABLE = 'household_config';
 const SHARED_CONFIG_KEYS = {
   googleClientId: 'google_client_id',
@@ -669,6 +696,7 @@ async function bootstrap() {
   window.__hccBootState.phase = 'connecting-supabase';
   setStatus('Connecting to Supabase…');
   await ensureSupabase();
+  await handleGoogleCalendarAuthRedirect();
   
 window.appState = appState;
 window.updateCalendarAuthBanner = updateCalendarAuthBanner;
@@ -3297,7 +3325,7 @@ function saveCalendarAccounts(accounts, options = {}) {
 
 function isCalendarAccountExpired(account) {
   if (!account?.expiresAt) return true;
-  return Date.now() > Number(account.expiresAt) - 60 * 1000;
+  return !account?.accessToken || Date.now() > Number(account.expiresAt) - 60 * 1000;
 }
 
 function hasPublisherCalendarAccounts() {
@@ -3311,7 +3339,7 @@ function hasPublisherCalendarAccounts() {
 async function waitForGoogleIdentity(timeoutMs = 6000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (window.google?.accounts?.oauth2?.initTokenClient) return window.google.accounts.oauth2;
+    if (window.google?.accounts?.oauth2?.initTokenClient || window.google?.accounts?.oauth2?.initCodeClient) return window.google.accounts.oauth2;
     if (window.__hccGoogleLoadError) throw new Error('Google Identity Services failed to load');
     await new Promise(resolve => window.setTimeout(resolve, 100));
   }
@@ -3338,6 +3366,101 @@ async function requestGoogleAccessToken(loginHint, prompt = '') {
     });
     tokenClient.requestAccessToken();
   });
+}
+
+
+async function exchangeGoogleCalendarAuthCode(code) {
+  if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/Google-calendar-auth`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+  },
+  body: JSON.stringify({ code })
+});
+
+const data = await res.json();
+
+if (!res.ok) {
+  console.error("Google auth exchange failed:", data);
+  throw new Error("Google auth exchange failed");
+}
+
+console.log("Google auth exchange success:", data);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
+  }
+  return payload || {};
+}
+
+async function finishGoogleCalendarCodeFlow(code) {
+  const payload = await exchangeGoogleCalendarAuthCode(code);
+  const accessToken = payload.access_token;
+  const userInfo = payload.user || (accessToken ? await fetchGoogleUserInfo(accessToken) : null);
+  const rawCalendars = Array.isArray(payload.calendars) ? payload.calendars : (accessToken ? await fetchGoogleCalendarList(accessToken) : []);
+  if (!userInfo?.email) throw new Error('Google account email missing after authorization');
+  const existing = appState.calendarAccounts.find(account => account.email === userInfo.email);
+  const accountRecord = {
+    email: userInfo.email,
+    name: userInfo.name || userInfo.email,
+    accessToken: accessToken || existing?.accessToken || '',
+    expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
+    calendars: mergeCalendarSelections(existing?.calendars, rawCalendars),
+    authMode: 'code',
+    needsReconnect: false,
+  };
+  const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
+  nextAccounts.push(accountRecord);
+  saveCalendarAccounts(nextAccounts);
+  const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
+  showToast(`Connected ${connectedLabel}`, 'success');
+  pushDevLog('info', `Connected Google Calendar account ${connectedLabel} via authorization code flow.`);
+  return accountRecord;
+}
+
+async function handleGoogleCalendarAuthRedirect() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  const state = url.searchParams.get('state') || '';
+  if (!code && !error) return false;
+
+  const expectedState = consumeGoogleAuthRedirectState();
+  const cleanupUrl = new URL(window.location.href);
+  cleanupUrl.searchParams.delete('code');
+  cleanupUrl.searchParams.delete('scope');
+  cleanupUrl.searchParams.delete('authuser');
+  cleanupUrl.searchParams.delete('prompt');
+  cleanupUrl.searchParams.delete('state');
+  cleanupUrl.searchParams.delete('error');
+  cleanupUrl.searchParams.delete('error_subtype');
+  cleanupUrl.searchParams.delete('hd');
+  cleanupUrl.searchParams.delete('session_state');
+  window.history.replaceState({}, document.title, cleanupUrl.toString());
+
+  if (error) {
+    pushDevLog('warn', `Google auth redirect returned ${error}.`);
+    showToast('Google Calendar connection was cancelled', 'error');
+    return true;
+  }
+  if (expectedState && state && expectedState !== state) {
+    pushDevLog('warn', 'Google auth redirect state mismatch.');
+    showToast('Google Calendar sign-in could not be verified', 'error');
+    return true;
+  }
+  try {
+    setStatus('Finishing Google Calendar sign-in…');
+    await finishGoogleCalendarCodeFlow(code);
+    if (appState.supabase) await refreshAll('google calendar auth redirect', { includeSlowState: true });
+  } catch (error) {
+    console.error('Google auth redirect handling failed', error);
+    pushDevLog('warn', `Google auth redirect failed: ${error?.message || error}`);
+    showToast('Could not finish Google Calendar connection', 'error');
+  }
+  return true;
 }
 
 async function refreshExpiredCalendarTokens() {
@@ -3399,45 +3522,20 @@ async function connectGoogleCalendarAccount() {
   }
   try {
     const oauth2 = await waitForGoogleIdentity();
-    await new Promise((resolve, reject) => {
-      const tokenClient = oauth2.initTokenClient({
-        client_id: appState.config.googleClientId,
-        scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
-        prompt: 'consent select_account',
-        callback: async (response) => {
-          if (!response || response.error) {
-            reject(new Error(response?.error || 'Google authorization failed'));
-            return;
-          }
-          try {
-            const accessToken = response.access_token;
-            const [userInfo, calendarList] = await Promise.all([
-              fetchGoogleUserInfo(accessToken),
-              fetchGoogleCalendarList(accessToken),
-            ]);
-            const existing = appState.calendarAccounts.find(account => account.email === userInfo.email);
-            const accountRecord = {
-              email: userInfo.email,
-              name: userInfo.name || userInfo.email,
-              accessToken,
-              expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
-              calendars: mergeCalendarSelections(existing?.calendars, calendarList),
-            };
-            const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
-            nextAccounts.push(accountRecord);
-            saveCalendarAccounts(nextAccounts);
-            const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
-            showToast(`Connected ${connectedLabel}`, 'success');
-            pushDevLog('info', `Connected Google Calendar account ${connectedLabel}`);
-            await refreshAll('calendar account connected', { includeSlowState: true });
-            resolve();
-          } catch (error) {
-            reject(error);
-          }
-        },
-      });
-      tokenClient.requestAccessToken();
+    const state = createGoogleAuthState();
+    saveGoogleAuthRedirectState(state);
+    const codeClient = oauth2.initCodeClient({
+      client_id: appState.config.googleClientId,
+      scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+      ux_mode: 'redirect',
+      redirect_uri: getGoogleRedirectUri(),
+      state,
+      include_granted_scopes: true,
+      select_account: true,
+      prompt: 'consent',
     });
+    pushDevLog('info', 'Starting Google Calendar authorization code flow.');
+    codeClient.requestCode();
   } catch (error) {
     console.error('Google account connect failed', error);
     showToast('Could not connect Google Calendar', 'error');
