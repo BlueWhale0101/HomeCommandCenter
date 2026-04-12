@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.8';
+const APP_VERSION = '2.8.9';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3421,45 +3421,7 @@ async function finishGoogleCalendarCodeFlow(code) {
 }
 
 async function handleGoogleCalendarAuthRedirect() {
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get('code');
-  const error = url.searchParams.get('error');
-  const state = url.searchParams.get('state') || '';
-  if (!code && !error) return false;
-
-  const expectedState = consumeGoogleAuthRedirectState();
-  const cleanupUrl = new URL(window.location.href);
-  cleanupUrl.searchParams.delete('code');
-  cleanupUrl.searchParams.delete('scope');
-  cleanupUrl.searchParams.delete('authuser');
-  cleanupUrl.searchParams.delete('prompt');
-  cleanupUrl.searchParams.delete('state');
-  cleanupUrl.searchParams.delete('error');
-  cleanupUrl.searchParams.delete('error_subtype');
-  cleanupUrl.searchParams.delete('hd');
-  cleanupUrl.searchParams.delete('session_state');
-  window.history.replaceState({}, document.title, cleanupUrl.toString());
-
-  if (error) {
-    pushDevLog('warn', `Google auth redirect returned ${error}.`);
-    showToast('Google Calendar connection was cancelled', 'error');
-    return true;
-  }
-  if (expectedState && state && expectedState !== state) {
-    pushDevLog('warn', 'Google auth redirect state mismatch.');
-    showToast('Google Calendar sign-in could not be verified', 'error');
-    return true;
-  }
-  try {
-    setStatus('Finishing Google Calendar sign-in…');
-    await finishGoogleCalendarCodeFlow(code);
-    if (appState.supabase) await refreshAll('google calendar auth redirect', { includeSlowState: true });
-  } catch (error) {
-    console.error('Google auth redirect handling failed', error);
-    pushDevLog('warn', `Google auth redirect failed: ${error?.message || error}`);
-    showToast('Could not finish Google Calendar connection', 'error');
-  }
-  return true;
+  return false;
 }
 
 async function refreshExpiredCalendarTokens() {
