@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.6';
+const APP_VERSION = '2.8.7';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3371,14 +3371,28 @@ async function requestGoogleAccessToken(loginHint, prompt = '') {
 
 async function exchangeGoogleCalendarAuthCode(code) {
   if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/Google-calendar-auth`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "apikey": SUPABASE_ANON_KEY,
-    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-  },
-  body: JSON.stringify({ code })
+  if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
+
+  const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/google-calendar-auth`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': appState.config.supabaseKey,
+    },
+    body: JSON.stringify({
+      code,
+      redirectUri: window.location.origin,
+      deviceKey: appState.deviceKey,
+      deviceName: appState.config.deviceName || '',
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error('Google auth exchange failed:', payload);
+    throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
+  }
+  return payload || {};
 });
 
 const data = await res.json();
@@ -3522,19 +3536,30 @@ async function connectGoogleCalendarAccount() {
   }
   try {
     const oauth2 = await waitForGoogleIdentity();
-    const state = createGoogleAuthState();
-    saveGoogleAuthRedirectState(state);
     const codeClient = oauth2.initCodeClient({
       client_id: appState.config.googleClientId,
       scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
-      ux_mode: 'redirect',
-      redirect_uri: getGoogleRedirectUri(),
-      state,
+      ux_mode: 'popup',
+      redirect_uri: window.location.origin,
       include_granted_scopes: true,
       select_account: true,
       prompt: 'consent',
+      callback: async (response) => {
+        try {
+          if (!response || response.error || !response.code) {
+            throw new Error(response?.error || 'Google authorization failed');
+          }
+          setStatus('Finishing Google Calendar sign-in…');
+          await finishGoogleCalendarCodeFlow(response.code);
+          if (appState.supabase) await refreshAll('google calendar popup auth', { includeSlowState: true });
+        } catch (error) {
+          console.error('Google popup auth failed', error);
+          pushDevLog('warn', `Google popup auth failed: ${error?.message || error}`);
+          showToast('Could not finish Google Calendar connection', 'error');
+        }
+      },
     });
-    pushDevLog('info', 'Starting Google Calendar authorization code flow.');
+    pushDevLog('info', 'Starting Google Calendar authorization code popup flow.');
     codeClient.requestCode();
   } catch (error) {
     console.error('Google account connect failed', error);
