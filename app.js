@@ -3347,7 +3347,7 @@ async function exchangeGoogleCalendarAuthCode(code) {
   if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
   if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
 
-  const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/Google-calendar-auth`, {
+  const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/google-calendar-auth`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
