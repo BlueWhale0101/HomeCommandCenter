@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.8.2';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3325,7 +3325,7 @@ function saveCalendarAccounts(accounts, options = {}) {
 
 function isCalendarAccountExpired(account) {
   if (!account?.expiresAt) return true;
-  return !account?.accessToken || Date.now() > Number(account.expiresAt) - 60 * 1000;
+  return Date.now() > Number(account.expiresAt) - 60 * 1000;
 }
 
 function hasPublisherCalendarAccounts() {
@@ -3368,29 +3368,26 @@ async function requestGoogleAccessToken(loginHint, prompt = '') {
   });
 }
 
-
 async function exchangeGoogleCalendarAuthCode(code) {
   if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/Google-calendar-auth`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "apikey": SUPABASE_ANON_KEY,
-    "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-  },
-  body: JSON.stringify({ code })
-});
-
-const data = await res.json();
-
-if (!res.ok) {
-  console.error("Google auth exchange failed:", data);
-  throw new Error("Google auth exchange failed");
-}
-
-console.log("Google auth exchange success:", data);
+  if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
+  const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/Google-calendar-auth`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': appState.config.supabaseKey,
+      'Authorization': `Bearer ${appState.config.supabaseKey}`,
+    },
+    body: JSON.stringify({
+      code,
+      redirectUri: getGoogleRedirectUri(),
+      deviceKey: appState.deviceKey,
+      deviceName: appState.config.deviceName || '',
+    }),
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    console.error('Google auth exchange failed:', payload);
     throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
   }
   return payload || {};
@@ -3430,15 +3427,7 @@ async function handleGoogleCalendarAuthRedirect() {
 
   const expectedState = consumeGoogleAuthRedirectState();
   const cleanupUrl = new URL(window.location.href);
-  cleanupUrl.searchParams.delete('code');
-  cleanupUrl.searchParams.delete('scope');
-  cleanupUrl.searchParams.delete('authuser');
-  cleanupUrl.searchParams.delete('prompt');
-  cleanupUrl.searchParams.delete('state');
-  cleanupUrl.searchParams.delete('error');
-  cleanupUrl.searchParams.delete('error_subtype');
-  cleanupUrl.searchParams.delete('hd');
-  cleanupUrl.searchParams.delete('session_state');
+  ['code','scope','authuser','prompt','state','error','error_subtype','hd','session_state'].forEach((key) => cleanupUrl.searchParams.delete(key));
   window.history.replaceState({}, document.title, cleanupUrl.toString());
 
   if (error) {
@@ -5759,6 +5748,7 @@ resetCalendarPublishTimer();
 resetHousekeepingTimer();
       clearSubscriptions();
       await ensureSupabase();
+  await handleGoogleCalendarAuthRedirect();
       await upsertDeviceProfile();
       await refreshAll('settings saved', { includeSlowState: true });
       bindRealtime();
