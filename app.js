@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.3';
+const APP_VERSION = '2.8.4';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3296,22 +3296,24 @@ function saveCalendarAccounts(accounts, options = {}) {
 }
 
 function isCalendarAccountExpired(account) {
-  if (!account?.expiresAt) return true;
-  return Date.now() > Number(account.expiresAt) - 60 * 1000;
+  return !!account?.needsReconnect;
 }
 
 function hasPublisherCalendarAccounts() {
   return (appState.calendarAccounts || []).some(account =>
-    !!account?.accessToken &&
     !isCalendarAccountExpired(account) &&
     (account.calendars || []).some(cal => cal.selected)
   );
 }
 
+function getGooglePopupRedirectUri() {
+  return window.location.origin;
+}
+
 async function waitForGoogleIdentity(timeoutMs = 6000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (window.google?.accounts?.oauth2?.initTokenClient) return window.google.accounts.oauth2;
+    if (window.google?.accounts?.oauth2?.initCodeClient || window.google?.accounts?.oauth2?.initTokenClient) return window.google.accounts.oauth2;
     if (window.__hccGoogleLoadError) throw new Error('Google Identity Services failed to load');
     await new Promise(resolve => window.setTimeout(resolve, 100));
   }
@@ -3349,12 +3351,12 @@ async function exchangeGoogleCalendarAuthCode(code) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      apikey: appState.config.supabaseKey,
-      Authorization: `Bearer ${appState.config.supabaseKey}`,
+      'apikey': appState.config.supabaseKey,
+      'Authorization': `Bearer ${appState.config.supabaseKey}`,
     },
     body: JSON.stringify({
       code,
-      redirectUri: window.location.origin,
+      redirectUri: getGooglePopupRedirectUri(),
       deviceKey: appState.deviceKey,
       deviceName: appState.config.deviceName || '',
     }),
@@ -3362,7 +3364,6 @@ async function exchangeGoogleCalendarAuthCode(code) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    console.error('Google auth exchange failed:', payload);
     throw new Error(payload?.error || payload?.message || `Google auth exchange failed (${response.status})`);
   }
   return payload || {};
@@ -3370,80 +3371,34 @@ async function exchangeGoogleCalendarAuthCode(code) {
 
 async function finishGoogleCalendarCodeFlow(code) {
   const payload = await exchangeGoogleCalendarAuthCode(code);
-  const accessToken = payload.access_token;
-  const userInfo = payload.user || (accessToken ? await fetchGoogleUserInfo(accessToken) : null);
-  const rawCalendars = Array.isArray(payload.calendars) ? payload.calendars : (accessToken ? await fetchGoogleCalendarList(accessToken) : []);
+  const userInfo = payload.user || null;
+  const rawCalendars = Array.isArray(payload.calendars) ? payload.calendars : [];
   if (!userInfo?.email) throw new Error('Google account email missing after authorization');
 
-  const existing = appState.calendarAccounts.find(account => account.email === userInfo.email);
+  const existing = appState.calendarAccounts.find(account => normalizeEmailKey(account.email) === normalizeEmailKey(userInfo.email));
   const accountRecord = {
     email: userInfo.email,
     name: userInfo.name || userInfo.email,
-    accessToken: accessToken || existing?.accessToken || '',
-    expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
     calendars: mergeCalendarSelections(existing?.calendars, rawCalendars),
     authMode: 'code-popup',
+    connected: true,
     needsReconnect: false,
+    tokenSource: 'backend',
+    expiresAt: null,
   };
-  const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
+
+  const nextAccounts = appState.calendarAccounts.filter(account => normalizeEmailKey(account.email) !== normalizeEmailKey(accountRecord.email));
   nextAccounts.push(accountRecord);
   saveCalendarAccounts(nextAccounts);
   const connectedLabel = stripEmailLikeText(accountRecord.name || '') || accountRecord.email;
   showToast(`Connected ${connectedLabel}`, 'success');
   pushDevLog('info', `Connected Google Calendar account ${connectedLabel} via popup code flow.`);
+  await refreshAll('calendar account connected', { includeSlowState: true });
   return accountRecord;
 }
 
 async function refreshExpiredCalendarTokens() {
-  const expired = appState.calendarAccounts.filter(isCalendarAccountExpired);
-  if (!expired.length || !appState.config.googleClientId) return;
-  pushDevLog('info', `Attempting silent refresh for ${expired.length} calendar account${expired.length === 1 ? '' : 's'}.`);
-  let changed = false;
-  for (const account of expired) {
-    try {
-      const response = await requestGoogleAccessToken(account.email, '');
-      const nextAccounts = appState.calendarAccounts.map(item => item.email !== account.email ? item : {
-        ...item,
-        accessToken: response.access_token,
-        expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000,
-      });
-      saveCalendarAccounts(nextAccounts);
-      changed = true;
-      pushDevLog('info', `Refreshed Google token for ${account.email}.`);
-    } catch (error) {
-      pushDevLog('warn', `Could not silently refresh Google token for ${account.email}: ${error?.message || error}`);
-    }
-  }
-  if (changed) renderCalendarAccounts();
-}
-
-async function googleApiFetch(url, accessToken) {
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Google API error ${response.status}`);
-  }
-  return response.json();
-}
-
-async function fetchGoogleUserInfo(accessToken) {
-  return googleApiFetch('https://www.googleapis.com/oauth2/v3/userinfo', accessToken);
-}
-
-async function fetchGoogleCalendarList(accessToken) {
-  const data = await googleApiFetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', accessToken);
-  return Array.isArray(data.items) ? data.items : [];
-}
-
-function mergeCalendarSelections(existingCalendars, freshCalendars) {
-  const existingMap = new Map((existingCalendars || []).map(cal => [cal.id, cal]));
-  return freshCalendars.map(cal => ({
-    id: cal.id,
-    summary: cal.summary || cal.id,
-    primary: !!cal.primary,
-    backgroundColor: cal.backgroundColor || '',
-    selected: existingMap.has(cal.id) ? !!existingMap.get(cal.id).selected : !!cal.primary,
-  }));
+  return;
 }
 
 async function connectGoogleCalendarAccount() {
@@ -3458,9 +3413,9 @@ async function connectGoogleCalendarAccount() {
         client_id: appState.config.googleClientId,
         scope: 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
         ux_mode: 'popup',
-        redirect_uri: window.location.origin,
-        select_account: true,
+        redirect_uri: getGooglePopupRedirectUri(),
         prompt: 'consent',
+        select_account: true,
         callback: async (response) => {
           if (!response || response.error || !response.code) {
             reject(new Error(response?.error || 'Google authorization failed'));
@@ -3468,11 +3423,13 @@ async function connectGoogleCalendarAccount() {
           }
           try {
             await finishGoogleCalendarCodeFlow(response.code);
-            await refreshAll('calendar account connected', { includeSlowState: true });
             resolve();
           } catch (error) {
             reject(error);
           }
+        },
+        error_callback: (error) => {
+          reject(new Error(error?.message || error?.type || 'Google authorization failed'));
         },
       });
       codeClient.requestCode();
@@ -3828,6 +3785,7 @@ function buildCalendarPublisherDebugItems() {
   ];
 }
 
+
 async function fetchGoogleCalendarSnapshots() {
   const canPublish = hasPublisherCalendarAccounts();
   noteCalendarPublisherAttempt('calendar-refresh', { canPublish });
@@ -3844,7 +3802,7 @@ async function fetchGoogleCalendarSnapshots() {
       expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
       lastError: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
     };
-    noteCalendarPublisherResult(existingToday || existingTomorrow ? 'idle' : 'idle', {
+    noteCalendarPublisherResult('idle', {
       canPublish: false,
       lastSelectedSources: 0,
       lastSkipReason: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
@@ -3855,17 +3813,22 @@ async function fetchGoogleCalendarSnapshots() {
     return;
   }
 
-  await refreshExpiredCalendarTokens();
   const accounts = appState.calendarAccounts || [];
-  const expiredAccounts = accounts.filter(isCalendarAccountExpired);
   const selectedSources = accounts
-    .filter(account => !isCalendarAccountExpired(account) && !!account.accessToken)
-    .flatMap(account => (account.calendars || []).filter(cal => cal.selected).map(calendar => ({ account, calendar })));
+    .filter(account => !account?.needsReconnect)
+    .flatMap(account => (account.calendars || [])
+      .filter(cal => cal.selected)
+      .map(calendar => ({
+        accountEmail: account.email,
+        accountName: account.name || account.email,
+        calendarId: calendar.id,
+        calendarSummary: calendar.summary || calendar.id,
+      })));
 
   appState.calendarDiagnostics = {
     ...appState.calendarDiagnostics,
     selectedSources: selectedSources.length,
-    expiredAccounts: expiredAccounts.length,
+    expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
     lastError: '',
   };
   appState.calendarPublisherDiagnostics = {
@@ -3875,15 +3838,6 @@ async function fetchGoogleCalendarSnapshots() {
     lastSkipReason: '',
     lastPublishError: '',
   };
-
-  const now = getNowDate();
-  const todayStart = startOfDay(now);
-  const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
-  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
-
-  const todayItems = [];
-  const tomorrowItems = [];
-  let fetchedEvents = 0;
 
   if (!selectedSources.length) {
     noteCalendarPublisherResult('skipped', {
@@ -3895,102 +3849,112 @@ async function fetchGoogleCalendarSnapshots() {
     return;
   }
 
-  pushDevLog('info', `Fetching Google Calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'} for headless snapshots.`);
+  const now = getNowDate();
+  const todayStart = startOfDay(now);
+  const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
 
-  for (const source of selectedSources) {
-    try {
-      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.calendar.id)}/events`);
-      url.searchParams.set('singleEvents', 'true');
-      url.searchParams.set('orderBy', 'startTime');
-      url.searchParams.set('timeMin', todayStart.toISOString());
-      url.searchParams.set('timeMax', dayAfterStart.toISOString());
-      url.searchParams.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-      url.searchParams.set('maxResults', '25');
-      const data = await googleApiFetch(url.toString(), source.account.accessToken);
-      const items = Array.isArray(data.items) ? data.items : [];
-      fetchedEvents += items.length;
-      pushDevLog('info', `Fetched ${items.length} event${items.length === 1 ? '' : 's'} from ${source.calendar.summary || source.calendar.id}.`);
-      for (const event of items) {
-        const normalized = normalizeCalendarEvent(event, source.account, source.calendar);
-        const starts = event.start?.dateTime ? new Date(event.start.dateTime) : event.start?.date ? new Date(`${event.start.date}T00:00:00`) : null;
-        if (!starts || !Number.isFinite(starts.getTime())) continue;
-        if (isSameDay(starts, todayStart)) todayItems.push(normalized);
-        else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
-      }
-    } catch (error) {
-      const msg = error?.message || String(error);
-      appState.calendarDiagnostics.lastError = msg;
-      pushDevLog('warn', `Calendar fetch failed for ${(source.calendar.summary || source.calendar.id)}: ${msg}`);
-      console.warn(`Calendar fetch failed for ${source.account.email} / ${source.calendar.summary}`, error);
-    }
-  }
-
-  const sortByStart = (a, b) => String(a.start).localeCompare(String(b.start));
-  todayItems.sort(sortByStart);
-  tomorrowItems.sort(sortByStart);
-  const createdAt = getNowDate().toISOString();
-
-  const snapshotSource = buildCalendarSnapshotSource();
-  const todaySnapshot = {
-    context_type: appState.config.calendarTodaySnapshotType,
-    created_at: createdAt,
-    valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: todayItems },
-    source: snapshotSource,
-  };
-  const tomorrowSnapshot = {
-    context_type: appState.config.calendarTomorrowSnapshotType,
-    created_at: createdAt,
-    valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: tomorrowItems },
-    source: snapshotSource,
-  };
-
-  appState.snapshots[appState.config.calendarTodaySnapshotType] = todaySnapshot;
-  appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
+  pushDevLog('info', `Fetching backend calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'} for headless snapshots.`);
 
   try {
-    if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
-      await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
-      await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
-      noteCalendarPublisherResult('published', {
-        lastPublishAt: createdAt,
-        lastPublishSource: snapshotSource,
-        lastItemsToday: todayItems.length,
-        lastItemsTomorrow: tomorrowItems.length,
-        lastSkipReason: '',
-        lastPublishError: '',
-      });
-      pushDevLog('info', 'Published headless calendar snapshots to household.');
-    } else {
-      noteCalendarPublisherResult('skipped', {
-        lastPublishSource: snapshotSource,
-        lastItemsToday: todayItems.length,
-        lastItemsTomorrow: tomorrowItems.length,
-        lastSkipReason: 'Snapshots unchanged',
-      });
-      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
-    }
-  } catch (error) {
-    noteCalendarPublisherResult('error', {
-      lastPublishSource: snapshotSource,
-      lastItemsToday: todayItems.length,
-      lastItemsTomorrow: tomorrowItems.length,
-      lastPublishError: error?.message || String(error),
+    const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/google-calendar-events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': appState.config.supabaseKey,
+        'Authorization': `Bearer ${appState.config.supabaseKey}`,
+      },
+      body: JSON.stringify({
+        deviceKey: appState.deviceKey,
+        timeMin: todayStart.toISOString(),
+        timeMax: dayAfterStart.toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        selectedSources,
+      }),
     });
-    pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
-  }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || payload?.message || `Calendar backend fetch failed (${response.status})`);
+    }
 
-  appState.calendarDiagnostics = {
-    ...appState.calendarDiagnostics,
-    fetchedEvents,
-    mergedToday: todayItems.length,
-    mergedTomorrow: tomorrowItems.length,
-    lastSuccessAt: createdAt,
-    lastError: appState.calendarDiagnostics.lastError || '',
-  };
-  pushDevLog('info', `Merged ${todayItems.length} today event${todayItems.length === 1 ? '' : 's'} and ${tomorrowItems.length} tomorrow event${tomorrowItems.length === 1 ? '' : 's'}.`);
+    const todayItems = Array.isArray(payload.todayItems) ? payload.todayItems : [];
+    const tomorrowItems = Array.isArray(payload.tomorrowItems) ? payload.tomorrowItems : [];
+    const fetchedEvents = Number(payload.fetchedEvents || (todayItems.length + tomorrowItems.length)) || 0;
+    const createdAt = getNowDate().toISOString();
+
+    const snapshotSource = buildCalendarSnapshotSource();
+    const todaySnapshot = {
+      context_type: appState.config.calendarTodaySnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+      payload: { items: todayItems },
+      source: snapshotSource,
+    };
+    const tomorrowSnapshot = {
+      context_type: appState.config.calendarTomorrowSnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+      payload: { items: tomorrowItems },
+      source: snapshotSource,
+    };
+
+    appState.snapshots[appState.config.calendarTodaySnapshotType] = todaySnapshot;
+    appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
+
+    try {
+      if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
+        await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
+        await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
+        noteCalendarPublisherResult('published', {
+          lastPublishAt: createdAt,
+          lastPublishSource: snapshotSource,
+          lastItemsToday: todayItems.length,
+          lastItemsTomorrow: tomorrowItems.length,
+          lastSkipReason: '',
+          lastPublishError: '',
+        });
+        pushDevLog('info', 'Published headless calendar snapshots to household.');
+      } else {
+        noteCalendarPublisherResult('skipped', {
+          lastPublishSource: snapshotSource,
+          lastItemsToday: todayItems.length,
+          lastItemsTomorrow: tomorrowItems.length,
+          lastSkipReason: 'Snapshots unchanged',
+        });
+        pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
+      }
+    } catch (error) {
+      noteCalendarPublisherResult('error', {
+        lastPublishSource: snapshotSource,
+        lastItemsToday: todayItems.length,
+        lastItemsTomorrow: tomorrowItems.length,
+        lastPublishError: error?.message || String(error),
+      });
+      pushDevLog('warn', `Could not publish headless calendar snapshots: ${error?.message || error}`);
+    }
+
+    appState.calendarDiagnostics = {
+      ...appState.calendarDiagnostics,
+      fetchedEvents,
+      mergedToday: todayItems.length,
+      mergedTomorrow: tomorrowItems.length,
+      lastSuccessAt: createdAt,
+      lastError: '',
+    };
+    pushDevLog('info', `Merged ${todayItems.length} today event${todayItems.length === 1 ? '' : 's'} and ${tomorrowItems.length} tomorrow event${tomorrowItems.length === 1 ? '' : 's'} from backend.`);
+  } catch (error) {
+    const msg = error?.message || String(error);
+    appState.calendarDiagnostics.lastError = msg;
+    noteCalendarPublisherResult('error', {
+      canPublish: true,
+      lastSelectedSources: selectedSources.length,
+      lastPublishError: msg,
+    });
+    pushDevLog('warn', `Calendar backend fetch failed: ${msg}`);
+    console.warn('Calendar backend fetch failed', error);
+  }
 }
+
 function buildKitchenTodayCard(context) {
   const wrap = document.createElement('div');
   wrap.className = 'kitchen-today-wrap';
@@ -6659,6 +6623,7 @@ function mergeSharedCalendarAccounts(sharedAccounts, localAccounts) {
   return merged;
 }
 
+
 function getCalendarAuthRequirementState() {
   const sharedAccounts = Array.isArray(appState?.sharedConfig?.[SHARED_CONFIG_KEYS.calendarAccounts]) ? appState.sharedConfig[SHARED_CONFIG_KEYS.calendarAccounts] : [];
   const localAccounts = Array.isArray(appState?.calendarAccounts) ? appState.calendarAccounts : [];
@@ -6668,17 +6633,13 @@ function getCalendarAuthRequirementState() {
 
   const required = fallbackRequired.map(acc => {
     const local = localMap.get(normalizeEmailKey(acc.email)) || acc || {};
-    const hasToken = !!(local.accessToken || local.token || local.googleAccessToken);
-    const expiresAt = local.expiresAt || local.tokenExpiry || local.expiry || null;
-    const expMs = expiresAt ? new Date(expiresAt).getTime() : null;
-    const nowMs = (window.getEffectiveNow ? new Date(window.getEffectiveNow()).getTime() : Date.now());
-    const isExpired = expMs ? expMs <= nowMs : !hasToken;
+    const connected = !!(local.connected || local.isConnected || (local.authMode && String(local.authMode).startsWith('code'))) && !local.needsReconnect;
     return {
       email: acc.email,
       name: stripEmailLikeText(local.name || acc.name || acc.email || ''),
-      hasToken,
-      isExpired,
-      connected: hasToken && !isExpired,
+      hasToken: connected,
+      isExpired: !connected,
+      connected,
     };
   });
 
