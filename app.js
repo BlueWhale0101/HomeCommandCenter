@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.5';
+const APP_VERSION = '2.8.6';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -4408,12 +4408,15 @@ function normalizeTaskRows() {
 }
 
 
-
 function isInMotionPanel(value) {
   const normalized = String(value || '')
     .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')   // 👈 camelCase fix
     .toLowerCase()
-    .replace(/[_-]+/g, ' ');
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
   return normalized === 'in motion' || normalized === 'in progress';
 }
 
