@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.8.11';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -6820,13 +6820,15 @@ function getCalendarAuthRequirementState() {
     const expiresAt = local.expiresAt || local.tokenExpiry || local.expiry || null;
     const expMs = expiresAt ? new Date(expiresAt).getTime() : null;
     const nowMs = (window.getEffectiveNow ? new Date(window.getEffectiveNow()).getTime() : Date.now());
-    const isExpired = expMs ? expMs <= nowMs : !hasToken;
+    const serverManaged = !!(local.serverManaged || local.connected || local.authMode === 'code');
+    const isExpired = serverManaged ? false : (expMs ? expMs <= nowMs : !hasToken);
     return {
       email: acc.email,
       name: stripEmailLikeText(local.name || acc.name || acc.email || ''),
       hasToken,
+      serverManaged,
       isExpired,
-      connected: hasToken && !isExpired,
+      connected: serverManaged || (hasToken && !isExpired),
     };
   });
 
