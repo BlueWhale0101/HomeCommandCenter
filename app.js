@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.11';
+const APP_VERSION = '2.8.13';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -400,6 +400,7 @@ const copyDiagnosticsButton = document.getElementById('copy-diagnostics-button')
 const testTimeInput = document.getElementById('test-time-input');
 const setTestTimeButton = document.getElementById('set-test-time-button');
 const clearTestTimeButton = document.getElementById('clear-test-time-button');
+const forceCalendarSyncButton = document.getElementById('force-calendar-sync-button');
 const testConnectionButton = document.getElementById('test-connection-button');
 const connectionStatusGrid = document.getElementById('connection-status-grid');
 const googleClientIdInput = document.getElementById('google-client-id');
@@ -3872,6 +3873,20 @@ function noteCalendarPublisherResult(status, extra = {}) {
 async function fetchServerManagedCalendarEvents() {
   if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
   if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
+
+  const now = getNowDate();
+  const todayStart = startOfDay(now);
+  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
+  const selectedSources = (appState.calendarAccounts || []).flatMap((account) => (account.calendars || [])
+    .filter((cal) => cal.selected)
+    .map((cal) => ({
+      accountEmail: account.email,
+      calendarId: cal.id,
+      calendarSummary: cal.summary || cal.id,
+      id: cal.id,
+      summary: cal.summary || cal.id,
+    })));
+
   const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/google-calendar-events`, {
     method: 'POST',
     headers: {
@@ -3880,11 +3895,9 @@ async function fetchServerManagedCalendarEvents() {
     },
     body: JSON.stringify({
       deviceKey: appState.deviceKey,
-      selectedCalendars: (appState.calendarAccounts || []).flatMap((account) => (account.calendars || []).filter((cal) => cal.selected).map((cal) => ({
-        accountEmail: account.email,
-        id: cal.id,
-        summary: cal.summary || cal.id,
-      }))),
+      timeMin: todayStart.toISOString(),
+      timeMax: dayAfterStart.toISOString(),
+      selectedSources,
     }),
   });
   const payload = await response.json().catch(() => ({}));
@@ -3892,6 +3905,49 @@ async function fetchServerManagedCalendarEvents() {
     throw new Error(payload?.error || payload?.message || `Calendar events fetch failed (${response.status})`);
   }
   return payload || {};
+}
+
+async function forceCalendarSync() {
+  try {
+    pushDevLog('info', 'Forcing calendar sync from dev console...');
+    const payload = await fetchServerManagedCalendarEvents();
+    const normalized = normalizeServerManagedCalendarPayload(payload, getNowDate());
+    const createdAt = getNowDate().toISOString();
+    const snapshotSource = buildCalendarSnapshotSource();
+    appState.snapshots[appState.config.calendarTodaySnapshotType] = {
+      context_type: appState.config.calendarTodaySnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+      payload: { items: normalized.todayItems || [] },
+      source: snapshotSource,
+    };
+    appState.snapshots[appState.config.calendarTomorrowSnapshotType] = {
+      context_type: appState.config.calendarTomorrowSnapshotType,
+      created_at: createdAt,
+      valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
+      payload: { items: normalized.tomorrowItems || [] },
+      source: snapshotSource,
+    };
+    appState.calendarDiagnostics = {
+      ...appState.calendarDiagnostics,
+      selectedSources: (appState.calendarAccounts || []).flatMap((account) => (account.calendars || []).filter((cal) => cal.selected)).length,
+      fetchedEvents: Number(normalized.fetchedEvents || ((normalized.todayItems || []).length + (normalized.tomorrowItems || []).length)),
+      mergedToday: (normalized.todayItems || []).length,
+      mergedTomorrow: (normalized.tomorrowItems || []).length,
+      lastError: '',
+      lastSuccessAt: createdAt,
+    };
+    renderRuntimeUi();
+    showToast('Calendar sync finished', 'success');
+    pushDevLog('info', `Manual calendar sync: ${(normalized.todayItems || []).length} today · ${(normalized.tomorrowItems || []).length} tomorrow.`);
+    return normalized;
+  } catch (error) {
+    const msg = error?.message || String(error);
+    appState.calendarDiagnostics = { ...appState.calendarDiagnostics, lastError: msg };
+    pushDevLog('warn', `Manual calendar sync failed: ${msg}`);
+    showToast('Calendar sync failed', 'error');
+    throw error;
+  }
 }
 
 function normalizeServerManagedCalendarPayload(payload, now = getNowDate()) {
@@ -5327,6 +5383,10 @@ function setupDevConsole() {
   if (testTimeInput) testTimeInput.value = appState.testTimeOverride ? currentDateInputValue() : '';
   if (setTestTimeButton) setTestTimeButton.onclick = (event) => { event.preventDefault(); applyTestTimeOverride(); };
   if (clearTestTimeButton) clearTestTimeButton.onclick = (event) => { event.preventDefault(); clearTestTimeOverride(); };
+  if (forceCalendarSyncButton) forceCalendarSyncButton.onclick = async (event) => {
+    event.preventDefault();
+    try { await forceCalendarSync(); } catch {}
+  };
   console.info(`Household Command Center ${APP_VERSION} booting`);
 }
 
