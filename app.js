@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.13';
+const APP_VERSION = '2.8.14';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3845,11 +3845,35 @@ function snapshotItemsSignature(items) {
   })));
 }
 
-function shouldPublishCalendarSnapshots(todayItems, tomorrowItems) {
-  const currentToday = getSnapshotPayload(appState.config.calendarTodaySnapshotType)?.items || [];
-  const currentTomorrow = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType)?.items || [];
+function normalizePanelValue(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+function isInMotionPanel(value) {
+  return normalizePanelValue(value) === 'inmotion';
+}
+
+function isSnapshotMissingOrAging(snapshot, agingWindowMinutes = 5) {
+  if (!snapshot) return true;
+  const nowMs = getNowMs();
+  const createdAtMs = snapshot.created_at ? new Date(snapshot.created_at).getTime() : NaN;
+  const validUntilMs = snapshot.valid_until ? new Date(snapshot.valid_until).getTime() : NaN;
+  if (!Number.isFinite(createdAtMs)) return true;
+  if (!Number.isFinite(validUntilMs)) return true;
+  if (validUntilMs <= nowMs) return true;
+  return (validUntilMs - nowMs) <= (agingWindowMinutes * 60 * 1000);
+}
+
+function shouldPublishCalendarSnapshots(todayItems, tomorrowItems, existingTodaySnapshot = null, existingTomorrowSnapshot = null) {
+  const currentToday = existingTodaySnapshot?.payload?.items || [];
+  const currentTomorrow = existingTomorrowSnapshot?.payload?.items || [];
   return snapshotItemsSignature(todayItems) !== snapshotItemsSignature(currentToday)
-    || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow);
+    || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow)
+    || isSnapshotMissingOrAging(existingTodaySnapshot)
+    || isSnapshotMissingOrAging(existingTomorrowSnapshot);
 }
 
 function noteCalendarPublisherAttempt(reason, extra = {}) {
@@ -4125,18 +4149,28 @@ async function fetchGoogleCalendarSnapshots() {
   const createdAt = getNowDate().toISOString();
 
   const snapshotSource = buildCalendarSnapshotSource();
+  const existingTodaySnapshot = appState.snapshots[appState.config.calendarTodaySnapshotType] || null;
+  const existingTomorrowSnapshot = appState.snapshots[appState.config.calendarTomorrowSnapshotType] || null;
+  const shouldPublish = shouldPublishCalendarSnapshots(todayItems, tomorrowItems, existingTodaySnapshot, existingTomorrowSnapshot);
+  const snapshotMeta = {
+    fetchedAt: createdAt,
+    itemCountToday: todayItems.length,
+    itemCountTomorrow: tomorrowItems.length,
+    publisher: snapshotSource,
+    publishReason: shouldPublish ? 'changed-or-aging' : 'unchanged-and-fresh',
+  };
   const todaySnapshot = {
     context_type: appState.config.calendarTodaySnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: todayItems },
+    payload: { items: todayItems, meta: { ...snapshotMeta, window: 'today', itemCount: todayItems.length } },
     source: snapshotSource,
   };
   const tomorrowSnapshot = {
     context_type: appState.config.calendarTomorrowSnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: tomorrowItems },
+    payload: { items: tomorrowItems, meta: { ...snapshotMeta, window: 'tomorrow', itemCount: tomorrowItems.length } },
     source: snapshotSource,
   };
 
@@ -4144,7 +4178,7 @@ async function fetchGoogleCalendarSnapshots() {
   appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
 
   try {
-    if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
+    if (shouldPublish) {
       await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
       await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
       noteCalendarPublisherResult('published', {
@@ -4161,9 +4195,9 @@ async function fetchGoogleCalendarSnapshots() {
         lastPublishSource: snapshotSource,
         lastItemsToday: todayItems.length,
         lastItemsTomorrow: tomorrowItems.length,
-        lastSkipReason: 'Snapshots unchanged',
+        lastSkipReason: 'Snapshots unchanged and still fresh',
       });
-      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
+      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed and the shared snapshots are still fresh.');
     }
   } catch (error) {
     noteCalendarPublisherResult('error', {
@@ -4352,7 +4386,7 @@ function scoreTaskForWindow(task, options = {}) {
     score += taskTomorrowEventStrength(task, tomorrowSnapshot);
   }
 
-  if (String(task.panel || '').toLowerCase() === 'in motion') score += 12;
+  if (isInMotionPanel(task.panel)) score += 12;
   if (task.recurrence) score += 7;
   score += taskSignalStrength(task, signals);
   if (task.isMine) score += 2;
@@ -4409,7 +4443,7 @@ function buildTaskDigest() {
   const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
   const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
   const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
-  const inMotionTasks = rankedTodayTasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion').slice(0, 6);
+  const inMotionTasks = rankedTodayTasks.filter((task) => isInMotionPanel(task.panel)).slice(0, 6);
   const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
   const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
@@ -4807,7 +4841,7 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
   const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
   const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
   const tomorrowTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'tomorrow');
-  const inMotionTasks = tasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion');
+  const inMotionTasks = tasks.filter((task) => isInMotionPanel(task.panel));
   const hasOtherSignals = Array.isArray(baseSignals) && baseSignals.length > 0;
   const hasDbSignals = activeDbSignals(now).length > 0;
   const freshnessItems = getDataFreshnessItems();
