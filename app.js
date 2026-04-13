@@ -1,4 +1,4 @@
-const APP_VERSION = '2.8.9';
+const APP_VERSION = '2.8.0';
 window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
 window.__HCC_FORCE_BOOT = () => startBootstrap();
 const BOOT_TIMEOUT_MS = 8000;
@@ -3324,14 +3324,14 @@ function saveCalendarAccounts(accounts, options = {}) {
 }
 
 function isCalendarAccountExpired(account) {
+  if (account?.serverManaged || account?.connected) return false;
   if (!account?.expiresAt) return true;
   return !account?.accessToken || Date.now() > Number(account.expiresAt) - 60 * 1000;
 }
 
 function hasPublisherCalendarAccounts() {
   return (appState.calendarAccounts || []).some(account =>
-    !!account?.accessToken &&
-    !isCalendarAccountExpired(account) &&
+    (account?.serverManaged || (!!account?.accessToken && !isCalendarAccountExpired(account))) &&
     (account.calendars || []).some(cal => cal.selected)
   );
 }
@@ -3372,7 +3372,6 @@ async function requestGoogleAccessToken(loginHint, prompt = '') {
 async function exchangeGoogleCalendarAuthCode(code) {
   if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
   if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
-
   const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/Google-calendar-auth`, {
     method: 'POST',
     headers: {
@@ -3386,7 +3385,6 @@ async function exchangeGoogleCalendarAuthCode(code) {
       deviceName: appState.config.deviceName || '',
     }),
   });
-
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     console.error('Google auth exchange failed:', payload);
@@ -3397,19 +3395,23 @@ async function exchangeGoogleCalendarAuthCode(code) {
 
 async function finishGoogleCalendarCodeFlow(code) {
   const payload = await exchangeGoogleCalendarAuthCode(code);
-  const accessToken = payload.access_token;
+  const accessToken = payload.access_token || '';
   const userInfo = payload.user || (accessToken ? await fetchGoogleUserInfo(accessToken) : null);
-  const rawCalendars = Array.isArray(payload.calendars) ? payload.calendars : (accessToken ? await fetchGoogleCalendarList(accessToken) : []);
+  const existing = appState.calendarAccounts.find(account => account.email === userInfo?.email);
+  const rawCalendars = Array.isArray(payload.calendars)
+    ? payload.calendars
+    : (existing?.calendars || []);
   if (!userInfo?.email) throw new Error('Google account email missing after authorization');
-  const existing = appState.calendarAccounts.find(account => account.email === userInfo.email);
   const accountRecord = {
     email: userInfo.email,
     name: userInfo.name || userInfo.email,
     accessToken: accessToken || existing?.accessToken || '',
-    expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
+    expiresAt: accessToken ? (Date.now() + Number(payload.expires_in || 3600) * 1000) : (existing?.expiresAt || 0),
     calendars: mergeCalendarSelections(existing?.calendars, rawCalendars),
     authMode: 'code',
     needsReconnect: false,
+    serverManaged: true,
+    connected: true,
   };
   const nextAccounts = appState.calendarAccounts.filter(account => account.email !== accountRecord.email);
   nextAccounts.push(accountRecord);
@@ -3421,7 +3423,45 @@ async function finishGoogleCalendarCodeFlow(code) {
 }
 
 async function handleGoogleCalendarAuthRedirect() {
-  return false;
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  const state = url.searchParams.get('state') || '';
+  if (!code && !error) return false;
+
+  const expectedState = consumeGoogleAuthRedirectState();
+  const cleanupUrl = new URL(window.location.href);
+  cleanupUrl.searchParams.delete('code');
+  cleanupUrl.searchParams.delete('scope');
+  cleanupUrl.searchParams.delete('authuser');
+  cleanupUrl.searchParams.delete('prompt');
+  cleanupUrl.searchParams.delete('state');
+  cleanupUrl.searchParams.delete('error');
+  cleanupUrl.searchParams.delete('error_subtype');
+  cleanupUrl.searchParams.delete('hd');
+  cleanupUrl.searchParams.delete('session_state');
+  window.history.replaceState({}, document.title, cleanupUrl.toString());
+
+  if (error) {
+    pushDevLog('warn', `Google auth redirect returned ${error}.`);
+    showToast('Google Calendar connection was cancelled', 'error');
+    return true;
+  }
+  if (expectedState && state && expectedState !== state) {
+    pushDevLog('warn', 'Google auth redirect state mismatch.');
+    showToast('Google Calendar sign-in could not be verified', 'error');
+    return true;
+  }
+  try {
+    setStatus('Finishing Google Calendar sign-in…');
+    await finishGoogleCalendarCodeFlow(code);
+    if (appState.supabase) await refreshAll('google calendar auth redirect', { includeSlowState: true });
+  } catch (error) {
+    console.error('Google auth redirect handling failed', error);
+    pushDevLog('warn', `Google auth redirect failed: ${error?.message || error}`);
+    showToast('Could not finish Google Calendar connection', 'error');
+  }
+  return true;
 }
 
 async function refreshExpiredCalendarTokens() {
@@ -3506,7 +3546,7 @@ async function connectGoogleCalendarAccount() {
         }
       },
     });
-    pushDevLog('info', 'Starting Google Calendar authorization code popup flow.');
+    pushDevLog('info', 'Started Google authorization popup flow');
     codeClient.requestCode();
   } catch (error) {
     console.error('Google account connect failed', error);
@@ -3828,6 +3868,66 @@ function noteCalendarPublisherResult(status, extra = {}) {
   };
 }
 
+
+async function fetchServerManagedCalendarEvents() {
+  if (!appState.config.supabaseUrl) throw new Error('Supabase URL missing');
+  if (!appState.config.supabaseKey) throw new Error('Supabase key missing');
+  const response = await fetch(`${appState.config.supabaseUrl}/functions/v1/google-calendar-events`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': appState.config.supabaseKey,
+    },
+    body: JSON.stringify({
+      deviceKey: appState.deviceKey,
+      selectedCalendars: (appState.calendarAccounts || []).flatMap((account) => (account.calendars || []).filter((cal) => cal.selected).map((cal) => ({
+        accountEmail: account.email,
+        id: cal.id,
+        summary: cal.summary || cal.id,
+      }))),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || payload?.message || `Calendar events fetch failed (${response.status})`);
+  }
+  return payload || {};
+}
+
+function normalizeServerManagedCalendarPayload(payload, now = getNowDate()) {
+  const todayStart = startOfDay(now);
+  const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
+  if (Array.isArray(payload?.todayItems) || Array.isArray(payload?.tomorrowItems)) {
+    return {
+      todayItems: Array.isArray(payload?.todayItems) ? payload.todayItems : [],
+      tomorrowItems: Array.isArray(payload?.tomorrowItems) ? payload.tomorrowItems : [],
+      fetchedEvents: Number(payload?.fetchedEvents || ((payload?.todayItems?.length || 0) + (payload?.tomorrowItems?.length || 0))),
+    };
+  }
+  const rawItems = Array.isArray(payload?.items) ? payload.items : (Array.isArray(payload) ? payload : []);
+  const todayItems = [];
+  const tomorrowItems = [];
+  for (const event of rawItems) {
+    const starts = event?.start?.dateTime ? new Date(event.start.dateTime) : event?.start?.date ? new Date(`${event.start.date}T00:00:00`) : (event?.start ? new Date(event.start) : null);
+    if (!starts || !Number.isFinite(starts.getTime())) continue;
+    if (starts < todayStart || starts >= dayAfterStart) continue;
+    const normalized = {
+      id: event.id || event.eventId || `${event.summary || event.title || 'event'}-${event.start?.dateTime || event.start?.date || event.start || ''}`,
+      title: event.summary || event.title || '(Untitled event)',
+      time: event.time || formatCalendarEventTime(event),
+      sourceLabel: event.sourceLabel || event.calendarSummary || event.calendar?.summary || 'Calendar',
+      start: event.start?.dateTime || event.start?.date || event.start || '',
+    };
+    if (isSameDay(starts, todayStart)) todayItems.push(normalized);
+    else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
+  }
+  const sortByStart = (a, b) => String(a.start || '').localeCompare(String(b.start || ''));
+  todayItems.sort(sortByStart);
+  tomorrowItems.sort(sortByStart);
+  return { todayItems, tomorrowItems, fetchedEvents: rawItems.length };
+}
+
 function buildCalendarPublisherDebugItems() {
   const diag = appState.calendarPublisherDiagnostics || {};
   const publisher = getCalendarServiceState();
@@ -3875,7 +3975,7 @@ async function fetchGoogleCalendarSnapshots() {
       expiredAccounts: (appState.calendarAccounts || []).filter(isCalendarAccountExpired).length,
       lastError: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
     };
-    noteCalendarPublisherResult(existingToday || existingTomorrow ? 'idle' : 'idle', {
+    noteCalendarPublisherResult('idle', {
       canPublish: false,
       lastSelectedSources: 0,
       lastSkipReason: existingToday || existingTomorrow ? 'Using shared calendar snapshots on this device' : 'Calendar not connected on this device',
@@ -3890,7 +3990,7 @@ async function fetchGoogleCalendarSnapshots() {
   const accounts = appState.calendarAccounts || [];
   const expiredAccounts = accounts.filter(isCalendarAccountExpired);
   const selectedSources = accounts
-    .filter(account => !isCalendarAccountExpired(account) && !!account.accessToken)
+    .filter(account => (account?.serverManaged || (!isCalendarAccountExpired(account) && !!account.accessToken)))
     .flatMap(account => (account.calendars || []).filter(cal => cal.selected).map(calendar => ({ account, calendar })));
 
   appState.calendarDiagnostics = {
@@ -3907,56 +4007,63 @@ async function fetchGoogleCalendarSnapshots() {
     lastPublishError: '',
   };
 
-  const now = getNowDate();
-  const todayStart = startOfDay(now);
-  const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
-  const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
-
-  const todayItems = [];
-  const tomorrowItems = [];
+  let todayItems = [];
+  let tomorrowItems = [];
   let fetchedEvents = 0;
 
-  if (!selectedSources.length) {
-    noteCalendarPublisherResult('skipped', {
-      canPublish: true,
-      lastSelectedSources: 0,
-      lastSkipReason: 'No selected local calendars on this device',
-    });
-    pushDevLog('warn', 'Calendar publisher has no selected local calendars. Keeping existing shared snapshots.');
-    return;
-  }
-
-  pushDevLog('info', `Fetching Google Calendar events from ${selectedSources.length} selected calendar${selectedSources.length === 1 ? '' : 's'} for headless snapshots.`);
-
-  for (const source of selectedSources) {
+  const serverManagedAccounts = selectedSources.filter(({ account }) => account?.serverManaged);
+  if (serverManagedAccounts.length) {
     try {
-      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.calendar.id)}/events`);
-      url.searchParams.set('singleEvents', 'true');
-      url.searchParams.set('orderBy', 'startTime');
-      url.searchParams.set('timeMin', todayStart.toISOString());
-      url.searchParams.set('timeMax', dayAfterStart.toISOString());
-      url.searchParams.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-      url.searchParams.set('maxResults', '25');
-      const data = await googleApiFetch(url.toString(), source.account.accessToken);
-      const items = Array.isArray(data.items) ? data.items : [];
-      fetchedEvents += items.length;
-      pushDevLog('info', `Fetched ${items.length} event${items.length === 1 ? '' : 's'} from ${source.calendar.summary || source.calendar.id}.`);
-      for (const event of items) {
-        const normalized = normalizeCalendarEvent(event, source.account, source.calendar);
-        const starts = event.start?.dateTime ? new Date(event.start.dateTime) : event.start?.date ? new Date(`${event.start.date}T00:00:00`) : null;
-        if (!starts || !Number.isFinite(starts.getTime())) continue;
-        if (isSameDay(starts, todayStart)) todayItems.push(normalized);
-        else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
-      }
+      const payload = await fetchServerManagedCalendarEvents();
+      const normalized = normalizeServerManagedCalendarPayload(payload, getNowDate());
+      todayItems = normalized.todayItems || [];
+      tomorrowItems = normalized.tomorrowItems || [];
+      fetchedEvents = Number(normalized.fetchedEvents || ((todayItems.length) + (tomorrowItems.length)));
+      pushDevLog('info', `Fetched ${fetchedEvents} backend-managed calendar event${fetchedEvents === 1 ? '' : 's'}.`);
     } catch (error) {
       const msg = error?.message || String(error);
       appState.calendarDiagnostics.lastError = msg;
-      pushDevLog('warn', `Calendar fetch failed for ${(source.calendar.summary || source.calendar.id)}: ${msg}`);
-      console.warn(`Calendar fetch failed for ${source.account.email} / ${source.calendar.summary}`, error);
+      pushDevLog('warn', `Backend calendar fetch failed: ${msg}`);
+      console.warn('Backend calendar fetch failed', error);
     }
   }
 
-  const sortByStart = (a, b) => String(a.start).localeCompare(String(b.start));
+  const clientSources = selectedSources.filter(({ account }) => !account?.serverManaged && !!account?.accessToken && !isCalendarAccountExpired(account));
+  if (clientSources.length) {
+    const now = getNowDate();
+    const todayStart = startOfDay(now);
+    const tomorrowStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+    const dayAfterStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2));
+    for (const source of clientSources) {
+      try {
+        const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.calendar.id)}/events`);
+        url.searchParams.set('singleEvents', 'true');
+        url.searchParams.set('orderBy', 'startTime');
+        url.searchParams.set('timeMin', todayStart.toISOString());
+        url.searchParams.set('timeMax', dayAfterStart.toISOString());
+        url.searchParams.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+        url.searchParams.set('maxResults', '25');
+        const data = await googleApiFetch(url.toString(), source.account.accessToken);
+        const items = Array.isArray(data.items) ? data.items : [];
+        fetchedEvents += items.length;
+        pushDevLog('info', `Fetched ${items.length} event${items.length === 1 ? '' : 's'} from ${source.calendar.summary || source.calendar.id}.`);
+        for (const event of items) {
+          const normalized = normalizeCalendarEvent(event, source.account, source.calendar);
+          const starts = event.start?.dateTime ? new Date(event.start.dateTime) : event.start?.date ? new Date(`${event.start.date}T00:00:00`) : null;
+          if (!starts || !Number.isFinite(starts.getTime())) continue;
+          if (isSameDay(starts, todayStart)) todayItems.push(normalized);
+          else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
+        }
+      } catch (error) {
+        const msg = error?.message || String(error);
+        appState.calendarDiagnostics.lastError = msg;
+        pushDevLog('warn', `Calendar fetch failed for ${(source.calendar.summary || source.calendar.id)}: ${msg}`);
+        console.warn(`Calendar fetch failed for ${source.account.email} / ${source.calendar.summary}`, error);
+      }
+    }
+  }
+
+  const sortByStart = (a, b) => String(a.start || '').localeCompare(String(b.start || ''));
   todayItems.sort(sortByStart);
   tomorrowItems.sort(sortByStart);
   const createdAt = getNowDate().toISOString();
@@ -4022,6 +4129,7 @@ async function fetchGoogleCalendarSnapshots() {
   };
   pushDevLog('info', `Merged ${todayItems.length} today event${todayItems.length === 1 ? '' : 's'} and ${tomorrowItems.length} tomorrow event${tomorrowItems.length === 1 ? '' : 's'}.`);
 }
+
 function buildKitchenTodayCard(context) {
   const wrap = document.createElement('div');
   wrap.className = 'kitchen-today-wrap';
@@ -4188,7 +4296,7 @@ function scoreTaskForWindow(task, options = {}) {
     score += taskTomorrowEventStrength(task, tomorrowSnapshot);
   }
 
-  if (isInMotionPanel(task.panel)) score += 12;
+  if (String(task.panel || '').toLowerCase() === 'in motion') score += 12;
   if (task.recurrence) score += 7;
   score += taskSignalStrength(task, signals);
   if (task.isMine) score += 2;
@@ -4245,7 +4353,7 @@ function buildTaskDigest() {
   const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
   const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
   const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
-  const inMotionTasks = rankedTodayTasks.filter((task) => isInMotionPanel(task.panel)).slice(0, 6);
+  const inMotionTasks = rankedTodayTasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion').slice(0, 6);
   const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
   const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
@@ -4379,18 +4487,6 @@ function normalizeTaskRows() {
     });
 }
 
-
-function isInMotionPanel(value) {
-  const normalized = String(value || '')
-    .trim()
-    .replace(/([a-z])([A-Z])/g, '$1 $2')   // 👈 camelCase fix
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return normalized === 'in motion' || normalized === 'in progress';
-}
 
 function normalizeOwnerKey(owner) {
   const value = String(owner || '').trim().toLowerCase();
@@ -5189,6 +5285,11 @@ let devConsoleEntries = [];
 const DEV_CONSOLE_LIMIT = 250;
 
 function setupDevConsole() {
+  if (devConsoleLogEl) {
+    devConsoleLogEl.style.userSelect = 'text';
+    devConsoleLogEl.style.webkitUserSelect = 'text';
+    devConsoleLogEl.style.webkitTouchCallout = 'default';
+  }
   const original = {
     log: console.log.bind(console),
     warn: console.warn.bind(console),
@@ -5435,6 +5536,8 @@ function renderDevConsole() {
     const row = document.createElement('div');
     row.className = 'dev-console-entry info';
     row.textContent = `[IO] ${line}`;
+    row.style.userSelect = 'text';
+    row.style.webkitUserSelect = 'text';
     devConsoleLogEl.append(row);
   }
   if (!devConsoleEntries.length) {
@@ -5448,6 +5551,8 @@ function renderDevConsole() {
     const row = document.createElement('div');
     row.className = `dev-console-entry ${entry.level}`;
     row.textContent = `[${entry.time}] ${entry.level.toUpperCase()} ${entry.text}`;
+    row.style.userSelect = 'text';
+    row.style.webkitUserSelect = 'text';
     devConsoleLogEl.append(row);
   }
 }
