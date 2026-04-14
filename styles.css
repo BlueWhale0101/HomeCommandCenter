@@ -1938,3 +1938,80 @@ body.tv-mode .screen {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+
+/* v2.8.15 mobile trust placement + signal card spacing */
+body.mobile-mode .topbar.slim-topbar {
+  display: none;
+}
+
+.signal-rule-summary-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.signal-summary-card {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border-radius: 18px;
+  border: 1px solid rgba(181, 220, 189, 0.12);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.signal-summary-card.is-disabled {
+  opacity: 0.8;
+}
+
+.signal-summary-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.signal-summary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+  flex: 1 1 auto;
+}
+
+.signal-summary-title {
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.signal-summary-meta,
+.signal-summary-detail {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.signal-summary-actions {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.small-button {
+  padding: 0.55rem 0.8rem;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+@media (max-width: 560px) {
+  .signal-summary-card {
+    padding: 0.82rem;
+  }
+
+  .signal-summary-top {
+    flex-wrap: wrap;
+  }
+}
