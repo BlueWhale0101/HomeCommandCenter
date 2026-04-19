@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#16351f" />
-  <meta name="app-version" content="2.8.6" />
+  <meta name="app-version" content="3.4.5" />
   <title>Household Command Center</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icons/icon-180x180.png" />
@@ -13,6 +13,18 @@
 </head>
 <body>
 <div id="calendar-auth-banner" class="calendar-auth-banner-slot"></div>
+<div id="boot-debug-panel" class="boot-debug-panel hidden" aria-live="polite">
+  <div class="boot-debug-header">
+    <strong>Startup diagnostics</strong>
+    <div class="boot-debug-actions">
+      <button id="boot-debug-copy" class="secondary-button" type="button">Copy</button>
+      <button id="boot-debug-close" class="secondary-button" type="button">Hide</button>
+    </div>
+  </div>
+  <div id="boot-debug-status" class="boot-debug-status">Waiting for startup…</div>
+  <div id="boot-debug-detail" class="boot-debug-detail muted">If boot fails, the most recent error will appear here.</div>
+  <div id="boot-debug-log" class="boot-debug-log"></div>
+</div>
   <div id="app">
     <header class="topbar slim-topbar">
       <div class="topbar-spacer" aria-hidden="true"></div>
@@ -31,7 +43,7 @@
     <main id="screen" class="screen"></main>
   </div>
 
-  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v2.8.13</button>
+  <button id="version-tag" class="version-tag" type="button" aria-label="Version badge">v3.4.5</button>
 
   <aside id="dev-console" class="dev-console hidden" aria-label="Developer console">
     <div class="dev-console-header">
@@ -58,7 +70,7 @@
 <div id="dev-console-log" class="dev-console-log"></div>
   </aside>
 
-  <dialog id="settings-dialog">
+  <dialog id="settings-dialog" class="quick-view-dialog">
     <form method="dialog" class="settings-form">
       <div class="dialog-header">
         <h2>Settings</h2>
@@ -193,21 +205,125 @@
 
   <script>
     window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'inline-preboot', errors: [] };
-    window.addEventListener('error', function (event) {
-      try {
-        var statusEl = document.getElementById('status-line');
-        window.__hccBootState.errors.push(String(event.message || 'Unknown boot error'));
-        if (statusEl && !window.__hccBootState.finished) {
-          statusEl.textContent = 'Startup error before app init';
-        }
-      } catch (e) {}
-    });
+    window.__hccConsoleCapture = window.__hccConsoleCapture || { logs: [], disabled: false, original: {
+      log: console.log.bind(console),
+      info: console.info.bind(console),
+      warn: console.warn.bind(console),
+      error: console.error.bind(console)
+    } };
+
+    (function () {
+      var capture = window.__hccConsoleCapture;
+      function renderArg(value) {
+        if (value instanceof Error) return value.name + ': ' + value.message;
+        if (typeof value === 'string') return value;
+        try { return JSON.stringify(value); } catch (e) { return String(value); }
+      }
+      function appendBootLog(level, message) {
+        try {
+          var logEl = document.getElementById('boot-debug-log');
+          if (!logEl) return;
+          var row = document.createElement('div');
+          row.className = 'boot-debug-entry ' + level;
+          row.textContent = message;
+          logEl.prepend(row);
+          while (logEl.children.length > 20) logEl.removeChild(logEl.lastChild);
+        } catch (e) {}
+      }
+      function setBootPanelVisible(visible) {
+        try {
+          var panel = document.getElementById('boot-debug-panel');
+          if (!panel) return;
+          panel.classList.toggle('hidden', !visible);
+        } catch (e) {}
+      }
+      window.__HCC_SHOW_BOOT_DEBUG = function (status, detail, forceOpen) {
+        try {
+          var statusEl = document.getElementById('boot-debug-status');
+          var detailEl = document.getElementById('boot-debug-detail');
+          if (statusEl && status) statusEl.textContent = status;
+          if (detailEl && detail) detailEl.textContent = detail;
+          if (forceOpen) setBootPanelVisible(true);
+        } catch (e) {}
+      };
+      window.__HCC_APPEND_BOOT_LOG = appendBootLog;
+
+      ['log', 'info', 'warn', 'error'].forEach(function (level) {
+        console[level] = function () {
+          var args = Array.prototype.slice.call(arguments);
+          capture.original[level].apply(console, args);
+          if (capture.disabled) return;
+          var text = args.map(renderArg).join(' ');
+          capture.logs.unshift({
+            time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+            level: level,
+            text: text
+          });
+          if (capture.logs.length > 200) capture.logs = capture.logs.slice(0, 200);
+          appendBootLog(level, '[' + level.toUpperCase() + '] ' + text);
+        };
+      });
+
+      window.addEventListener('error', function (event) {
+        try {
+          var statusEl = document.getElementById('status-line');
+          var message = String(event.message || 'Unknown boot error');
+          var source = event.filename ? (' @ ' + event.filename.split('/').slice(-1)[0] + ':' + event.lineno) : '';
+          window.__hccBootState.errors.push(message);
+          window.__hccBootState.phase = 'inline-error';
+          if (statusEl && !window.__hccBootState.finished) {
+            statusEl.textContent = 'Startup error before app init';
+          }
+          window.__HCC_SHOW_BOOT_DEBUG('Startup error before app init', message + source, true);
+          appendBootLog('error', '[ERROR] ' + message + source);
+        } catch (e) {}
+      });
+
+      window.addEventListener('unhandledrejection', function (event) {
+        try {
+          var reason = event.reason;
+          var text = reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection');
+          window.__hccBootState.errors.push(text);
+          window.__hccBootState.phase = 'inline-unhandled-rejection';
+          window.__HCC_SHOW_BOOT_DEBUG('Unhandled promise rejection', text, true);
+          appendBootLog('error', '[PROMISE] ' + text);
+        } catch (e) {}
+      });
+
+      window.addEventListener('DOMContentLoaded', function () {
+        try {
+          var copyBtn = document.getElementById('boot-debug-copy');
+          var closeBtn = document.getElementById('boot-debug-close');
+          if (copyBtn) copyBtn.onclick = function () {
+            try {
+              var state = window.__hccBootState || {};
+              var lines = [
+                'phase: ' + (state.phase || ''),
+                'started: ' + !!state.started,
+                'finished: ' + !!state.finished,
+                'errors: ' + JSON.stringify(state.errors || []),
+                ''
+              ];
+              (window.__hccConsoleCapture.logs || []).slice(0, 30).forEach(function (entry) {
+                lines.push('[' + entry.time + '] ' + entry.level.toUpperCase() + ' ' + entry.text);
+              });
+              navigator.clipboard && navigator.clipboard.writeText(lines.join('
+'));
+              window.__HCC_SHOW_BOOT_DEBUG('Startup diagnostics copied', 'Paste them into chat for debugging.', true);
+            } catch (e) {}
+          };
+          if (closeBtn) closeBtn.onclick = function () { setBootPanelVisible(false); };
+        } catch (e) {}
+      });
+    })();
+
     window.setTimeout(function () {
       try {
         var statusEl = document.getElementById('status-line');
         var state = window.__hccBootState || {};
         if (!state.started && typeof window.__HCC_FORCE_BOOT === 'function') {
           if (statusEl) statusEl.textContent = 'Pre-boot recovery…';
+          window.__HCC_SHOW_BOOT_DEBUG('Pre-boot recovery', 'The app shell loaded, but bootstrap did not start on time.', true);
           window.__HCC_FORCE_BOOT();
         }
       } catch (e) {}
@@ -218,12 +334,33 @@
         var state = window.__hccBootState || {};
         if (!state.finished && statusEl && statusEl.textContent === 'Initializing app shell…') {
           statusEl.textContent = 'Boot paused in app shell';
+          window.__HCC_SHOW_BOOT_DEBUG('Boot paused in app shell', 'App init started but did not finish. Open diagnostics below or long-press the version badge.', true);
         }
       } catch (e) {}
     }, 4000);
   </script>
   <script id="supabase-cdn" src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" onerror="window.__hccSupabaseLoadError=true;"></script>
   <script id="google-gis-cdn" src="https://accounts.google.com/gsi/client" async defer onerror="window.__hccGoogleLoadError=true;"></script>
+  
+  <script src="js/core/namespace.js"></script>
+  <script src="js/core/constants.js"></script>
+  <script src="js/utils/dates.js"></script>
+  <script src="js/utils/text.js"></script>
+  <script src="js/utils/panels.js"></script>
+  <script src="js/utils/snapshots.js"></script>
+  <script src="js/utils/signal-rules.js"></script>
+  <script src="js/utils/task-state.js"></script>
+  <script src="js/utils/category-display.js"></script>
+  <script src="js/utils/display-items.js"></script>
+  <script src="js/utils/modals.js"></script>
+  <script src="js/tasks/scoring.js"></script>
+  <script src="js/surfaces/context.js"></script>
+  <script src="js/surfaces/mobile.js"></script>
+  <script src="js/surfaces/tv.js"></script>
+  <script src="js/surfaces/laundry.js"></script>
+  <script src="js/surfaces/bedroom.js"></script>
+  <script src="js/surfaces/kitchen.js"></script>
+  <script src="js/surfaces/shell.js"></script>
   <script src="app.js" defer></script>
 </body>
 </html>

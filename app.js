@@ -1,142 +1,3 @@
-const APP_VERSION = '2.8.13';
-window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
-window.__HCC_FORCE_BOOT = () => startBootstrap();
-const BOOT_TIMEOUT_MS = 8000;
-
-const DEFAULT_CONFIG = {
-  supabaseUrl: '',
-  supabaseKey: '',
-  deviceName: 'New device',
-  mode: 'tv',
-  location: 'kitchen',
-  taskTable: 'tasks',
-  taskDateField: 'due_text',
-  taskOwnerField: 'owner',
-  taskTitleField: 'task',
-  taskCompletedField: '',
-  taskCompletedValue: 'true',
-  useStringCompleted: false,
-  weatherSnapshotType: 'weather_today',
-  calendarTodaySnapshotType: 'calendar_today',
-  calendarTomorrowSnapshotType: 'calendar_tomorrow',
-  uiRefreshSeconds: 600,
-  googleClientId: '',
-  weatherLocationQuery: '',
-  weatherLocationName: '',
-  weatherLatitude: '',
-  weatherLongitude: '',
-  weatherTimezone: '',
-  signalRulesDraft: null,
-  keepScreenAwake: false,
-};
-
-const DEVICE_KEY_STORAGE = 'household-command-center-device-key';
-const CONFIG_STORAGE = 'household-command-center-config';
-const SETTINGS_JSON_AUTOLOAD_DONE = 'household-command-center-settings-json-autoload-done';
-const TEST_TIME_STORAGE = 'household-command-center-test-time-override';
-const SIGNAL_SNOOZE_STORAGE = 'household-command-center-signal-snoozes';
-const DERIVED_SIGNAL_MEMORY_STORAGE = 'household-command-center-derived-signal-memory';
-const CALENDAR_ACCOUNTS_STORAGE = 'household-command-center-google-calendar-accounts';
-
-const GOOGLE_AUTH_REDIRECT_STATE_STORAGE = 'household-command-center-google-auth-state';
-
-function getGoogleRedirectUri() {
-  const url = new URL(window.location.href);
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-function createGoogleAuthState() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function saveGoogleAuthRedirectState(state) {
-  try { localStorage.setItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE, state); } catch {}
-}
-
-function consumeGoogleAuthRedirectState() {
-  try {
-    const state = localStorage.getItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE) || '';
-    localStorage.removeItem(GOOGLE_AUTH_REDIRECT_STATE_STORAGE);
-    return state;
-  } catch {
-    return '';
-  }
-}
-const SHARED_CONFIG_TABLE = 'household_config';
-const SHARED_CONFIG_KEYS = {
-  googleClientId: 'google_client_id',
-  weather: 'weather_config',
-  calendarAccounts: 'google_calendar_accounts',
-  signalRules: 'signal_rules',
-};
-const DEVICE_PROFILE_CONFIG_KEYS = ['deviceName', 'mode', 'location', 'keepScreenAwake'];
-const LOCAL_ONLY_CONFIG_KEYS = [
-  'supabaseUrl',
-  'supabaseKey',
-  'taskTable',
-  'taskDateField',
-  'taskOwnerField',
-  'taskTitleField',
-  'taskCompletedField',
-  'taskCompletedValue',
-  'useStringCompleted',
-  'weatherSnapshotType',
-  'calendarTodaySnapshotType',
-  'calendarTomorrowSnapshotType',
-  'uiRefreshSeconds',
-];
-const TASK_FIELD_CANDIDATES = {
-  taskTitleField: ['task', 'title', 'name', 'label'],
-  taskOwnerField: ['owner', 'assigned_to', 'assignee', 'person'],
-  taskDateField: ['due_text', 'due_date', 'due', 'due_at', 'scheduled_for', 'date'],
-  taskCompletedField: ['completed', 'done', 'is_completed', 'is_done', 'complete'],
-};
-const QUICK_LOGS = [
-  { label: 'Kitchen cleaned', eventType: 'kitchen_cleaned', location: 'kitchen' },
-  { label: 'Dishes done', eventType: 'dishes_done', location: 'kitchen' },
-  { label: 'Bins out', eventType: 'bins_out', location: 'outside' },
-  { label: 'Laundry done', eventType: 'laundry_done', location: 'laundry' },
-];
-const LOAD_STATUS_ORDER = ['washing', 'drying', 'ready', 'done'];
-
-const DAY_OPTIONS = [
-  ['0', 'Sunday'],
-  ['1', 'Monday'],
-  ['2', 'Tuesday'],
-  ['3', 'Wednesday'],
-  ['4', 'Thursday'],
-  ['5', 'Friday'],
-  ['6', 'Saturday'],
-];
-const DEFAULT_SIGNAL_RULES = {
-  bins: {
-    enabled: true,
-    dayOfWeek: 3,
-    startHour: 12,
-    escalateHour: 17,
-    location: 'outside',
-  },
-  laundry: {
-    enabled: true,
-  },
-  tomorrowEvent: {
-    enabled: true,
-    startHour: 17,
-    minEvents: 1,
-  },
-  custom: [],
-};
-const CUSTOM_SIGNAL_SCHEDULE_OPTIONS = [
-  ['weekly', 'Weekly on a day'],
-  ['daily', 'Daily'],
-];
-const CUSTOM_SIGNAL_CLEAR_OPTIONS = [
-  ['schedule_window', 'Hide outside the schedule window'],
-  ['log_event_today', 'Clear when a matching household log happens today'],
-];
-
 let autoRefreshTimer = null;
 let slowStateBackstopTimer = null;
 let calendarPublishTimer = null;
@@ -144,28 +5,10 @@ let housekeepingTimer = null;
 let pendingTaskCompletions = new Set();
 let pendingSignalActions = new Set();
 let armedTaskCompletions = new Map();
-const TASK_COMPLETE_ARM_WINDOW_MS = 3200;
+let armedSignalDismissals = new Map();
+window.__hccBootState = window.__hccBootState || { started: false, finished: false, phase: 'script-loaded', version: APP_VERSION, errors: [] };
+window.__HCC_FORCE_BOOT = () => startBootstrap();
 
-const HEALTHY_AUTO_REFRESH_SECONDS = 600;
-const DEGRADED_AUTO_REFRESH_SECONDS = 90;
-const SLOW_STATE_BACKSTOP_SECONDS = 1800;
-const CALENDAR_PUBLISH_INTERVAL_SECONDS = 900;
-const HOUSEKEEPING_INTERVAL_SECONDS = 43200;
-const SNAPSHOT_RETENTION_DAYS = 7;
-const LOG_RETENTION_DAYS = 30;
-const RESOLVED_SIGNAL_RETENTION_DAYS = 30;
-const LOAD_RETENTION_DAYS = 30;
-const RECENT_DONE_WINDOW_DAYS = 7;
-const HOUSEKEEPING_LAST_RUN_STORAGE = 'household-command-center-housekeeping-last-run';
-const HOUSEKEEPING_REPORT_STORAGE = 'household-command-center-housekeeping-report';
-
-const DEFAULT_CONNECTION_STATUS = {
-  supabase: { level: 'unknown', text: 'Not tested' },
-  tasks: { level: 'unknown', text: 'Not tested' },
-  deviceProfile: { level: 'unknown', text: 'Not tested' },
-  realtime: { level: 'unknown', text: 'Not tested' },
-  serviceWorker: { level: 'unknown', text: 'Not tested' },
-};
 
 const INITIAL_CONFIG = loadConfig();
 
@@ -175,6 +18,7 @@ let appState = {
   deviceKey: getOrCreateDeviceKey(),
   deviceProfile: null,
   tasks: [],
+  taskCategoryOverrides: loadTaskCategoryOverrides(),
   logs: [],
   signals: [],
   loads: [],
@@ -267,16 +111,45 @@ let appState = {
 
 const screenEl = document.getElementById('screen');
 
-function parseServiceWorkerVersion(scriptUrl = '') {
-  if (!scriptUrl) return '';
+
+const TASK_CATEGORY_OVERRIDE_STORAGE_KEY = 'hcc-task-category-overrides';
+
+function loadTaskCategoryOverrides() {
   try {
-    const url = new URL(scriptUrl, window.location.href);
-    return url.searchParams.get('v') || '';
+    const raw = localStorage.getItem(TASK_CATEGORY_OVERRIDE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
-    const match = String(scriptUrl).match(/[?&]v=([^&#]+)/);
-    return match ? decodeURIComponent(match[1]) : '';
+    return {};
   }
 }
+
+function saveTaskCategoryOverrides() {
+  try {
+    localStorage.setItem(TASK_CATEGORY_OVERRIDE_STORAGE_KEY, JSON.stringify(appState.taskCategoryOverrides || {}));
+  } catch {}
+}
+
+function getTaskCategoryOverride(taskId) {
+  if (!taskId) return '';
+  return String((appState.taskCategoryOverrides || {})[taskId] || '').trim();
+}
+
+function setTaskCategoryOverride(taskId, category) {
+  if (!taskId) return;
+  const next = { ...(appState.taskCategoryOverrides || {}) };
+  const normalized = String(category || '').trim();
+  if (!normalized || normalized === 'auto') delete next[taskId];
+  else next[taskId] = normalized;
+  appState.taskCategoryOverrides = next;
+  saveTaskCategoryOverrides();
+}
+
+function openTaskCategoryOverrideModal(task) {
+  if (HCC?.ui?.openTaskCategoryOverrideModal) return HCC.ui.openTaskCategoryOverrideModal(task);
+}
+
 
 function updateServiceWorkerDiagnostics(patch = {}) {
   appState.serviceWorkerDiagnostics = { ...(appState.serviceWorkerDiagnostics || {}), ...patch };
@@ -523,137 +396,6 @@ function buildIoSummaryRows() {
 }
 
 
-function clampHour(value, fallback = 0) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  return Math.max(0, Math.min(23, Math.round(num)));
-}
-
-function normalizeSignalRules(input) {
-  const raw = input && typeof input === 'object' ? input : {};
-  return {
-    bins: {
-      enabled: raw?.bins?.enabled !== undefined ? !!raw.bins.enabled : DEFAULT_SIGNAL_RULES.bins.enabled,
-      dayOfWeek: Number.isFinite(Number(raw?.bins?.dayOfWeek)) ? Math.max(0, Math.min(6, Number(raw.bins.dayOfWeek))) : DEFAULT_SIGNAL_RULES.bins.dayOfWeek,
-      startHour: clampHour(raw?.bins?.startHour, DEFAULT_SIGNAL_RULES.bins.startHour),
-      escalateHour: clampHour(raw?.bins?.escalateHour, DEFAULT_SIGNAL_RULES.bins.escalateHour),
-      location: String(raw?.bins?.location || DEFAULT_SIGNAL_RULES.bins.location || 'outside').trim() || 'outside',
-    },
-    laundry: {
-      enabled: raw?.laundry?.enabled !== undefined ? !!raw.laundry.enabled : DEFAULT_SIGNAL_RULES.laundry.enabled,
-    },
-    tomorrowEvent: {
-      enabled: raw?.tomorrowEvent?.enabled !== undefined ? !!raw.tomorrowEvent.enabled : DEFAULT_SIGNAL_RULES.tomorrowEvent.enabled,
-      startHour: clampHour(raw?.tomorrowEvent?.startHour, DEFAULT_SIGNAL_RULES.tomorrowEvent.startHour),
-      minEvents: Math.max(1, Number(raw?.tomorrowEvent?.minEvents) || DEFAULT_SIGNAL_RULES.tomorrowEvent.minEvents),
-    },
-    custom: Array.isArray(raw?.custom) ? raw.custom.map(normalizeCustomSignalRule).filter((rule) => rule.name) : [],
-  };
-}
-
-function getEffectiveSignalRules() {
-  const shared = appState?.sharedConfig?.[SHARED_CONFIG_KEYS.signalRules];
-  if (shared && typeof shared === 'object') return normalizeSignalRules(shared);
-  if (appState?.signalRulesDraft) return normalizeSignalRules(appState.signalRulesDraft);
-  return normalizeSignalRules(DEFAULT_SIGNAL_RULES);
-}
-
-function persistSignalRulesDraft() {
-  appState.config.signalRulesDraft = normalizeSignalRules(appState.signalRulesDraft);
-  persistLocalConfig();
-}
-
-function setSignalRulesDraft(nextRules) {
-  appState.signalRulesDraft = normalizeSignalRules(nextRules);
-  persistSignalRulesDraft();
-}
-
-function formatHourLabel(hour) {
-  const normalized = clampHour(hour, 0);
-  const suffix = normalized >= 12 ? 'PM' : 'AM';
-  const display = normalized % 12 || 12;
-  return `${display}:00 ${suffix}`;
-}
-
-function createRuleId() {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `rule-${Math.random().toString(36).slice(2, 10)}`;
-  }
-}
-
-function normalizeCustomSignalRule(input = {}) {
-  const scheduleType = String(input.scheduleType || 'weekly');
-  const clearMode = String(input.clearMode || 'schedule_window');
-  const startHour = clampHour(input.startHour, 17);
-  const escalateToWarning = !!input.escalateToWarning;
-  const rawEndHour = input.endHour === '' || input.endHour === null || input.endHour === undefined ? null : Number(input.endHour);
-  const endHour = Number.isFinite(rawEndHour) ? Math.max(0, Math.min(23, rawEndHour)) : null;
-  const escalateHour = clampHour(input.escalateHour, Math.max(startHour, 20));
-  return {
-    id: String(input.id || createRuleId()),
-    enabled: input.enabled !== undefined ? !!input.enabled : true,
-    name: String(input.name || '').trim(),
-    scheduleType: scheduleType === 'daily' ? 'daily' : 'weekly',
-    dayOfWeek: Number.isFinite(Number(input.dayOfWeek)) ? Math.max(0, Math.min(6, Number(input.dayOfWeek))) : 3,
-    startHour,
-    endHour,
-    clearMode: clearMode === 'log_event_today' ? 'log_event_today' : 'schedule_window',
-    ackEventType: String(input.ackEventType || '').trim(),
-    escalateToWarning,
-    escalateHour: Math.max(startHour, escalateHour),
-    location: String(input.location || '').trim(),
-  };
-}
-
-function summarizeCustomSignalRule(rule) {
-  const normalized = normalizeCustomSignalRule(rule);
-  const timeWindowLabel = normalized.endHour !== null
-    ? `${formatHourLabel(normalized.startHour)}–${formatHourLabel(normalized.endHour)}`
-    : `from ${formatHourLabel(normalized.startHour)}`;
-  const scheduleLabel = normalized.scheduleType === 'daily'
-    ? `Daily ${timeWindowLabel}`
-    : `${DAY_OPTIONS.find(([value]) => Number(value) === normalized.dayOfWeek)?.[1] || 'Weekly'} ${timeWindowLabel}`;
-  const clearLabel = normalized.clearMode === 'log_event_today'
-    ? `clears on log${normalized.ackEventType ? `: ${normalized.ackEventType}` : ''}`
-    : 'hides outside schedule';
-  const warnLabel = normalized.escalateToWarning ? `warns at ${formatHourLabel(normalized.escalateHour)}` : 'no warning escalation';
-  return `${scheduleLabel} · ${clearLabel} · ${warnLabel}`;
-}
-
-
-function getNowDate() {
-  return appState?.testTimeOverride ? new Date(appState.testTimeOverride) : new Date();
-}
-
-function getNowMs() {
-  return getNowDate().getTime();
-}
-
-function loadTestTimeOverride() {
-  try {
-    const value = localStorage.getItem(TEST_TIME_STORAGE);
-    if (!value) return null;
-    const parsed = new Date(value);
-    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveTestTimeOverride(value) {
-  try {
-    if (value) localStorage.setItem(TEST_TIME_STORAGE, value);
-    else localStorage.removeItem(TEST_TIME_STORAGE);
-  } catch {}
-}
-
-function currentDateInputValue() {
-  const d = getNowDate();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 function initApp() {
   try {
@@ -1027,70 +769,6 @@ async function runTargetedRefresh(label, refreshWork, options = {}) {
   }
 }
 
-function fieldExistsOnTask(fieldName, sample) {
-  return !!fieldName && !!sample && Object.prototype.hasOwnProperty.call(sample, fieldName);
-}
-
-function detectTaskField(sample, configKey) {
-  const configured = appState.config[configKey];
-  if (fieldExistsOnTask(configured, sample)) return configured;
-  const candidates = TASK_FIELD_CANDIDATES[configKey] || [];
-  return candidates.find((candidate) => fieldExistsOnTask(candidate, sample)) || configured;
-}
-
-function maybeAutoMapTaskFields(tasks) {
-  const sample = tasks?.[0];
-  if (!sample) return;
-  const updates = {};
-  for (const key of Object.keys(TASK_FIELD_CANDIDATES)) {
-    const detected = detectTaskField(sample, key);
-    if (detected && appState.config[key] !== detected) {
-      updates[key] = detected;
-    }
-  }
-  if (Object.keys(updates).length) {
-    Object.assign(appState.config, updates);
-    persistLocalConfig();
-    fillSettingsForm();
-    pushDevLog('info', `Auto-mapped task fields: ${Object.entries(updates).map(([k, v]) => `${k}→${v}`).join(', ')}`);
-  }
-}
-
-function taskIsCompleted(task) {
-  if (!task) return false;
-
-  const candidateValues = [];
-  const configuredField = appState.config.taskCompletedField;
-  if (configuredField && configuredField in task) {
-    candidateValues.push(task[configuredField]);
-  }
-
-  ['completed', 'done', 'is_completed', 'is_done', 'complete', 'panel', 'completed_at'].forEach((field) => {
-    if (field in task) candidateValues.push(task[field]);
-  });
-
-  for (const value of candidateValues) {
-    if (appState.config.useStringCompleted && String(value) === String(appState.config.taskCompletedValue)) return true;
-    if (typeof value === 'boolean' && value) return true;
-    if (typeof value === 'string' && ['true', 'completed', 'done', 'yes', '1'].includes(value.toLowerCase())) return true;
-    if (typeof value === 'number' && value === 1) return true;
-  }
-
-  if (typeof task.panel === 'string' && ['done', 'completed'].includes(task.panel.toLowerCase())) return true;
-  if (task.completed_at) return true;
-  if (typeof task.status === 'string' && ['done', 'completed'].includes(task.status.toLowerCase())) return true;
-  return false;
-}
-
-function taskIsArchived(task) {
-  if (!task) return false;
-  if (task.archived === true || task.archived === 1) return true;
-  if (typeof task.archived === 'string' && ['true', '1', 'yes'].includes(task.archived.toLowerCase())) return true;
-  if (task.archived_at) return true;
-  if (typeof task.panel === 'string' && task.panel.toLowerCase() === 'archived') return true;
-  if (typeof task.status === 'string' && task.status.toLowerCase() === 'archived') return true;
-  return false;
-}
 
 function isRealtimeHealthy() {
   const diag = appState.realtimeDiagnostics || {};
@@ -1331,6 +1009,42 @@ function isTaskCompletionArmed(taskId) {
   return !!taskId && armedTaskCompletions.has(taskId);
 }
 
+function clearArmedSignalDismiss(signalId) {
+  if (!signalId) return;
+  const existingTimer = armedSignalDismissals.get(signalId);
+  if (existingTimer) window.clearTimeout(existingTimer);
+  armedSignalDismissals.delete(signalId);
+}
+
+function armSignalDismiss(signalId) {
+  if (!signalId) return false;
+  clearArmedSignalDismiss(signalId);
+  const timer = window.setTimeout(() => {
+    armedSignalDismissals.delete(signalId);
+    renderRuntimeUi({ renderDevConsole: false });
+  }, TASK_COMPLETE_ARM_WINDOW_MS);
+  armedSignalDismissals.set(signalId, timer);
+  return true;
+}
+
+function isSignalDismissArmed(signalId) {
+  return !!signalId && armedSignalDismissals.has(signalId);
+}
+
+async function handleSignalTap(signal) {
+  const signalId = signal?.id;
+  if (!signalId) return;
+  if (!isSignalDismissArmed(signalId)) {
+    armSignalDismiss(signalId);
+    renderRuntimeUi({ renderDevConsole: false });
+    showToast('Tap again to dismiss', 'info', { durationMs: TASK_COMPLETE_ARM_WINDOW_MS - 250 });
+    setStatus(`Armed dismiss for ${signal?.title || 'signal'}. Tap again to confirm.`);
+    return;
+  }
+  clearArmedSignalDismiss(signalId);
+  await dismissSignal(signal);
+}
+
 function getDisplayItemKey(item = {}) {
   if (item.itemKey) return item.itemKey;
   if (item.id != null) return `id:${item.id}`;
@@ -1379,7 +1093,7 @@ async function dismissSignal(signal) {
   }
 }
 
-function snoozeSignal(signal, minutes = 120) {
+function snoozeSignal(signal, minutes = 60) {
   const signalId = signal?.id;
   if (!signalId || pendingSignalActions.has(`snooze:${signalId}`)) return;
   pendingSignalActions.add(`snooze:${signalId}`);
@@ -1632,304 +1346,6 @@ function clearSubscriptions() {
 }
 
 
-const SURFACE_DEFINITIONS = {
-  kitchen: {
-    bodyClasses: ['widget-surface', 'kitchen-surface'],
-    screenClass: 'screen two-columns widget-layout widget-layout-kitchen',
-    widgets: [
-      'context',
-      'quickActions',
-      'kitchenHeader',
-      'signals',
-      'forget',
-      'spotlight',
-      'upcoming',
-    ],
-  },
-  tv: {
-    bodyClasses: ['widget-surface', 'tv-surface'],
-    screenClass: 'screen single-column widget-layout widget-layout-tv',
-    widgets: ['tvHero', 'tvSignals', 'tvToday', 'tvMotion', 'tvForget'],
-  },
-  laundry: {
-    bodyClasses: ['widget-surface', 'laundry-surface'],
-    screenClass: 'screen single-column widget-layout widget-layout-laundry',
-    widgets: ['laundrySummary', 'laundryLoads', 'laundrySignals'],
-  },
-  bedroom: {
-    bodyClasses: ['widget-surface', 'bedroom-surface'],
-    screenClass: 'screen single-column bedroom-layout widget-layout widget-layout-bedroom',
-    widgets: ['context', 'bedroomPrimary', 'bedroomLaundry', 'bedroomForget'],
-  },
-  mobile: {
-    bodyClasses: ['mobile-surface'],
-    screenClass: 'screen two-columns widget-layout widget-layout-mobile',
-    widgets: ['today', 'laundryLoads', 'upcoming', 'recentLogs', 'signals', 'quickActions', 'context', 'taskMapping'],
-  },
-};
-
-const SURFACE_BODY_CLASS_NAMES = ['tv-mode', 'mobile-mode', 'widget-surface', 'tv-surface', 'kitchen-surface', 'laundry-surface', 'bedroom-surface', 'mobile-surface'];
-
-function getSurfaceDefinition(mode) {
-  return SURFACE_DEFINITIONS[mode] || SURFACE_DEFINITIONS.kitchen;
-}
-
-function applySurfaceBodyClasses(mode) {
-  const surface = getSurfaceDefinition(mode);
-  for (const className of SURFACE_BODY_CLASS_NAMES) {
-    document.body.classList.remove(className);
-  }
-  for (const className of surface.bodyClasses || []) {
-    document.body.classList.add(className);
-  }
-  document.body.classList.toggle('tv-mode', mode === 'tv');
-  document.body.classList.toggle('mobile-mode', mode === 'mobile');
-}
-
-function renderMode() {
-  const mode = appState.config.mode || 'tv';
-  applySurfaceBodyClasses(mode);
-  const digest = buildTaskDigest();
-  const widgetContext = buildWidgetContext(digest);
-  if (mode === 'mobile') {
-    renderMobileControlPanel(widgetContext);
-    updateCalendarAuthBanner();
-    return;
-  }
-  renderModeLayout(mode, widgetContext);
-  updateCalendarAuthBanner();
-}
-
-function buildWidgetContext(digest) {
-  const signals = activeSignals();
-  const tomorrowItems = buildTomorrowItemsFromDigest(digest);
-  const forgetItems = buildForgetItemsFromSignals(signals, tomorrowItems, digest);
-  return {
-    mode: appState.config.mode,
-    digest,
-    signals,
-    tomorrowItems,
-    forgetItems,
-    focusItem: buildSoftFocusFromDigest(digest, signals),
-    isEvening: isEvening(),
-    presentationPhase: getPresentationPhase(),
-  };
-}
-
-function renderModeLayout(mode, context) {
-  const layout = getSurfaceDefinition(mode);
-  screenEl.className = layout.screenClass;
-  screenEl.replaceChildren();
-
-  const ambientFooter = mode !== 'mobile' ? buildAmbientFooter() : null;
-
-  if (mode === 'tv') {
-    const tvWrap = document.createElement('div');
-    tvWrap.className = 'tv-layout tv-layout-wide';
-    for (const widgetId of layout.widgets) {
-      const node = renderWidget(widgetId, context);
-      if (node) tvWrap.append(node);
-    }
-    screenEl.append(tvWrap);
-    if (ambientFooter) screenEl.append(ambientFooter);
-    return;
-  }
-
-  for (const widgetId of layout.widgets) {
-    const node = renderWidget(widgetId, context);
-    if (node) screenEl.append(node);
-  }
-
-  if (ambientFooter) screenEl.append(ambientFooter);
-}
-
-function renderWidget(widgetId, context) {
-  const widget = WIDGETS[widgetId];
-  if (!widget) {
-    pushDevLog('warn', `Unknown widget: ${widgetId}`);
-    return null;
-  }
-  return widget(context);
-}
-
-const WIDGETS = {
-  kitchenHeader: (context) => buildKitchenTodayCard(context),
-  today: (context) => buildCard('Today', '', renderTaskList(context.digest.todayTasks, 'No tasks visible.', { showPills: true }), 'panel-card panel-today-card'),
-  spotlight: (context) => buildCard('Best Next Move', 'Most useful thing to do next', renderSpotlightCard(context.digest.spotlightTask)),
-  signals: (context) => buildCard('Needs Attention', `${context.signals.length} visible`, renderSignalActionList(context.signals.slice(0, 6), 'Everything looks calm right now.'), 'panel-card panel-signals-card'),
-  upcoming: (context) => buildCard('Coming Up', `${context.digest.upcomingTasks.length} coming soon`, renderTaskList(context.digest.upcomingTasks.slice(0, 6), 'Nothing is queued up soon.', { showPills: true }), 'panel-card panel-upcoming-card'),
-  quickActions: () => buildQuickActionsCard(),
-  forget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'Nothing important is coming up yet.', { showPills: true }), 'panel-card panel-reminders-card'),
-  context: () => buildCard('Weather & Next Event', 'Context for the day', renderContextStack()),
-  taskMapping: () => buildCard('Task Mapping', 'Live field mapping for this board', renderTaskMappingSummary()),
-  tvHero: () => buildTvHero(),
-  tvToday: (context) => buildCard(context.isEvening ? 'Today + Tomorrow' : 'Today', context.isEvening ? 'Evening preview is starting to fold in tomorrow' : '', renderTaskList(buildTvTodayItems(context), 'Nothing major on the board.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-today-card'),
-  tvSignals: (context) => buildCard('Attention', '', renderList(context.signals.slice(0, 4).map(signalToItem), 'House is in a good place.'), 'tv-card tv-tall-card panel-card panel-signals-card'),
-  tvMotion: (context) => buildCard('In Motion', context.digest.counts.inMotion ? `${context.digest.counts.inMotion} active` : '', renderTaskList(context.digest.inMotionTasks.slice(0, 5), 'Nothing is actively in motion right now.', { compact: true, showPills: true }), 'tv-card tv-tall-card panel-card panel-focus-card'),
-  tvForget: (context) => buildCard('Don’t Forget', 'Tomorrow and coming up soon', renderTaskList(context.forgetItems.slice(0, 4), 'Nothing important is coming up soon.', { compact: true, showPills: true }), 'tv-card tv-bottom-card panel-card panel-reminders-card'),
-  laundrySummary: () => buildCard('Laundry Status', 'Tap a load to move it forward', renderLaundrySummary(), 'laundry-summary-card'),
-  laundryLoads: () => buildCard('Loads In Progress', 'Washer, dryer, and ready-to-fold loads', renderLaundryLoads(), 'laundry-loads-card'),
-  laundrySignals: () => buildCard('Laundry Signals', 'Useful reminders for the workflow', renderLaundrySignals(), 'laundry-signals-card'),
-  bedroomPrimary: (context) => buildCard(context.isEvening ? 'Tomorrow' : 'Today', describeDateContext(context), renderTaskList(buildBedroomPrimaryItems(context), `Nothing big for ${(context.isEvening ? 'tomorrow' : 'today')} yet.`, { showPills: true }), 'panel-card panel-today-card'),
-  bedroomLaundry: () => buildCard('Laundry', 'Quickly move loads forward', renderBedroomLaundry(), 'bedroom-laundry-card'),
-  bedroomForget: (context) => buildCard('Don’t Forget', 'Coming up soon', renderTaskList(context.forgetItems, 'No key reminders right now.', { showPills: true }), 'panel-card panel-reminders-card'),
-  recentLogs: () => buildCard('Recent Logs', '', renderList(appState.logs.map(logToItem), 'No quick logs yet.')),
-};
-
-
-const MOBILE_TABS = {
-  status: { label: 'Status', subtitle: (context) => 'Whole-house summary', render: (context) => renderMobileStatus(context) },
-  logs: { label: 'Logs', subtitle: () => 'Recent actions and links', render: () => renderMobileLogs() },
-  calendar: { label: 'Calendar', subtitle: () => `${appState.calendarAccounts.length} connected account${appState.calendarAccounts.length === 1 ? '' : 's'}`, render: () => renderMobileCalendar() },
-  weather: { label: 'Weather', subtitle: () => appState.config.weatherLocationName || appState.config.weatherLocationQuery || 'Weather configuration', render: () => renderMobileWeather() },
-  signals: { label: 'Signals', subtitle: () => 'Household reminder rules and previews', render: () => renderMobileSignals() },
-  debug: { subtitle: () => appState.testTimeOverride ? `Test time active · ${new Date(appState.testTimeOverride).toLocaleString()}` : 'Diagnostics and test controls', label: 'Debug', render: () => renderMobileDebug() },
-};
-
-function getMobileTabDefinition(tabKey) {
-  return MOBILE_TABS[tabKey] || MOBILE_TABS.status;
-}
-
-function getMobileTabs() {
-  return Object.entries(MOBILE_TABS);
-}
-
-function buildMobileStack() {
-  const wrap = document.createElement('div');
-  wrap.className = 'mobile-stack';
-  return wrap;
-}
-
-function buildEmptyState(message, extraClass = '') {
-  const empty = document.createElement('div');
-  empty.className = `empty-state ${extraClass}`.trim();
-  empty.textContent = message;
-  return empty;
-}
-
-function buildPill(text, extraClass = '') {
-  const pill = document.createElement('span');
-  pill.className = `pill ${extraClass}`.trim();
-  pill.textContent = text;
-  return pill;
-}
-
-function buildListItem(item, options = {}) {
-  const rowTag = options.tagName || 'div';
-  const row = document.createElement(rowTag);
-  row.className = options.rowClassName || 'list-item';
-  if (item?.rowClass) row.classList.add(...String(item.rowClass).split(/\s+/).filter(Boolean));
-  if (item?.ownerKey) {
-    row.dataset.owner = item.ownerKey;
-    row.classList.add(`owner-${item.ownerKey}`);
-  }
-  if (item?.emphasis) row.dataset.emphasis = item.emphasis;
-
-  const left = document.createElement('div');
-  left.className = options.leftClassName || 'list-item-left';
-  const title = document.createElement('div');
-  title.className = options.titleClassName || 'list-item-title';
-  title.textContent = item.title || '';
-  left.append(title);
-
-  const metaText = item.meta || '';
-  if (metaText || options.showMeta !== false) {
-    const meta = document.createElement('div');
-    meta.className = options.metaClassName || 'list-item-meta';
-    meta.textContent = metaText;
-    left.append(meta);
-  }
-
-  row.append(left);
-  if (options.showPills && item.pill) {
-    row.append(buildPill(item.pill, item.pillClass || ''));
-  }
-
-  if (typeof options.onActivate === 'function') {
-    row.classList.add('list-item-interactive');
-    row.setAttribute('role', 'button');
-    row.tabIndex = 0;
-    row.style.cursor = 'pointer';
-    if (item.actionHint) row.title = item.actionHint;
-    row.addEventListener('click', (event) => {
-      event.preventDefault();
-      options.onActivate(event);
-    });
-    row.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        options.onActivate(event);
-      }
-    });
-  }
-
-  return row;
-}
-
-function buildCardSectionHeader(titleText, subtitleText = '') {
-  const wrap = document.createElement('div');
-  wrap.className = 'card-header';
-  const titleWrap = document.createElement('div');
-  titleWrap.className = 'card-title-wrap';
-  const title = document.createElement('h2');
-  title.textContent = titleText;
-  const subtitle = document.createElement('span');
-  subtitle.className = 'card-subtitle';
-  subtitle.textContent = subtitleText || '';
-  titleWrap.append(title, subtitle);
-  wrap.append(titleWrap);
-  return wrap;
-}
-
-function appendCards(container, cards) {
-  for (const card of cards) {
-    if (card) container.append(card);
-  }
-  return container;
-}
-
-function renderMobileControlPanel(context) {
-  screenEl.className = 'screen single-column mobile-control-screen';
-  screenEl.replaceChildren();
-
-  const tabs = getMobileTabs();
-  const activeTab = getMobileTabDefinition(appState.mobileTab);
-
-  const nav = document.createElement('div');
-  nav.className = 'mobile-tabs';
-  for (const [key, def] of tabs) {
-    const label = def.label;
-    const btn = document.createElement('button');
-    btn.className = `mobile-tab-button ${appState.mobileTab === key ? 'active' : ''}`.trim();
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      appState.mobileTab = key;
-      renderMode();
-    });
-    nav.append(btn);
-  }
-  screenEl.append(nav);
-
-  const panel = document.createElement('section');
-  panel.className = 'card mobile-panel';
-  const body = document.createElement('div');
-  body.className = 'card-body';
-
-  panel.append(buildCardSectionHeader(activeTab.label, activeTab.subtitle(context)));
-
-  let content;
-  try {
-    content = activeTab.render(context);
-  } catch (error) {
-    handleRuntimeActionError(`Could not render ${appState.mobileTab} tab`, error);
-    content = renderInlineErrorCard(`The ${appState.mobileTab} tab hit an error.`, error);
-  }
-  body.append(content);
-  panel.append(body);
-  screenEl.append(panel);
-}
-
-
 function summarizeCalendarConnectionState() {
   const service = getCalendarServiceState();
   return {
@@ -2005,11 +1421,16 @@ function renderMobileStatus(context) {
   ]);
 }
 
-function buildSecondaryButton(label, onClick) {
+function buildSecondaryButton(label, onClick, extraClass = '') {
   const button = document.createElement('button');
-  button.className = 'secondary-button';
+  button.type = 'button';
+  button.className = ['secondary-button', extraClass].filter(Boolean).join(' ');
   button.textContent = label;
-  button.addEventListener('click', onClick);
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof onClick === 'function') onClick(event);
+  });
   return button;
 }
 
@@ -2383,8 +1804,17 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
     saveBtn.type = 'button';
     saveBtn.className = 'secondary-button';
     saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', () => {
+    saveBtn.addEventListener('click', async () => {
       if (!saveSignalModalDraft(modalState)) return;
+      try {
+        await pushSharedSignalConfig();
+        await fetchHouseholdConfig();
+      } catch (error) {
+        handleRuntimeActionError('Signal rule save failed', error);
+        showToast('Saved locally, but could not push signal config', 'error');
+        renderRuntimeUi({ renderDevConsole: false });
+        return;
+      }
       close();
       renderRuntimeUi({ renderDevConsole: false });
       showToast('Saved signal rule', 'success');
@@ -2395,8 +1825,17 @@ function renderSignalRuleModalPanel(panel, modalState, rerender, close) {
       deleteBtn.type = 'button';
       deleteBtn.className = 'secondary-button danger-button';
       deleteBtn.textContent = 'Delete';
-      deleteBtn.addEventListener('click', () => {
+      deleteBtn.addEventListener('click', async () => {
         deleteCustomSignalRule(modalState.ruleId);
+        try {
+          await pushSharedSignalConfig();
+          await fetchHouseholdConfig();
+        } catch (error) {
+          handleRuntimeActionError('Custom signal delete failed', error);
+          showToast('Deleted locally, but could not push signal config', 'error');
+          renderRuntimeUi({ renderDevConsole: false });
+          return;
+        }
         close();
         renderRuntimeUi({ renderDevConsole: false });
         showToast('Deleted custom signal', 'success');
@@ -2650,118 +2089,29 @@ function renderMobileDebug() {
     buildServiceWorkerDebugSummary(),
     buildWakeLockDebugSummary(),
   ], 'No diagnostics yet.', { showPills: true }), 'mobile-compact-card'));
+
+  const taskDebugItems = normalizeTaskRows().slice(0, 6).map((task) => ({
+    title: task.title,
+    meta: [task?.categoryDebug?.manualOverride ? 'Manual override active' : '', buildCategoryDebugMeta(task) || 'No category match detail'].filter(Boolean).join(' · '),
+    pill: HCC?.tasks?.getCategoryLabel ? HCC.tasks.getCategoryLabel(task.category) : 'General',
+    pillClass: `category-pill ${task.category || 'general'}${task?.categoryDebug?.manualOverride ? ' override-pill' : ''}`,
+    categoryKey: task.category || 'general',
+    rowClass: `task-list-item task-category-${task.category || 'general'}`,
+    actionHint: 'Tap to change category override',
+    onActivate: () => openTaskCategoryOverrideModal(task),
+  }));
+  wrap.append(buildCard('Task category debug', 'Top normalized task classifications · tap a task to override', renderTaskList(taskDebugItems, 'No tasks available.', { showPills: true }), 'mobile-compact-card'));
+
+  const eventDebugItems = [
+    ...mapSnapshotItemsToDisplay(getSnapshotPayload(appState.config.calendarTodaySnapshotType)?.items || []),
+    ...mapSnapshotItemsToDisplay(getSnapshotPayload(appState.config.calendarTomorrowSnapshotType)?.items || [], 'Tomorrow'),
+  ].slice(0, 6).map((item) => ({
+    ...item,
+    meta: [item.meta, item.categoryDebug ? buildCategoryDebugMeta(item) : ''].filter(Boolean).join(' · '),
+  }));
+  wrap.append(buildCard('Event category debug', 'Snapshot event classifications', renderTaskList(eventDebugItems, 'No calendar events available.', { showPills: true }), 'mobile-compact-card'));
   return wrap;
 }
-
-function buildTvHero() {
-  const section = document.createElement('section');
-  section.className = 'card tv-card tv-hero';
-  const weather = getSnapshot(appState.config.weatherSnapshotType);
-  const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
-  const nextEvent = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
-
-  const topRow = document.createElement('div');
-  topRow.className = 'tv-hero-top';
-
-  const date = document.createElement('div');
-  date.className = 'tv-date';
-  date.textContent = getNowDate().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-
-  const topRight = document.createElement('div');
-  topRight.className = 'tv-hero-right';
-
-  if (trustIndicator) {
-    const headerTrust = trustIndicator.cloneNode(true);
-    headerTrust.id = '';
-    headerTrust.classList.add('tv-header-trust');
-    headerTrust.onclick = () => trustIndicator.click();
-    topRight.append(headerTrust);
-  }
-
-  const timeEl = document.createElement('div');
-  timeEl.className = 'tv-clock';
-  timeEl.textContent = getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-
-  topRight.append(timeEl);
-  topRow.append(date, topRight);
-
-  const contextRow = document.createElement('div');
-  contextRow.className = 'tv-context-row';
-
-  const weatherEl = document.createElement('div');
-  weatherEl.className = 'tv-weather';
-  weatherEl.textContent = weather?.payload ? formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }) : 'Weather snapshot not loaded yet';
-
-  const nextEl = document.createElement('div');
-  nextEl.className = 'tv-next';
-  nextEl.textContent = nextEvent ? `Next: ${nextEvent.title}${nextEvent.time ? ` · ${nextEvent.time}` : ''}${nextEvent.sourceLabel ? ` · ${nextEvent.sourceLabel}` : ''}` : 'Nothing urgent on the calendar';
-
-  contextRow.append(weatherEl, nextEl);
-
-  const freshnessEl = document.createElement('div');
-  freshnessEl.className = 'muted tv-freshness';
-  const publisher = describeSnapshotPublisher(todayCal);
-  const freshnessItems = getDataFreshnessItems();
-  const ambientHealth = getAmbientHealthState();
-  const taskFreshness = freshnessItems.find((item) => item.title === 'Tasks');
-  const configFreshness = freshnessItems.find((item) => item.title === 'Shared config');
-  freshnessEl.textContent = [
-    ambientHealth && ambientHealth.level !== 'ok' ? `Health · ${ambientHealth.level === 'degraded' ? 'Degraded' : 'Aging'}` : null,
-    weather ? snapshotMetaLabel('Weather', weather) : null,
-    todayCal ? snapshotMetaLabel('Calendar', todayCal) : null,
-    publisher ? `Publisher · ${publisher}` : null,
-    taskFreshness ? `Tasks · ${taskFreshness.pill}` : null,
-    configFreshness ? `Config · ${configFreshness.pill}` : null,
-  ].filter(Boolean).join(' · ') || 'Snapshots will show here once loaded';
-
-  section.append(topRow, contextRow, freshnessEl);
-  return section;
-}
-
-
-function buildTvTodayItems(context) {
-  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const eventItems = Array.isArray(todaySnapshot?.items)
-    ? todaySnapshot.items.slice(0, 3).map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
-    : [];
-
-  const taskItems = context.digest.todayTasks.slice(0, context.isEvening ? 2 : 3);
-  const overdueItems = context.digest.overdueTasks.slice(0, 1);
-  const baseItems = blendTaskAndEventItems(taskItems, eventItems, overdueItems, context.isEvening ? 4 : 6);
-
-  if (!context.isEvening) return baseItems;
-
-  const tomorrowPreview = context.digest.tomorrowTasks.slice(0, 2).map((item) => ({
-    ...item,
-    pill: item.pill || 'Tomorrow',
-    meta: item.meta ? `${item.meta}` : 'Tomorrow',
-  }));
-
-  return [...baseItems, ...tomorrowPreview].slice(0, 6);
-}
-
-function buildBedroomPrimaryItems(context) {
-  if (context.isEvening) {
-    return context.tomorrowItems.slice(0, 6);
-  }
-  const todaySnapshot = getSnapshotPayload(appState.config.calendarTodaySnapshotType);
-  const eventItems = Array.isArray(todaySnapshot?.items)
-    ? todaySnapshot.items.slice(0, 3).map((item) => ({
-        title: item.title,
-        meta: [item.sourceLabel || 'Calendar', item.time].filter(Boolean).join(' · '),
-        pill: 'Calendar',
-      }))
-    : [];
-  const taskItems = context.digest.todayTasks.slice(0, 4);
-  const overdueItems = context.digest.overdueTasks.slice(0, 1);
-  return blendTaskAndEventItems(taskItems, eventItems, overdueItems, 6);
-}
-
-
 
 function buildSignalActionRow(signal) {
   const wrap = document.createElement('div');
@@ -2770,11 +2120,11 @@ function buildSignalActionRow(signal) {
   const snoozeButton = document.createElement('button');
   snoozeButton.className = 'secondary-button signal-action-button';
   snoozeButton.type = 'button';
-  snoozeButton.textContent = 'Snooze 2h';
+  snoozeButton.textContent = 'Snooze 1h';
   snoozeButton.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    snoozeSignal(signal, 120);
+    snoozeSignal(signal, 60);
   });
   wrap.append(snoozeButton);
 
@@ -2804,203 +2154,22 @@ function renderSignalActionList(signals, emptyText, options = {}) {
   }
   for (const signal of items) {
     const item = signalToItem(signal);
-    const row = buildListItem(item, { showPills: true, rowClassName: 'list-item signal-action-item' });
-    row.append(buildSignalActionRow(signal));
-    wrapper.append(row);
-  }
-  return wrapper;
-}
-
-function buildQuickActionsCard() {
-  const wrap = document.createElement('div');
-  wrap.className = 'quick-grid';
-  for (const item of QUICK_LOGS) {
-    const button = document.createElement('button');
-    button.className = 'quick-button quick-button-blue';
-    button.textContent = item.label;
-    button.addEventListener('click', () => createQuickLog(item, button));
-    wrap.append(button);
-  }
-  return buildCard('Quick Actions', 'One tap, then done', wrap, 'kitchen-quick-actions-card');
-}
-
-
-function loadStatusRank(status) {
-  const order = { ready: 0, drying: 1, washing: 2, done: 3 };
-  return order[status] ?? 9;
-}
-
-function loadNextStep(status) {
-  if (status === 'washing') return 'Next: move to dryer';
-  if (status === 'drying') return 'Next: mark ready for folding';
-  if (status === 'ready') return 'Next: mark done';
-  return 'Done';
-}
-
-function renderLaundrySummary() {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'laundry-summary';
-
-  const counts = { washing: 0, drying: 0, ready: 0 };
-  for (const load of appState.loads) {
-    if (load.archived_at || load.status === 'done') continue;
-    if (counts[load.status] !== undefined) counts[load.status] += 1;
-  }
-
-  const addButton = document.createElement('button');
-  addButton.className = 'primary-button laundry-start-button';
-  addButton.textContent = 'Start new load';
-  addButton.addEventListener('click', () => createLoad(addButton));
-  wrapper.append(addButton);
-
-  const grid = document.createElement('div');
-  grid.className = 'laundry-summary-grid';
-  const items = [
-    ['Washing', counts.washing, 'washing'],
-    ['Drying', counts.drying, 'drying'],
-    ['Ready', counts.ready, 'ready'],
-  ];
-  for (const [label, value, status] of items) {
-    const chip = document.createElement('div');
-    chip.className = `laundry-stat status-${status}`;
-    chip.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
-    grid.append(chip);
-  }
-  wrapper.append(grid);
-
-  const hint = document.createElement('div');
-  hint.className = 'laundry-tip muted';
-  hint.textContent = counts.ready
-    ? 'A load is ready and may need folding.'
-    : 'Tap any load below to move it to the next step.';
-  wrapper.append(hint);
-  return wrapper;
-}
-
-function buildLaundrySignalItems() {
-  const items = [];
-  const now = getNowMs();
-  const activeLoads = appState.loads.filter((load) => !load.archived_at && load.status !== 'done');
-  const staleLoads = activeLoads.filter((load) => {
-    const movedAt = new Date(load.last_transition_at || load.updated_at || load.created_at).getTime();
-    return Number.isFinite(movedAt) && now - movedAt > 90 * 60 * 1000;
-  }).sort((a, b) => new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at));
-
-  if (staleLoads.length) {
-    const stale = staleLoads[0];
-    items.push({
-      title: `${stale.label || `Load ${stale.id.slice(0, 4)}`} has been waiting`,
-      meta: `${capitalize(stale.status)} · Last moved ${relativeTime(stale.last_transition_at || stale.updated_at || stale.created_at)}`,
-      pill: 'Laundry',
-    });
-  }
-
-  const laundryMoments = [];
-  for (const load of appState.loads) {
-    const t = load.last_transition_at || load.updated_at || load.created_at;
-    if (t) laundryMoments.push(new Date(t).getTime());
-  }
-  for (const log of appState.logs) {
-    if (/laundry/i.test(log.event_type || '') || log.location === 'laundry') {
-      if (log.created_at) laundryMoments.push(new Date(log.created_at).getTime());
+    const signalId = signal?.id;
+    if (isSignalDismissArmed(signalId)) {
+      item.meta = [item.meta, 'Tap again to dismiss'].filter(Boolean).join(' · ');
+      item.rowClass = `${item.rowClass || ''} signal-armed`.trim();
+      item.actionHint = 'Tap again to dismiss · Swipe for details';
+    } else {
+      item.actionHint = 'Tap to arm dismiss · Swipe for details';
     }
-  }
-  const lastLaundryAt = laundryMoments.length ? Math.max(...laundryMoments.filter(Number.isFinite)) : null;
-  if (!activeLoads.length && (!lastLaundryAt || now - lastLaundryAt > 24 * 60 * 60 * 1000)) {
-    items.push({
-      title: 'No laundry done in over a day',
-      meta: lastLaundryAt ? `Last laundry activity ${relativeTime(new Date(lastLaundryAt).toISOString())}` : 'No laundry activity logged yet.',
-      pill: 'Reminder',
+    const row = buildListItem(item, {
+      showPills: true,
+      rowClassName: 'list-item signal-action-item',
+      onActivate: () => handleSignalTap(signal),
+      onSwipe: () => HCC?.ui?.openSignalDetailModal?.(signal),
     });
-  }
-
-  return items;
-}
-
-function renderLaundrySignals() {
-  const items = buildLaundrySignalItems();
-  return renderList(items, 'No laundry signals right now.');
-}
-
-function renderLaundryLoads() {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'list';
-
-  const loads = [...appState.loads]
-    .filter((load) => !load.archived_at && load.status !== 'done')
-    .sort((a, b) => {
-      const byStatus = loadStatusRank(a.status) - loadStatusRank(b.status);
-      if (byStatus !== 0) return byStatus;
-      return new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at);
-    });
-
-  if (!loads.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No active loads right now.';
-    wrapper.append(empty);
-    return wrapper;
-  }
-
-  for (const load of loads) {
-    const row = document.createElement('button');
-    row.className = `load-row load-button status-${load.status}`;
-    row.innerHTML = `
-      <div class="load-row-main">
-        <div class="list-item-title">${escapeHtml(load.label || `Load ${load.id.slice(0, 4)}`)}</div>
-        <div class="list-item-meta">${loadNextStep(load.status)} · Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
-      </div>
-      <span class="pill">${escapeHtml(capitalize(load.status))}</span>
-    `;
-    row.addEventListener('click', () => advanceLoad(load, row));
     wrapper.append(row);
   }
-
-  return wrapper;
-}
-
-
-function renderBedroomLaundry() {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'list';
-
-  const loads = [...appState.loads]
-    .filter((load) => !load.archived_at && load.status !== 'done')
-    .sort((a, b) => {
-      const byStatus = loadStatusRank(a.status) - loadStatusRank(b.status);
-      if (byStatus !== 0) return byStatus;
-      return new Date(a.last_transition_at || a.updated_at || a.created_at) - new Date(b.last_transition_at || b.updated_at || b.created_at);
-    })
-    .slice(0, 3);
-
-  if (!loads.length) {
-    wrapper.append(buildEmptyState('No active loads to move right now.'));
-    return wrapper;
-  }
-
-  for (const load of loads) {
-    const row = document.createElement('button');
-    row.className = `load-row load-button bedroom-load-row status-${load.status}`;
-    const actionLabel = load.status === 'washing'
-      ? 'Move to dryer'
-      : load.status === 'drying'
-      ? 'Mark ready'
-      : 'Mark done';
-
-    row.innerHTML = `
-      <div class="load-row-main">
-        <div class="list-item-title">${escapeHtml(load.label || `Load ${load.id.slice(0, 4)}`)}</div>
-        <div class="list-item-meta">${loadNextStep(load.status)} · Last moved ${relativeTime(load.last_transition_at || load.updated_at || load.created_at)}</div>
-      </div>
-      <div class="bedroom-load-actions">
-        <span class="pill">${escapeHtml(capitalize(load.status))}</span>
-        <span class="bedroom-load-cta">${escapeHtml(actionLabel)}</span>
-      </div>
-    `;
-    row.addEventListener('click', () => advanceLoad(load, row));
-    wrapper.append(row);
-  }
-
   return wrapper;
 }
 
@@ -3017,35 +2186,62 @@ function renderTaskList(items, emptyText, options = {}) {
   }
   for (const item of items) {
     const onActivate = typeof item.onActivate === 'function' ? item.onActivate : null;
-    wrapper.append(buildListItem(item, { showPills: options.showPills, onActivate }));
+    const onSwipe = typeof item.onSwipe === 'function' ? item.onSwipe : null;
+    wrapper.append(buildListItem(item, { showPills: options.showPills, onActivate, onSwipe }));
   }
   return wrapper;
 }
 
-function renderSpotlightCard(item) {
+function renderSpotlightCard(items) {
   const wrap = document.createElement('div');
-  if (!item) {
+  const spotlightItems = Array.isArray(items) ? items.filter(Boolean) : (items ? [items] : []);
+  if (!spotlightItems.length) {
     return buildEmptyState('No standout task yet. Once the board has today or overdue work, it will appear here.');
   }
 
+  const primary = spotlightItems[0];
   const badge = document.createElement('div');
-  badge.className = 'hero-pill';
-  badge.textContent = item.pill || 'Task';
+  badge.className = `hero-pill category-pill ${primary.categoryKey || 'general'} spotlight-pill`.trim();
+  badge.textContent = primary.pill || 'Task';
+
+  if (primary.categoryKey) {
+    wrap.classList.add('spotlight-category-card', `spotlight-category-${primary.categoryKey}`);
+  }
 
   const title = document.createElement('div');
   title.className = 'focus-text';
-  title.textContent = item.title;
+  title.textContent = primary.title;
 
   const meta = document.createElement('div');
   meta.className = 'muted';
-  meta.textContent = item.meta || '';
+  meta.textContent = primary.meta || '';
 
   wrap.append(badge, title, meta);
+
+  if (spotlightItems.length > 1) {
+    const secondaryWrap = document.createElement('div');
+    secondaryWrap.className = 'spotlight-secondary-list';
+    spotlightItems.slice(1, 2).forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'spotlight-secondary-item';
+      if (item.categoryKey) row.classList.add('spotlight-category-card', `spotlight-category-${item.categoryKey}`);
+      const rowTitle = document.createElement('div');
+      rowTitle.className = 'spotlight-secondary-title';
+      rowTitle.textContent = item.title;
+      const rowMeta = document.createElement('div');
+      rowMeta.className = 'spotlight-secondary-meta muted';
+      rowMeta.textContent = item.meta || '';
+      row.append(rowTitle, rowMeta);
+      secondaryWrap.append(row);
+    });
+    wrap.append(secondaryWrap);
+  }
   return wrap;
 }
 
 function renderFocusBlock(item) {
   const wrap = document.createElement('div');
+  if (item?.categoryKey) wrap.classList.add('focus-category-block', `spotlight-category-${item.categoryKey}`);
   if (!item) {
     return buildEmptyState('Nothing is pressing right now.');
   }
@@ -3058,57 +2254,6 @@ function renderFocusBlock(item) {
   wrap.append(big, meta);
   return wrap;
 }
-
-function renderContextStack() {
-  const items = [];
-  const weather = getSnapshot(appState.config.weatherSnapshotType);
-  const todayCal = getSnapshot(appState.config.calendarTodaySnapshotType);
-  if (weather?.payload?.summary) {
-    items.push({
-      title: formatWeatherSummary(weather.payload, { includeTomorrow: isEvening() }),
-      meta: [cleanLocationName(weather.payload.locationName), snapshotMetaLabel('Weather', weather)].filter(Boolean).join(' · '),
-      pill: snapshotFreshnessPill(weather),
-      pillClass: snapshotFreshnessClass(weather),
-    });
-  }
-  const next = Array.isArray(todayCal?.payload?.items) ? todayCal.payload.items[0] : null;
-  if (next) {
-    items.push({
-      title: next.title,
-      meta: [snapshotMetaLabel('Next event', todayCal), next.time, next.sourceLabel].filter(Boolean).join(' · '),
-      pill: snapshotFreshnessPill(todayCal, 'Calendar'),
-      pillClass: snapshotFreshnessClass(todayCal),
-    });
-  }
-  return renderTaskList(items, 'Weather or calendar data is not connected yet.', { showPills: true });
-}
-
-function renderTaskMappingSummary() {
-  const fields = [
-    ['Task table', appState.config.taskTable],
-    ['Title field', appState.config.taskTitleField],
-    ['Owner field', appState.config.taskOwnerField],
-    ['Due date field', appState.config.taskDateField],
-    ['Completed field', appState.config.taskCompletedField],
-  ];
-
-  const wrap = document.createElement('div');
-  wrap.className = 'list';
-  for (const [label, value] of fields) {
-    const row = document.createElement('div');
-    row.className = 'meta-row';
-    const left = document.createElement('div');
-    left.textContent = label;
-    const right = document.createElement('code');
-    right.textContent = value || '—';
-    row.append(left, right);
-    wrap.append(row);
-  }
-  return wrap;
-}
-
-
-
 
 function loadHousekeepingDiagnostics() {
   try {
@@ -3556,22 +2701,6 @@ async function connectGoogleCalendarAccount() {
 }
 
 
-function weatherCodeLabel(code) {
-  const groups = {
-    0: 'Clear',
-    1: 'Mostly clear',
-    2: 'Partly cloudy',
-    3: 'Overcast',
-    45: 'Fog', 48: 'Fog',
-    51: 'Drizzle', 53: 'Drizzle', 55: 'Drizzle', 56: 'Freezing drizzle', 57: 'Freezing drizzle',
-    61: 'Rain', 63: 'Rain', 65: 'Heavy rain', 66: 'Freezing rain', 67: 'Freezing rain',
-    71: 'Snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow',
-    80: 'Showers', 81: 'Showers', 82: 'Heavy showers',
-    85: 'Snow showers', 86: 'Snow showers',
-    95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Thunderstorm',
-  };
-  return groups[Number(code)] || 'Weather';
-}
 
 function buildWeatherQueryCandidates(query) {
   const raw = String(query || '').trim();
@@ -3816,23 +2945,32 @@ function renderCalendarAccounts() {
   googleCalendarAccountsEl.replaceChildren(renderCalendarAccountsPanel({ editable: true }));
 }
 
+function getCalendarTimezone() {
+  return String(appState?.config?.calendarTimezone || 'Australia/Darwin').trim() || 'Australia/Darwin';
+}
+
 function formatCalendarEventTime(event) {
   if (event.start?.date) return 'All day';
   const startValue = event.start?.dateTime;
   if (!startValue) return '';
   const date = new Date(startValue);
   if (!Number.isFinite(date.getTime())) return '';
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: getCalendarTimezone() });
 }
 
 function normalizeCalendarEvent(event, account, calendar) {
-  return {
+  const normalized = {
     id: event.id,
     title: event.summary || '(Untitled event)',
     time: formatCalendarEventTime(event),
     sourceLabel: getCalendarSourceLabel(account, calendar),
     start: event.start?.dateTime || event.start?.date || '',
+    description: event.description || '',
+    location: event.location || '',
+    calendarSummary: calendar?.summary || calendar?.id || '',
+    kind: 'Calendar',
   };
+  return HCC?.tasks?.applyCategoryMetadata ? HCC.tasks.applyCategoryMetadata(normalized) : { ...normalized, category: 'general', categoryDebug: null };
 }
 
 function snapshotItemsSignature(items) {
@@ -3842,14 +2980,29 @@ function snapshotItemsSignature(items) {
     start: item.start || '',
     time: item.time || '',
     sourceLabel: item.sourceLabel || '',
+    category: item.category || '',
   })));
 }
 
-function shouldPublishCalendarSnapshots(todayItems, tomorrowItems) {
-  const currentToday = getSnapshotPayload(appState.config.calendarTodaySnapshotType)?.items || [];
-  const currentTomorrow = getSnapshotPayload(appState.config.calendarTomorrowSnapshotType)?.items || [];
+
+function isSnapshotMissingOrAging(snapshot, agingWindowMinutes = 5) {
+  if (!snapshot) return true;
+  const nowMs = getNowMs();
+  const createdAtMs = snapshot.created_at ? new Date(snapshot.created_at).getTime() : NaN;
+  const validUntilMs = snapshot.valid_until ? new Date(snapshot.valid_until).getTime() : NaN;
+  if (!Number.isFinite(createdAtMs)) return true;
+  if (!Number.isFinite(validUntilMs)) return true;
+  if (validUntilMs <= nowMs) return true;
+  return (validUntilMs - nowMs) <= (agingWindowMinutes * 60 * 1000);
+}
+
+function shouldPublishCalendarSnapshots(todayItems, tomorrowItems, existingTodaySnapshot = null, existingTomorrowSnapshot = null) {
+  const currentToday = existingTodaySnapshot?.payload?.items || [];
+  const currentTomorrow = existingTomorrowSnapshot?.payload?.items || [];
   return snapshotItemsSignature(todayItems) !== snapshotItemsSignature(currentToday)
-    || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow);
+    || snapshotItemsSignature(tomorrowItems) !== snapshotItemsSignature(currentTomorrow)
+    || isSnapshotMissingOrAging(existingTodaySnapshot)
+    || isSnapshotMissingOrAging(existingTomorrowSnapshot);
 }
 
 function noteCalendarPublisherAttempt(reason, extra = {}) {
@@ -3968,13 +3121,18 @@ function normalizeServerManagedCalendarPayload(payload, now = getNowDate()) {
     const starts = event?.start?.dateTime ? new Date(event.start.dateTime) : event?.start?.date ? new Date(`${event.start.date}T00:00:00`) : (event?.start ? new Date(event.start) : null);
     if (!starts || !Number.isFinite(starts.getTime())) continue;
     if (starts < todayStart || starts >= dayAfterStart) continue;
-    const normalized = {
+    const normalizedBase = {
       id: event.id || event.eventId || `${event.summary || event.title || 'event'}-${event.start?.dateTime || event.start?.date || event.start || ''}`,
       title: event.summary || event.title || '(Untitled event)',
       time: event.time || formatCalendarEventTime(event),
       sourceLabel: event.sourceLabel || event.calendarSummary || event.calendar?.summary || 'Calendar',
       start: event.start?.dateTime || event.start?.date || event.start || '',
+      description: event.description || '',
+      location: event.location || '',
+      calendarSummary: event.calendarSummary || event.calendar?.summary || '',
+      kind: 'Calendar',
     };
+    const normalized = HCC?.tasks?.applyCategoryMetadata ? HCC.tasks.applyCategoryMetadata(normalizedBase) : { ...normalizedBase, category: 'general', categoryDebug: null };
     if (isSameDay(starts, todayStart)) todayItems.push(normalized);
     else if (isSameDay(starts, tomorrowStart)) tomorrowItems.push(normalized);
   }
@@ -4097,7 +3255,7 @@ async function fetchGoogleCalendarSnapshots() {
         url.searchParams.set('orderBy', 'startTime');
         url.searchParams.set('timeMin', todayStart.toISOString());
         url.searchParams.set('timeMax', dayAfterStart.toISOString());
-        url.searchParams.set('timeZone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+        url.searchParams.set('timeZone', getCalendarTimezone());
         url.searchParams.set('maxResults', '25');
         const data = await googleApiFetch(url.toString(), source.account.accessToken);
         const items = Array.isArray(data.items) ? data.items : [];
@@ -4125,18 +3283,28 @@ async function fetchGoogleCalendarSnapshots() {
   const createdAt = getNowDate().toISOString();
 
   const snapshotSource = buildCalendarSnapshotSource();
+  const existingTodaySnapshot = appState.snapshots[appState.config.calendarTodaySnapshotType] || null;
+  const existingTomorrowSnapshot = appState.snapshots[appState.config.calendarTomorrowSnapshotType] || null;
+  const shouldPublish = shouldPublishCalendarSnapshots(todayItems, tomorrowItems, existingTodaySnapshot, existingTomorrowSnapshot);
+  const snapshotMeta = {
+    fetchedAt: createdAt,
+    itemCountToday: todayItems.length,
+    itemCountTomorrow: tomorrowItems.length,
+    publisher: snapshotSource,
+    publishReason: shouldPublish ? 'changed-or-aging' : 'unchanged-and-fresh',
+  };
   const todaySnapshot = {
     context_type: appState.config.calendarTodaySnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: todayItems },
+    payload: { items: todayItems, meta: { ...snapshotMeta, window: 'today', itemCount: todayItems.length } },
     source: snapshotSource,
   };
   const tomorrowSnapshot = {
     context_type: appState.config.calendarTomorrowSnapshotType,
     created_at: createdAt,
     valid_until: new Date(getNowMs() + 15 * 60 * 1000).toISOString(),
-    payload: { items: tomorrowItems },
+    payload: { items: tomorrowItems, meta: { ...snapshotMeta, window: 'tomorrow', itemCount: tomorrowItems.length } },
     source: snapshotSource,
   };
 
@@ -4144,7 +3312,7 @@ async function fetchGoogleCalendarSnapshots() {
   appState.snapshots[appState.config.calendarTomorrowSnapshotType] = tomorrowSnapshot;
 
   try {
-    if (shouldPublishCalendarSnapshots(todayItems, tomorrowItems)) {
+    if (shouldPublish) {
       await publishContextSnapshot(todaySnapshot.context_type, todaySnapshot.payload, todaySnapshot.source, 15);
       await publishContextSnapshot(tomorrowSnapshot.context_type, tomorrowSnapshot.payload, tomorrowSnapshot.source, 15);
       noteCalendarPublisherResult('published', {
@@ -4161,9 +3329,9 @@ async function fetchGoogleCalendarSnapshots() {
         lastPublishSource: snapshotSource,
         lastItemsToday: todayItems.length,
         lastItemsTomorrow: tomorrowItems.length,
-        lastSkipReason: 'Snapshots unchanged',
+        lastSkipReason: 'Snapshots unchanged and still fresh',
       });
-      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed.');
+      pushDevLog('info', 'Skipped publishing headless calendar snapshots because nothing changed and the shared snapshots are still fresh.');
     }
   } catch (error) {
     noteCalendarPublisherResult('error', {
@@ -4187,6 +3355,7 @@ async function fetchGoogleCalendarSnapshots() {
 }
 
 function buildKitchenTodayCard(context) {
+  if (HCC?.surfaces?.kitchen?.buildSummaryCard) return HCC.surfaces.kitchen.buildSummaryCard(context);
   const wrap = document.createElement('div');
   wrap.className = 'kitchen-today-wrap';
 
@@ -4233,6 +3402,15 @@ function openQuickView(title, items, emptyText) {
   else dialog.setAttribute('open', 'open');
 }
 
+
+function openBedroomItemModal(item, options = {}) {
+  if (HCC?.ui?.openBedroomItemModal) return HCC.ui.openBedroomItemModal(item, options);
+}
+
+function openBedroomStatusModal() {
+  if (HCC?.ui?.openBedroomStatusModal) return HCC.ui.openBedroomStatusModal();
+}
+
 function buildCard(title, subtitle, body, extraClass = '') {
   const template = document.getElementById('card-template');
   const node = template.content.firstElementChild.cloneNode(true);
@@ -4245,20 +3423,6 @@ function buildCard(title, subtitle, body, extraClass = '') {
 
 
 
-function normalizeTokenText(value) {
-  return String(value || '').toLowerCase();
-}
-
-function includesAnyToken(text, patterns) {
-  const haystack = normalizeTokenText(text);
-  return patterns.some((pattern) => haystack.includes(pattern));
-}
-
-function tokenizeMeaningfulWords(value) {
-  return normalizeTokenText(value)
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 4 && !['with', 'from', 'that', 'this', 'have', 'will', 'your', 'into', 'need', 'make', 'tomorrow', 'today'].includes(token));
-}
 
 function getTaskDueBucket(task, today = getNowDate()) {
   if (!task?.dueDate) return 'undated';
@@ -4331,36 +3495,18 @@ function scoreTaskForWindow(task, options = {}) {
   const signals = intelligenceContext?.signals || options.signals || [];
   const tomorrowSnapshot = intelligenceContext?.tomorrowSnapshot || options.tomorrowSnapshot || null;
   const evening = intelligenceContext?.evening ?? options.evening ?? isEvening();
-  let score = 0;
+  let score = HCC?.tasks?.scoreTask
+    ? HCC.tasks.scoreTask(task, { now, dueBucket, windowName, evening })
+    : 0;
 
-  if (windowName === 'today') {
-    if (dueBucket === 'overdue') score += 80;
-    if (dueBucket === 'today') score += 58;
-    if (dueBucket === 'tomorrow') score += evening ? 22 : 8;
-    if (dueBucket === 'future') score -= 12;
-    if (dueBucket === 'undated') score -= 18;
-    if (evening && hasEveningCue(task)) score += 16;
-  }
+  if (windowName === 'today' && evening && hasEveningCue(task)) score += 12;
 
   if (windowName === 'tomorrow') {
-    if (dueBucket === 'tomorrow') score += 62;
-    if (dueBucket === 'today') score += evening ? 18 : 4;
-    if (dueBucket === 'overdue') score += 14;
-    if (dueBucket === 'future') score -= 8;
-    if (dueBucket === 'undated') score -= 18;
     if (evening && hasTomorrowPrepCue(task)) score += 16;
     score += taskTomorrowEventStrength(task, tomorrowSnapshot);
   }
 
-  if (String(task.panel || '').toLowerCase() === 'in motion') score += 12;
-  if (task.recurrence) score += 7;
   score += taskSignalStrength(task, signals);
-  if (task.isMine) score += 2;
-
-  if (task.dueDate) {
-    const diff = Math.abs(task.dueDate.getTime() - startOfDay(now).getTime());
-    score += Math.max(0, 6 - Math.floor(diff / 86400000));
-  }
 
   return score;
 }
@@ -4376,14 +3522,18 @@ function rankTasksForWindow(tasks, options = {}) {
     });
 }
 
+function normalizeDisplayCalendarItem(item = {}) {
+  return HCC?.display?.normalizeCalendarItem
+    ? HCC.display.normalizeCalendarItem(item)
+    : (HCC?.tasks?.applyCategoryMetadata ? HCC.tasks.applyCategoryMetadata(item) : { ...item, category: 'general', categoryDebug: null, effectiveCategory: 'general' });
+}
+
+function buildCategoryDebugMeta(item) {
+  return HCC?.display?.buildCategoryDebugMeta ? HCC.display.buildCategoryDebugMeta(item) : '';
+}
+
 function mapSnapshotItemsToDisplay(items = [], labelPrefix = '') {
-  return items.map((item, index) => ({
-    id: item.id || item.eventId || item.uid || `${item.title || 'calendar'}-${item.time || index}`,
-    itemKey: `calendar:${item.id || item.eventId || item.uid || `${item.title || 'calendar'}-${item.time || index}`}`,
-    title: item.title,
-    meta: [item.sourceLabel || 'Calendar', labelPrefix && item.time ? `${labelPrefix} · ${item.time}` : labelPrefix || item.time].filter(Boolean).join(' · '),
-    pill: 'Calendar',
-  }));
+  return HCC?.display?.mapSnapshotItemsToDisplay ? HCC.display.mapSnapshotItemsToDisplay(items, labelPrefix) : [];
 }
 
 function selectTasksByDueBucket(tasks, dueBucketById, buckets) {
@@ -4409,7 +3559,7 @@ function buildTaskDigest() {
   const overdueTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['overdue']);
   const upcomingTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['future']).slice(0, 8);
   const todayTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['today', 'overdue']);
-  const inMotionTasks = rankedTodayTasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion').slice(0, 6);
+  const inMotionTasks = rankedTodayTasks.filter((task) => isInMotionPanel(task.panel)).slice(0, 6);
   const undatedTasks = selectTasksByDueBucket(rankedTodayTasks, dueBucketById, ['undated']);
   const tomorrowOnlyTasks = selectTasksByDueBucket(rankedTomorrowTasks, dueBucketById, ['tomorrow']);
 
@@ -4429,7 +3579,11 @@ function buildTaskDigest() {
   const tomorrowTaskItems = toDisplayTaskItems(tomorrowWindowTasks, 'Tomorrow');
   const todayBlend = blendTaskAndEventItems(todayTaskItems, calendarTodayItems, overdueTaskItems.slice(0, 2), 8);
 
-  const spotlightTask = rankedTodayTasks[0] || signals.map(signalToItem)[0] || undatedTasks[0] || null;
+  const spotlightTasks = toDisplayTaskItems(rankedTodayTasks.slice(0, 2), 'Task');
+  const spotlightTask = spotlightTasks[0]
+    || signals.map(signalToItem)[0]
+    || (undatedTasks[0] ? toDisplayTaskItems([undatedTasks[0]], 'Task')[0] : null)
+    || null;
 
   return {
     all: tasks,
@@ -4445,7 +3599,7 @@ function buildTaskDigest() {
     calendarTodayItems,
     calendarTomorrowItems,
     allEventItems: [...calendarTodayItems, ...calendarTomorrowItems],
-    spotlightTask: spotlightTask ? toDisplayTaskItems([spotlightTask], spotlightTask.kind || 'Task')[0] : null,
+    spotlightTask,
     counts: {
       all: tasks.length,
       today: todayTasks.length,
@@ -4520,7 +3674,7 @@ function normalizeTaskRows() {
     .map((task) => {
       const dueDate = normalizeDate(task[dateField] || task.due_text || task.due_date || task.due, task.created_at);
       const owner = task[ownerField] || '';
-      return {
+      const normalizedTask = {
         id: task.id,
         title: String(task[titleField] || 'Untitled task'),
         owner,
@@ -4531,10 +3685,13 @@ function normalizeTaskRows() {
         description: task.description || '',
         panel: task.panel || '',
         raw: task,
+        manualCategory: getTaskCategoryOverride(task.id),
         kind: 'Task',
+        createdAt: task.created_at || task.updated_at || '',
         sortScore: dueDate ? dueDate.getTime() : Number.MAX_SAFE_INTEGER,
         isMine: owner ? String(owner).toLowerCase() === actor.toLowerCase() : false,
       };
+      return HCC?.tasks?.applyCategoryMetadata ? HCC.tasks.applyCategoryMetadata(normalizedTask) : { ...normalizedTask, category: 'general', categoryDebug: null };
     })
     .sort((a, b) => {
       if (a.sortScore !== b.sortScore) return a.sortScore - b.sortScore;
@@ -4544,13 +3701,6 @@ function normalizeTaskRows() {
 }
 
 
-function normalizeOwnerKey(owner) {
-  const value = String(owner || '').trim().toLowerCase();
-  if (!value) return '';
-  if (value === 'wes') return 'wes';
-  if (value === 'skye') return 'skye';
-  return 'shared';
-}
 
 function taskRowClass(task, armed = false) {
   const classes = ['task-list-item'];
@@ -4561,26 +3711,7 @@ function taskRowClass(task, armed = false) {
 }
 
 function toDisplayTaskItems(tasks, fallbackPill = 'Task') {
-  return tasks.map((task) => {
-    if (task.signal_type || task.severity) return signalToItem(task);
-    const dueMeta = task.dueDate ? formatTaskTiming(task.dueDate) : (task.dueText || 'No due date');
-    const owner = task.owner || '';
-    const canComplete = !!task.id && !pendingTaskCompletions.has(task.id);
-    const armed = canComplete && isTaskCompletionArmed(task.id);
-    return {
-      id: task.id,
-      itemKey: `task:${task.id || task.title}`,
-      title: task.title,
-      meta: [owner, armed ? 'Ready to complete' : dueMeta].filter(Boolean).join(' · '),
-      pill: armed ? 'Ready' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'Overdue' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'Today' : fallbackPill),
-      pillClass: armed ? 'warning' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'danger' : ''),
-      ownerKey: normalizeOwnerKey(owner),
-      emphasis: armed ? 'armed' : (task.dueDate && task.dueDate < startOfDay(getNowDate()) ? 'high' : task.dueDate && isSameDay(task.dueDate, getNowDate()) ? 'medium' : 'normal'),
-      rowClass: taskRowClass(task, armed),
-      actionHint: canComplete ? (armed ? 'Tap again to complete' : 'Tap once to arm completion') : '',
-      onActivate: canComplete ? () => completeTask(task.raw || task) : null,
-    };
-  });
+  return HCC?.display?.toDisplayTaskItems ? HCC.display.toDisplayTaskItems(tasks, fallbackPill) : [];
 }
 
 function buildKitchenHeadline(digest) {
@@ -4807,7 +3938,7 @@ function buildDerivedTaskSignals(tasks = normalizeTaskRows(), context = buildSig
   const overdueTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'overdue');
   const todayTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'today');
   const tomorrowTasks = tasks.filter((task) => getTaskDueBucket(task, now) === 'tomorrow');
-  const inMotionTasks = tasks.filter((task) => String(task.panel || '').toLowerCase() === 'in motion');
+  const inMotionTasks = tasks.filter((task) => isInMotionPanel(task.panel));
   const hasOtherSignals = Array.isArray(baseSignals) && baseSignals.length > 0;
   const hasDbSignals = activeDbSignals(now).length > 0;
   const freshnessItems = getDataFreshnessItems();
@@ -5346,12 +4477,22 @@ function setupDevConsole() {
     devConsoleLogEl.style.webkitUserSelect = 'text';
     devConsoleLogEl.style.webkitTouchCallout = 'default';
   }
-  const original = {
+  const consoleCapture = window.__hccConsoleCapture || null;
+  if (consoleCapture?.disabled) return;
+  const original = consoleCapture?.original || {
     log: console.log.bind(console),
     warn: console.warn.bind(console),
     error: console.error.bind(console),
     info: console.info.bind(console),
   };
+  if (consoleCapture) consoleCapture.disabled = true;
+  if (Array.isArray(consoleCapture?.logs) && consoleCapture.logs.length) {
+    devConsoleEntries = consoleCapture.logs.slice(0, DEV_CONSOLE_LIMIT).map((entry) => ({
+      time: entry.time || getNowDate().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+      level: entry.level || 'info',
+      text: entry.text || '',
+    }));
+  }
 
   function capture(level, args) {
     const rendered = args.map(renderConsoleArg).join(' ');
@@ -5361,6 +4502,7 @@ function setupDevConsole() {
       text: rendered,
     });
     devConsoleEntries = devConsoleEntries.slice(0, DEV_CONSOLE_LIMIT);
+    try { window.__HCC_APPEND_BOOT_LOG && window.__HCC_APPEND_BOOT_LOG(level, '[' + String(level || 'info').toUpperCase() + '] ' + rendered); } catch {}
     renderDevConsole();
   }
 
@@ -5872,7 +5014,13 @@ function setupWakeLockHooks() {
 function setupButtons() {
   pushDevLog('info', 'Button handlers attached.');
   settingsButton.onclick = openSettingsDialog;
-  if (trustIndicator) trustIndicator.onclick = () => { document.querySelector('.ambient-footer')?.scrollIntoView({ behavior: 'smooth', block: 'end' }); };
+  if (trustIndicator) trustIndicator.onclick = () => {
+    if (appState.config.mode === 'bedroom' && typeof openBedroomStatusModal === 'function') {
+      openBedroomStatusModal();
+      return;
+    }
+    document.querySelector('.ambient-footer')?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  };
   refreshButton.onclick = async () => {
     try {
       await refreshAll('manual refresh button', { includeSlowState: true });
@@ -5959,13 +5107,15 @@ function handleRuntimeActionError(prefix, error) {
 }
 
 function handleFatalStartupError(error) {
+  const detail = String(error?.message || error || 'Unknown startup error');
   try {
-    window.__hccBootState.errors.push(String(error?.message || error));
+    window.__hccBootState.errors.push(detail);
     window.__hccBootState.phase = 'fatal-startup-error';
+    window.__HCC_SHOW_BOOT_DEBUG && window.__HCC_SHOW_BOOT_DEBUG('Startup failed', detail, true);
   } catch {}
   console.error('Fatal startup error', error);
-  setStatus(`Startup error: ${error?.message || error}`);
-  renderEmptyShell('Startup failed. Long-press the version badge for diagnostics, then open Settings and verify your Supabase URL/key and field mapping.');
+  setStatus(`Startup error: ${detail}`);
+  renderEmptyShell('Startup failed. See the on-screen diagnostics below, or long-press the version badge for the full dev console. Then verify your Supabase URL, anon key, and field mapping.');
   renderDevConsole();
 }
 
@@ -6184,40 +5334,6 @@ function buildCalendarSnapshotSource() {
   return `calendar-publisher:${label}`;
 }
 
-function describeSnapshotPublisher(snapshot) {
-  const source = String(snapshot?.source || '').trim();
-  if (!source) return '';
-  if (source.startsWith('calendar-publisher:')) return source.slice('calendar-publisher:'.length) || 'Unknown device';
-  if (source === 'headless-google-calendar') return 'Legacy calendar publisher';
-  if (source === 'live-weather') return 'This device';
-  return source.replace(/[-_]+/g, ' ');
-}
-
-function snapshotStatusLevel(snapshot) {
-  if (!snapshot) return 'warning';
-  if (snapshot.valid_until && new Date(snapshot.valid_until) < getNowDate()) return 'warning';
-  const ageMinutes = snapshot.created_at ? Math.max(0, Math.round((getNowMs() - new Date(snapshot.created_at).getTime()) / 60000)) : 0;
-  if (ageMinutes >= 30) return 'warning';
-  if (ageMinutes >= 10) return 'notice';
-  return 'info';
-}
-
-function snapshotFreshnessPill(snapshot, fallback = 'Live') {
-  return getSnapshotFreshnessState(snapshot, fallback).pill;
-}
-
-function snapshotFreshnessClass(snapshot) {
-  return getSnapshotFreshnessState(snapshot).pillClass;
-}
-
-function getFreshnessDescriptorFromAgeMs(ageMs, thresholds = {}) {
-  const freshMs = Number(thresholds.freshMs || 0);
-  const agingMs = Number(thresholds.agingMs || freshMs || 0);
-  if (!Number.isFinite(ageMs) || ageMs < 0) return { pill: 'Unknown', pillClass: 'warning', level: 'warning' };
-  if (ageMs <= freshMs) return { pill: 'Fresh', pillClass: '', level: 'info' };
-  if (ageMs <= agingMs) return { pill: 'Aging', pillClass: 'notice', level: 'notice' };
-  return { pill: 'Stale', pillClass: 'warning', level: 'warning' };
-}
 
 function getDataFreshnessItems() {
   const reads = (appState.ioDiagnostics || {}).reads || {};
@@ -6392,7 +5508,7 @@ function getAmbientHealthState() {
 
 function placeInlineTrustIndicator() {
   document.querySelectorAll('.inline-trust-indicator').forEach((node) => node.remove());
-  if (appState.config.mode === 'mobile' || appState.config.mode === 'tv' || !trustIndicator) return;
+  if (appState.config.mode === 'tv' || !trustIndicator) return;
   const firstHeader = screenEl.querySelector('.card .card-header');
   if (!firstHeader) return;
   const inlineButton = trustIndicator.cloneNode(true);
@@ -6753,43 +5869,16 @@ function formatTaskTiming(date) {
   return formatDate(date);
 }
 
-function relativeTime(value) {
-  if (!value) return 'just now';
-  const deltaMs = getNowMs() - new Date(value).getTime();
-  const mins = Math.round(deltaMs / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours} hr ago`;
-  const days = Math.round(hours / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
-}
-
-function startOfDay(date) {
-  const copy = new Date(date);
-  copy.setHours(0, 0, 0, 0);
-  return copy;
-}
 
 
-function isSameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
 
-function isTomorrow(date) {
-  const tomorrow = getNowDate();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return isSameDay(date, tomorrow);
-}
+
 
 function isEvening() {
   const hour = getNowDate().getHours();
   return hour >= 17;
 }
 
-function capitalize(value) {
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
-}
 
 function prettifyEventType(value) {
   return value?.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()) || 'Event';
@@ -6799,18 +5888,7 @@ function guessActor() {
   return appState.config.deviceName?.toLowerCase().includes('skye') ? 'Skye' : 'Wes';
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
 
-function cleanLocationName(name) {
-  return String(name || '').split(',')[0].trim();
-}
 
 function stripEmailLikeText(value) {
   return String(value || '').replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '').replace(/\s+—\s*$/, '').trim();
